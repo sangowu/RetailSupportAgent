@@ -1,0 +1,32 @@
+{
+  "run_id": "20260906T133910Z",
+  "run_at": "2026-09-06T13:41:02.311974+00:00",
+  "wall_seconds": 111.4,
+  "task_ids": [
+    "0",
+    "1"
+  ],
+  "num_trials": 1,
+  "stack": {
+    "agent_model": "qwen3.7-max-2026-06-08",
+    "agent_extra": {
+      "extra_body": {
+        "enable_thinking": false
+      }
+    },
+    "user_simulator": "qwen3.6-plus-2026-04-02",
+    "nl_judge": "qwen3.6-plus-2026-04-02",
+    "frozen_stack_temperature": 0.0,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  "results": {
+    "agent_cost_reported_by_upstream": 0.0,
+    "simulation_count": 2,
+    "scored_count": 2,
+    "avg_reward": 1.0,
+    "pass_count": 2,
+    "termination_reasons": {
+      "TerminationReason.USER_STOP": 2
+    }
+  }
+}
