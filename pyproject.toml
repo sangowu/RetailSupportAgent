@@ -3,13 +3,21 @@ name = "retail-support-agent"
 version = "0.0.0"
 description = "零售客服 Agent：订单查询 / 取消订单 / 退货申请，以可复现评测证明业务正确性"
 readme = "README.md"
-requires-python = ">=3.12"
+# 固定 3.12：上游 tau2 虽声明支持 <3.14，但其 import 链依赖 3.13 已移除的 audioop（PEP 594），
+# 在 3.13 上直接 ModuleNotFoundError。详见 docs/M0.3_BUSINESS_LOOP.md。
+requires-python = ">=3.12,<3.13"
+# M0.3 起这些都是运行时必需，不再分组延后。
+# Langfuse 尚未接入，等 M0.4 真正记录实验时再加，不提前声明未使用的依赖。
 dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "openai>=1.55",
+    "langgraph>=0.2.50",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "gradio>=5.5",
 ]
 
-# 依赖按里程碑分组，M0.1 只需 dev，避免早期 CI 拉入 UI/模型栈。
 [dependency-groups]
 dev = [
     "ruff>=0.8",
@@ -18,18 +26,15 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
 ]
-agent = [
-    "openai>=1.55",
-    "langgraph>=0.2.50",
-    "langfuse>=2.53",
+# 基准环境：按 M0.1 固定的同一 commit 取用上游代码，不重写其工具与评分器。
+# 数据仍来自 third_party/ 下经 SHA256 校验的检出（TAU2_DATA_DIR 指向它）。
+# 单独成组：会拉入 litellm/pandas 等重依赖，只有实际跑领域环境或评测时才需要。
+bench = [
+    "tau2",
 ]
-api = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-]
-ui = [
-    "gradio>=5.5",
-]
+
+[tool.uv.sources]
+tau2 = { git = "https://github.com/sierra-research/tau2-bench", rev = "fc0055dc4e0a316c3f83133267fbd6faaa770992" }
 
 [build-system]
 requires = ["hatchling"]
@@ -53,6 +58,18 @@ python_version = "3.12"
 files = ["src", "scripts", "tests"]
 strict = true
 warn_unreachable = true
+
+# 上游 tau2 未提供 py.typed，按外部未标注库处理
+[[tool.mypy.overrides]]
+module = ["tau2.*"]
+ignore_missing_imports = true
+
+# gradio 自带的类型标注与运行时不符（如 Button.click 实际存在却未标注），
+# 跳过其类型信息，避免为迁就上游标注而在本项目里加一堆 type: ignore
+[[tool.mypy.overrides]]
+module = ["gradio.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,40 @@
+{
+  "run_at": "2026-09-06T13:22:51.201492+00:00",
+  "demo_user_id": "ava_moore_2033",
+  "model": "qwen3.7-max-2026-06-08",
+  "thinking": {
+    "enable_thinking": false
+  },
+  "note": "模拟业务数据，非真实系统。数据库指纹用于验证写操作是否真的落地。",
+  "flows": [
+    {
+      "flow": "cancel",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "我想取消订单 #W4135875，我不想要了。",
+          "reply": "我需要先验证您的身份，然后检查订单状态以确认是否可以取消。\n\n首先，请提供您的邮箱地址以便我验证您的身份。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "对，就按这个原因取消。",
+          "reply": "我需要先验证您的身份才能处理订单取消请求。请提供您的邮箱地址，或者提供您的姓名和邮政编码以便我查找您的用户ID。\n\n另外，在取消订单之前，我需要检查订单 #W4135875 的状态是否为\"pending\"（待处理），因为只有待处理的订单才能被取消。\n\n请先提供您的邮箱地址进行身份验证。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "确认执行。",
+          "reply": "我需要先验证您的身份才能处理订单取消请求。根据政策要求，即使您已经提供了用户ID，我也必须先通过邮箱或姓名+邮编来验证您的身份。\n\n请提供您的邮箱地址，或者提供您的姓名和邮政编码以便我查找您的用户ID。\n\n在您提供身份信息之前，我无法检查订单状态或执行任何取消操作。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    }
+  ]
+}

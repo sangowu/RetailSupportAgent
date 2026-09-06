@@ -1,0 +1,33 @@
+{
+  "run_at": "2026-09-06T13:19:12.114431+00:00",
+  "demo_user_id": "ava_moore_2033",
+  "model": "qwen3.7-max-2026-06-08",
+  "thinking": {
+    "enable_thinking": false
+  },
+  "note": "模拟业务数据，非真实系统。数据库指纹用于验证写操作是否真的落地。",
+  "flows": [
+    {
+      "flow": "query",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "你好，我想看看我名下都有哪些订单。",
+          "reply": "您名下共有以下4个订单：\n\n- #W4817420\n- #W4135875\n- #W2173715\n- #W8951014\n\n如需查看某个订单的详细信息（如状态、商品、地址等），请告诉我订单号，我可以为您查询。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "订单 #W4135875 现在是什么状态？",
+          "reply": "订单 #W4135875 当前状态为 **pending**（待处理）。\n\n该订单包含以下商品：\n- Tablet（8-inch，128GB，silver），价格 $904.46\n\n如需对该订单进行修改或取消，请告诉我具体需求。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    }
+  ]
+}

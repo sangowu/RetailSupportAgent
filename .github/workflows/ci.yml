@@ -1,6 +1,6 @@
 name: CI
 
-# M0.1–M0.2 阶段的 CI 只做静态检查、单元测试与上游固定校验。
+# M0.1–M0.3 阶段的 CI 只做静态检查、单元测试与上游固定校验。
 # 此时尚无冻结 MVP，任何"性能对比门禁"均报告为不适用（N/A），不得伪造基线数值。
 # 需要真实模型调用的探针不进 CI（标记 live_model），避免 CI 产生计费。
 
@@ -26,8 +26,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: 同步依赖（项目 + dev + agent；ui/api 组按阶段推迟）
-        run: uv sync --locked --group agent
+      - name: 同步依赖（项目 + dev；bench 组含上游重依赖，仅评测作业需要）
+        run: uv sync --locked
 
       - name: Ruff 格式
         run: uv run ruff format --check .
@@ -52,7 +52,7 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --locked --group agent
+      - run: uv sync --locked
 
       - name: 按固定 commit 拉取 τ²-bench 并逐文件校验 SHA256
         run: uv run python scripts/fetch_tau2.py
