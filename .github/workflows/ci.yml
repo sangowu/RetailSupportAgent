@@ -1,0 +1,68 @@
+name: CI
+
+# M0.1 阶段的 CI 只做静态检查、单元测试与上游固定校验。
+# 此时尚无冻结 MVP，任何"性能对比门禁"均报告为不适用（N/A），不得伪造基线数值。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-and-unit:
+    name: 静态检查与单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 同步依赖（仅 dev 组，锁文件必须存在且一致）
+        run: uv sync --locked --only-group dev
+
+      - name: Ruff 格式
+        run: uv run ruff format --check .
+
+      - name: Ruff 静态检查
+        run: uv run ruff check .
+
+      - name: mypy 类型检查
+        run: uv run mypy
+
+      - name: pytest（不含需要真实模型计费的用例）
+        run: uv run pytest -m "not live_model"
+
+  upstream-pin:
+    name: 上游基准固定校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked --only-group dev
+
+      - name: 按固定 commit 拉取 τ²-bench 并逐文件校验 SHA256
+        run: uv run python scripts/fetch_tau2.py
+
+  evaluation-gate:
+    name: 评测门禁（M0.1 不适用）
+    runs-on: ubuntu-latest
+    needs: [static-and-unit, upstream-pin]
+    steps:
+      - name: 报告门禁状态
+        run: |
+          echo "::notice title=评测门禁::N/A —— MVP 基线尚未冻结（M0.5 之前无可比对象）。"
+          echo "本作业不产生任何成功率或延迟数值；出现基线数字即为造假。"
+          echo "真实门禁在 M0.5 冻结 baseline-v1 后启用，规范见 docs/EVALUATION_AND_GATES.md。"
