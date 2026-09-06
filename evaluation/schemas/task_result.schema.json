@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retail-support-agent.local/schemas/task_result.json",
+  "title": "逐题原始结果",
+  "description": "单个任务单次试跑的原始记录。失败、服务错误与不支持必须分类保存，不得丢弃。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "task_id", "trial", "outcome", "reward", "usage", "timing"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "trial": { "type": "integer", "minimum": 0 },
+    "scope_label": {
+      "type": "string",
+      "enum": ["read_only", "in_scope_write", "out_of_scope_write", "no_action"],
+      "description": "来自 evaluation/task_sets/scope_labels.json，仅用于分层报告"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "success",
+        "task_failure",
+        "policy_violation",
+        "service_error",
+        "unsupported_param",
+        "timeout",
+        "truncated",
+        "max_steps_exceeded"
+      ],
+      "description": "业务失败、服务错误与参数不支持必须区分，不能合并成一个失败率"
+    },
+    "reward": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "components"],
+      "properties": {
+        "total": { "type": "number", "minimum": 0, "maximum": 1 },
+        "components": {
+          "type": "object",
+          "description": "上游各分量奖励（DB / NL_ASSERTION 等），按 reward_basis 相乘得 total",
+          "additionalProperties": { "type": "number" }
+        },
+        "reward_basis": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "termination_reason": { "type": ["string", "null"] },
+    "usage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["input_tokens", "output_tokens"],
+      "description": "服务端返回的真实用量；思考与缓存 token 若单独计费须分列",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "reasoning_tokens": { "type": ["integer", "null"] },
+        "cached_input_tokens": { "type": ["integer", "null"] }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_seconds"],
+      "properties": {
+        "wall_seconds": { "type": "number", "minimum": 0 },
+        "agent_seconds": {
+          "type": ["number", "null"],
+          "description": "扣除模拟用户与评判耗时后的 Agent 时间"
+        }
+      }
+    },
+    "retries": { "type": "integer", "minimum": 0 },
+    "error": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string" },
+        "message": { "type": "string" },
+        "http_status": { "type": ["integer", "null"] }
+      }
+    },
+    "trajectory_ref": {
+      "type": ["string", "null"],
+      "description": "完整对话轨迹的归档路径或 Langfuse trace id"
+    }
+  }
+}

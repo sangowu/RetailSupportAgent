@@ -1,0 +1,129 @@
+{
+  "$comment": "τ²-bench 上游固定记录。数值由 scripts/verify_tau2.py 对照实际检出校验，不得手工编辑。",
+  "generated_at": "2026-09-06",
+  "upstream": {
+    "name": "Sierra tau2-bench",
+    "repo": "https://github.com/sierra-research/tau2-bench",
+    "tag": "v1.0.1",
+    "commit": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+    "commit_date": "2026-07-16T15:24:56-07:00",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2025 Sierra Research",
+    "attribution": "数据、工具、政策与评分器均为上游原创，本项目仅调用，不得宣称为自研实现。"
+  },
+  "domain": {
+    "name": "retail",
+    "policy_file": "data/tau2/domains/retail/policy.md",
+    "db_file": "data/tau2/domains/retail/db.json",
+    "tasks_file": "data/tau2/domains/retail/tasks.json",
+    "split_file": "data/tau2/domains/retail/split_tasks.json",
+    "solo_mode_supported": false,
+    "tool_count": 16,
+    "tools": [
+      {
+        "name": "calculate",
+        "type": "GENERIC"
+      },
+      {
+        "name": "cancel_pending_order",
+        "type": "WRITE"
+      },
+      {
+        "name": "exchange_delivered_order_items",
+        "type": "WRITE"
+      },
+      {
+        "name": "find_user_id_by_name_zip",
+        "type": "READ"
+      },
+      {
+        "name": "find_user_id_by_email",
+        "type": "READ"
+      },
+      {
+        "name": "get_order_details",
+        "type": "READ"
+      },
+      {
+        "name": "get_product_details",
+        "type": "READ"
+      },
+      {
+        "name": "get_item_details",
+        "type": "READ"
+      },
+      {
+        "name": "get_user_details",
+        "type": "READ"
+      },
+      {
+        "name": "list_all_product_types",
+        "type": "READ"
+      },
+      {
+        "name": "modify_pending_order_address",
+        "type": "WRITE"
+      },
+      {
+        "name": "modify_pending_order_items",
+        "type": "WRITE"
+      },
+      {
+        "name": "modify_pending_order_payment",
+        "type": "WRITE"
+      },
+      {
+        "name": "modify_user_address",
+        "type": "WRITE"
+      },
+      {
+        "name": "return_delivered_order_items",
+        "type": "WRITE"
+      },
+      {
+        "name": "transfer_to_human_agents",
+        "type": "GENERIC"
+      }
+    ]
+  },
+  "tasks": {
+    "total": 114,
+    "splits": {
+      "base": 114,
+      "train": 74,
+      "test": 40
+    },
+    "reward_basis_distribution": {
+      "DB,NL_ASSERTION": 112,
+      "DB": 2
+    },
+    "scope_label_counts": {
+      "out_of_scope_write": 70,
+      "in_scope_write": 34,
+      "read_only": 8,
+      "no_action": 2
+    }
+  },
+  "scoring": {
+    "reward_rule": "各生效分量奖励相乘；分量由任务 reward_basis 决定",
+    "retail_basis": "112 题为 DB + NL_ASSERTION，2 题为纯 DB",
+    "db_component": "对比最终数据库状态（src/tau2/evaluator/evaluator_env.py）",
+    "nl_assertion_component": "LLM 评判（src/tau2/evaluator/evaluator_nl_assertions.py），需固定评判模型且不随被测模型切换",
+    "note": "communicate 与 action 分量不在 retail 的 reward_basis 中，仅作诊断用途。"
+  },
+  "files_sha256": {
+    "LICENSE": "74741b87a33d4704c6f33e5c71742542446c984233f7a7e4905bf36f4da5a33b",
+    "data/tau2/domains/retail/db.json": "dbde692e380bb4ad17f9f7841172cf1e69bebad2daa405628ccdc52a42b3b9b0",
+    "data/tau2/domains/retail/policy.md": "4313d3fef8acf919f555fa17fbce929cc3ed1cef2dd8f0d35ff5c8c3364de176",
+    "data/tau2/domains/retail/tasks.json": "f44563d8f36362e2dc58282bb02cfb85010d22f27d9439808758d3e9b2bc16d2",
+    "data/tau2/domains/retail/split_tasks.json": "5f9949b833e6b99584b87e84ef22f9d81789ea67a52e534c6f7aa91eff08adc7",
+    "data/tau2/user_simulator/simulation_guidelines.md": "e054adb606a4aa6f586f33f3aa61542954b6f699d029c9cd4c156e28b6300067",
+    "src/tau2/domains/retail/tools.py": "b40ceefd87b428792e2fdce545b0156131273be6e3ad36e29093763f5dd370f4",
+    "src/tau2/domains/retail/data_model.py": "0abb14dc3bcddc10769a6b726924359c07eaf74614d3e7769e3ccb766e268806",
+    "src/tau2/domains/retail/environment.py": "3e62fee191a1d727275aaab1104afb0cebcb6cbb6175721497bd6158e74beb5b",
+    "src/tau2/domains/retail/utils.py": "1be2b0d4cc0621bcf5af5c2dd42e1ba8362c5123ca0a18c779ebfb40faeee76f",
+    "src/tau2/evaluator/evaluator.py": "10a87710931429d9abe80fe244cbe7fa0494333587a9c01522a233d64f94196a",
+    "src/tau2/evaluator/evaluator_env.py": "40751ab96a96acf878474cc460fadb3c16d189ffe493df8c130685ec0421ce60",
+    "src/tau2/evaluator/evaluator_nl_assertions.py": "f625ede39bac7052dbfa57a175a8d177d8574e9fe464058634fe161dcff763fc"
+  }
+}

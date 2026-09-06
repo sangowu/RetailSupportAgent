@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# 密钥：任何情况下都不进 Git
+.env
+.env.*
+!.env.example
+*.key
+
+# 上游基准按固定 commit 拉取，不入库（见 scripts/fetch_tau2.py）
+third_party/
+
+# 评测原始结果：按需归档，不默认入库
+evaluation/results/*
+!evaluation/results/.gitkeep
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retail-support-agent.local/schemas/run_manifest.json",
+  "title": "评测运行 manifest",
+  "description": "一次评测运行的完整可复现描述。缺任一必填项的运行结果不得进入对比报告。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "started_at",
+    "purpose",
+    "code",
+    "upstream",
+    "task_set",
+    "agent",
+    "user_simulator",
+    "judge",
+    "execution"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "description": "全局唯一，建议 UTC 时间戳 + 短哈希" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": ["string", "null"], "format": "date-time" },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "capability_check",
+        "screening",
+        "budget_sweep",
+        "holdout_validation",
+        "regression",
+        "baseline_freeze"
+      ],
+      "description": "运行目的。holdout_validation 使用的任务集不得用于调参。"
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "dirty"],
+      "properties": {
+        "git_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirty": {
+          "type": "boolean",
+          "description": "工作区有未提交改动时为 true，此类运行不得作为冻结依据"
+        },
+        "lockfile_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "verified"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "verified": {
+          "type": "boolean",
+          "description": "运行前 SHA256 校验是否通过；false 则结果作废"
+        }
+      }
+    },
+    "task_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "task_ids", "trials_per_task"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["dev", "holdout", "regression", "dev_subset"]
+        },
+        "subset_rule": {
+          "type": ["string", "null"],
+          "description": "使用子集时的抽样规则，必须可复现"
+        },
+        "task_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "trials_per_task": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "base_url", "requested_params", "prompt_sha256"],
+      "properties": {
+        "model_id": { "type": "string", "description": "请求中发送的精确模型 ID" },
+        "response_model_id": {
+          "type": ["string", "null"],
+          "description": "服务端实际返回的模型 ID，可能与请求不同"
+        },
+        "base_url": { "type": "string" },
+        "requested_params": {
+          "type": "object",
+          "description": "实际发出的参数原样记录，含 temperature/top_p/max_tokens/思考开关与预算",
+          "additionalProperties": true
+        },
+        "param_acceptance": {
+          "type": "object",
+          "description": "逐参数记录被接受/拒绝/忽略/映射；HTTP 200 不等于参数生效",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["accepted", "rejected", "ignored", "mapped", "unverified"]
+          }
+        },
+        "prompt_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "user_simulator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "params", "guidelines_sha256"],
+      "description": "模拟用户必须冻结，不得随被测 Agent 模型一起切换",
+      "properties": {
+        "model_id": { "type": "string" },
+        "params": { "type": "object", "additionalProperties": true },
+        "guidelines_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nl_assertion_model_id", "params"],
+      "description": "NL assertion 评判模型同样必须冻结，且不得因候选实现而放宽",
+      "properties": {
+        "nl_assertion_model_id": { "type": "string" },
+        "params": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "timeout_seconds", "concurrency", "interleaved_with"],
+      "properties": {
+        "max_steps": { "type": "integer", "minimum": 1 },
+        "timeout_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "interleaved_with": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "同批交错运行的其他 run_id，用于说明缓存与限流条件可比"
+        },
+        "seed": { "type": ["integer", "null"] },
+        "retry_policy": { "type": ["string", "null"] }
+      }
+    },
+    "pricing_snapshot": {
+      "type": "object",
+      "description": "成本换算所用单价及其来源与日期，缺失时成本结论不成立",
+      "additionalProperties": true
+    },
+    "langfuse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trace_ids": { "type": "array", "items": { "type": "string" } },
+        "session_id": { "type": ["string", "null"] }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}
