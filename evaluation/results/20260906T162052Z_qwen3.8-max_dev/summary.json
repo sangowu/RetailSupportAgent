@@ -1,0 +1,69 @@
+{
+  "run_id": "20260906T162052Z",
+  "run_at": "2026-09-06T16:29:55.009144+00:00",
+  "wall_seconds": 542.8,
+  "task_ids": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "6",
+    "7",
+    "8",
+    "10",
+    "11",
+    "16",
+    "19"
+  ],
+  "completed_task_ids": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "6",
+    "7",
+    "8",
+    "10",
+    "11",
+    "16",
+    "19"
+  ],
+  "stopped_early": false,
+  "num_trials": 1,
+  "stack": {
+    "agent_model": "qwen3.8-max",
+    "agent_extra": {
+      "extra_body": {
+        "enable_thinking": false
+      }
+    },
+    "user_simulator": "qwen3.6-plus-2026-04-02",
+    "nl_judge": "deepseek-v4-flash",
+    "nl_judge_independent_endpoint": true,
+    "nl_judge_base_url": "https://api.deepseek.com",
+    "frozen_stack_temperature": 0.0,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "warnings": [
+      "NL 断言评判模型 deepseek-v4-flash 与候选模型 deepseek-v4-pro-0813 同属 deepseek-v4 家族：同源模型可能偏爱自家风格的输出，解读该候选成绩时必须注明此风险"
+    ]
+  },
+  "judge_usage": {
+    "judge_calls": 5,
+    "prompt_tokens": 31306,
+    "completion_tokens": 950,
+    "cached_tokens": 1280,
+    "reasoning_tokens": 450
+  },
+  "results": {
+    "agent_cost_reported_by_upstream": 0.0,
+    "simulation_count": 12,
+    "scored_count": 12,
+    "avg_reward": 0.75,
+    "pass_count": 9,
+    "termination_reasons": {
+      "TerminationReason.USER_STOP": 12
+    }
+  }
+}

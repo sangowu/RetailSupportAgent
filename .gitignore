@@ -16,9 +16,15 @@ __pycache__/
 # 上游基准按固定 commit 拉取，不入库（见 scripts/fetch_tau2.py）
 third_party/
 
-# 评测原始结果：按需归档，不默认入库
-evaluation/results/*
-!evaluation/results/.gitkeep
+# 评测结果：逐轮对话轨迹体积大（每题约 100KB），不默认入库；
+# 每次运行的 summary.json 必须入库，否则报告里的数字无法追溯到具体运行。
+# 上游把 save_to 当目录用，原始轨迹落在 <名字>.json/ 里，约 100KB/题，不入库。
+# 用通配而不是写死 simulations.json：提前终止会落盘成 phase1.json/、phase2.json/，
+# 写死名字会让这些目录漏网（曾经真的漏过一次）。
+evaluation/results/**/*.json/
+# 但这两类必须入库——报告里的每个数字都要能回溯到具体运行
+!evaluation/results/**/summary.json
+!evaluation/results/**/judge_recheck_*.json
 
 # OS / IDE
 .DS_Store

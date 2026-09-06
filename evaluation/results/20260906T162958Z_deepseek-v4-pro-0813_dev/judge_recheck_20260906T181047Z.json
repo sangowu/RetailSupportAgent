@@ -1,0 +1,103 @@
+{
+  "run": "20260906T162958Z_deepseek-v4-pro-0813_dev",
+  "judge": "qwen3.7-flash-2026-07-15",
+  "judge_independent": true,
+  "warnings": [
+    "NL 断言评判模型 qwen3.7-flash-2026-07-15 与候选模型 qwen3.7-max-2026-06-08 同属 qwen3.7 家族：同源模型可能偏爱自家风格的输出，解读该候选成绩时必须注明此风险"
+  ],
+  "repeat": 1,
+  "total_assertions": 6,
+  "disagreements": 1,
+  "self_inconsistent_tasks": 0,
+  "judge_unparseable_responses": 0,
+  "judge_usage": {
+    "judge_calls": 5,
+    "prompt_tokens": 28014,
+    "completion_tokens": 1473,
+    "cached_tokens": 10880,
+    "reasoning_tokens": 0
+  },
+  "judge_cost_cny": null,
+  "deepseek_tier": "off_peak",
+  "records": [
+    {
+      "task_id": "2",
+      "assertion_count": 1,
+      "rounds": [
+        {
+          "Agent should tell the user that there are 10 t-shirt options available.": true
+        }
+      ],
+      "previous": {
+        "Agent should tell the user that there are 10 t-shirt options available.": true
+      },
+      "disagreements": [],
+      "self_consistent": true,
+      "judge_unparseable": 0
+    },
+    {
+      "task_id": "3",
+      "assertion_count": 1,
+      "rounds": [
+        {
+          "Agent should tell the user that there are 10 t-shirt options available.": true
+        }
+      ],
+      "previous": {
+        "Agent should tell the user that there are 10 t-shirt options available.": false
+      },
+      "disagreements": [
+        "Agent should tell the user that there are 10 t-shirt options available."
+      ],
+      "self_consistent": true,
+      "judge_unparseable": 0
+    },
+    {
+      "task_id": "4",
+      "assertion_count": 1,
+      "rounds": [
+        {
+          "Agent should tell the user that there are 10 t-shirt options available.": false
+        }
+      ],
+      "previous": {
+        "Agent should tell the user that there are 10 t-shirt options available.": false
+      },
+      "disagreements": [],
+      "self_consistent": true,
+      "judge_unparseable": 0
+    },
+    {
+      "task_id": "16",
+      "assertion_count": 1,
+      "rounds": [
+        {
+          "Agent should tell the user the total refund amount is $8,276.23.": true
+        }
+      ],
+      "previous": {
+        "Agent should tell the user the total refund amount is $8,276.23.": true
+      },
+      "disagreements": [],
+      "self_consistent": true,
+      "judge_unparseable": 0
+    },
+    {
+      "task_id": "19",
+      "assertion_count": 2,
+      "rounds": [
+        {
+          "Agent should tell the user that returning the water bottle gives a refund of $54.04.": true,
+          "Agent should tell the user that exchanging the pet bed and office chair saves $41.64 total.": true
+        }
+      ],
+      "previous": {
+        "Agent should tell the user that returning the water bottle gives a refund of $54.04.": true,
+        "Agent should tell the user that exchanging the pet bed and office chair saves $41.64 total.": true
+      },
+      "disagreements": [],
+      "self_consistent": true,
+      "judge_unparseable": 0
+    }
+  ]
+}

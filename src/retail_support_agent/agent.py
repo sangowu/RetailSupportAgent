@@ -261,8 +261,17 @@ def _is_affirmative(text: str) -> bool:
 
 
 def _assistant_message(message: Any, calls: list[Any]) -> dict[str, Any]:
-    """把模型响应转成可回传的消息体，保留 tool_calls 结构。"""
+    """把模型响应转成可回传的消息体，保留 tool_calls 与 reasoning_content。
+
+    `reasoning_content` 必须回传：DeepSeek 文档明确规定，**请求携带 `tools` 参数时**
+    「历史轮次的 reasoning_content 均应回传给 API，并会被拼接进上下文」。
+    我们每一轮都带 tools，所以丢掉它等于让模型每轮都忘记自己刚才的推理——
+    不报错，只是变笨。未带 tools 的请求则相反：回传也会被忽略，所以只在有它时附上。
+    """
     payload: dict[str, Any] = {"role": "assistant", "content": message.content}
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning:
+        payload["reasoning_content"] = reasoning
     if calls:
         payload["tool_calls"] = [
             {
