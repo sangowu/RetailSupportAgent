@@ -1,0 +1,916 @@
+{
+  "model_id_requested": "glm-5.2",
+  "probe_count": 21,
+  "outcomes": [
+    {
+      "name": "basic",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 64
+      },
+      "latency_s": 1.7700307999621145,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-a75d2657-8741-9eb4-b5f2-01a9fb71267f",
+        "finish_reason": "length",
+        "has_content": false,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 64,
+          "total_tokens": 87,
+          "reasoning_tokens": 64,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "callable": true,
+        "model_id_echoed_exactly": true,
+        "returns_usage": true
+      }
+    },
+    {
+      "name": "tool_call",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "帮我查订单 #W1234567 的状态。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_order_details",
+              "description": "按订单号查询订单详情",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "订单号，形如 #W0000000"
+                  }
+                },
+                "required": [
+                  "order_id"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "max_completion_tokens": 256
+      },
+      "latency_s": 2.3293665000237525,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-c9b6b891-0dd4-9459-9db4-1189ffa165a0",
+        "finish_reason": "tool_calls",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [
+          "get_order_details"
+        ],
+        "tool_call_arguments": [
+          "{\"order_id\": \"#W1234567\"}"
+        ],
+        "usage": {
+          "prompt_tokens": 185,
+          "completion_tokens": 68,
+          "total_tokens": 253,
+          "reasoning_tokens": 29,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "emitted_tool_call": true,
+        "arguments_parse_ok": true,
+        "order_id_is_string": true
+      }
+    },
+    {
+      "name": "tool_result_roundtrip",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "帮我查订单 #W1234567 的状态。"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_probe_1",
+                "type": "function",
+                "function": {
+                  "name": "get_order_details",
+                  "arguments": "{\"order_id\": \"#W1234567\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_probe_1",
+            "content": "{\"order_id\": \"#W1234567\", \"status\": \"pending\"}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_order_details",
+              "description": "按订单号查询订单详情",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "订单号，形如 #W0000000"
+                  }
+                },
+                "required": [
+                  "order_id"
+                ]
+              }
+            }
+          }
+        ],
+        "max_completion_tokens": 128
+      },
+      "latency_s": 2.1720360000035726,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-cd8655ec-5060-9d7d-868a-fedc84db0018",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 225,
+          "completion_tokens": 80,
+          "total_tokens": 305,
+          "reasoning_tokens": 29,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepts_tool_message": true,
+        "answered_after_tool_result": true
+      }
+    },
+    {
+      "name": "stream_usage",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "帮我查订单 #W1234567 的状态。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_order_details",
+              "description": "按订单号查询订单详情",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "order_id": {
+                    "type": "string",
+                    "description": "订单号，形如 #W0000000"
+                  }
+                },
+                "required": [
+                  "order_id"
+                ]
+              }
+            }
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "max_completion_tokens": 128
+      },
+      "latency_s": 1.8518148000002839,
+      "response": {
+        "chunk_count": 33,
+        "usage_chunk_count": 1,
+        "total_tokens": 248
+      },
+      "error": null,
+      "findings": {
+        "streaming_works": true,
+        "usage_in_stream": true,
+        "tool_call_streamed_incrementally": true
+      }
+    },
+    {
+      "name": "sampling_params",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "temperature": 0.2,
+        "seed": 42,
+        "max_completion_tokens": 64
+      },
+      "latency_s": 3.096239099977538,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-2b8e348d-0a17-9728-8d59-35cb7d463176",
+        "finish_reason": "length",
+        "has_content": false,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 64,
+          "total_tokens": 87,
+          "reasoning_tokens": 64,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true
+      }
+    },
+    {
+      "name": "truncation",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "详细介绍退货政策，越长越好。"
+          }
+        ],
+        "max_completion_tokens": 16
+      },
+      "latency_s": 1.6678934000083245,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-7d7009ca-cb70-9d08-8c34-38ea9844db68",
+        "finish_reason": "length",
+        "has_content": false,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 19,
+          "completion_tokens": 16,
+          "total_tokens": 35,
+          "reasoning_tokens": 16,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "finish_reason": "length",
+        "signals_length_limit": true
+      }
+    },
+    {
+      "name": "thinking_off",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 128,
+        "extra_body": {
+          "enable_thinking": false
+        }
+      },
+      "latency_s": 1.1756525000091642,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-410703b3-26ae-9f8a-9862-d9ef74b8f9e2",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": false,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 17,
+          "completion_tokens": 7,
+          "total_tokens": 24,
+          "reasoning_tokens": null,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": null,
+        "thinking_actually_off": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_minimal",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "minimal"
+        }
+      },
+      "latency_s": 1.0559722000034526,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-471e62fd-c4e7-9429-b9b4-084e755f959d",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": false,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 17,
+          "completion_tokens": 13,
+          "total_tokens": 30,
+          "reasoning_tokens": null,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_low",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "low"
+        }
+      },
+      "latency_s": 5.410715299949516,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-7f69fab9-34af-9f21-b01a-72f2e8fdff57",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 313,
+          "total_tokens": 336,
+          "reasoning_tokens": 298,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_medium",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        }
+      },
+      "latency_s": 5.595998700009659,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-281e2e0e-6cac-9a85-b273-fa709067f0c8",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 300,
+          "total_tokens": 323,
+          "reasoning_tokens": 282,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_high",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "high"
+        }
+      },
+      "latency_s": 4.518526799976826,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-ffa4fded-d1d9-90f9-8077-2bda37581325",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 165,
+          "total_tokens": 188,
+          "reasoning_tokens": 152,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_xhigh",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "latency_s": 5.168311599991284,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-9052d378-ee94-98ef-9db2-431997546175",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 271,
+          "total_tokens": 294,
+          "reasoning_tokens": 254,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "effort_budget_mapping_max",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "max"
+        }
+      },
+      "latency_s": 5.236511699971743,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-fa615f44-71c1-9837-9e20-b319af110f36",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 212,
+          "total_tokens": 235,
+          "reasoning_tokens": 194,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "mapped_thinking_budget": null,
+        "level_unsupported": false,
+        "fits_in_512": true
+      }
+    },
+    {
+      "name": "reasoning_effort_minimal",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "minimal"
+        }
+      },
+      "latency_s": 1.8676092000096105,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-36ef62bb-8ebb-9af9-8b5c-1384948cf9fc",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": false,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 17,
+          "completion_tokens": 3,
+          "total_tokens": 20,
+          "reasoning_tokens": null,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": null,
+        "completion_tokens": 3
+      }
+    },
+    {
+      "name": "reasoning_effort_low",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "low"
+        }
+      },
+      "latency_s": 3.311036300030537,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-5fe2ae3d-dde4-99cf-83e0-9afb029fc3fe",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 155,
+          "total_tokens": 178,
+          "reasoning_tokens": 137,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 137,
+        "completion_tokens": 155
+      }
+    },
+    {
+      "name": "reasoning_effort_medium",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        }
+      },
+      "latency_s": 6.736937900015619,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-43e0343d-aeb3-9e21-a711-9e87ed98b26c",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 293,
+          "total_tokens": 316,
+          "reasoning_tokens": 276,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 276,
+        "completion_tokens": 293
+      }
+    },
+    {
+      "name": "reasoning_effort_high",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "high"
+        }
+      },
+      "latency_s": 4.46104889997514,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-e0a34326-f892-9e6b-9282-f073952611e0",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 213,
+          "total_tokens": 236,
+          "reasoning_tokens": 198,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 198,
+        "completion_tokens": 213
+      }
+    },
+    {
+      "name": "reasoning_effort_xhigh",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "latency_s": 6.741941099986434,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-152c1eb2-a79b-9d95-be44-7c6d262d9184",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 351,
+          "total_tokens": 374,
+          "reasoning_tokens": 334,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 334,
+        "completion_tokens": 351
+      }
+    },
+    {
+      "name": "reasoning_effort_max",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "max"
+        }
+      },
+      "latency_s": 7.934603200003039,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-3981655a-2561-9abc-80fb-11c12117c603",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 294,
+          "total_tokens": 317,
+          "reasoning_tokens": 280,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 280,
+        "completion_tokens": 294
+      }
+    },
+    {
+      "name": "thinking_budget_64",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 512,
+        "extra_body": {
+          "enable_thinking": true,
+          "thinking_budget": 64
+        }
+      },
+      "latency_s": 2.8896067999885418,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-ba0aa732-7b7d-970b-9781-f2ab6ba8bf1d",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 76,
+          "total_tokens": 99,
+          "reasoning_tokens": 64,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "accepted": true,
+        "reasoning_tokens": 64,
+        "within_budget": true
+      }
+    },
+    {
+      "name": "thinking_mutual_exclusion",
+      "status": "ok",
+      "request": {
+        "model": "glm-5.2",
+        "messages": [
+          {
+            "role": "user",
+            "content": "用一句话回答：订单状态查询需要哪一个参数？"
+          }
+        ],
+        "max_completion_tokens": 256,
+        "extra_body": {
+          "enable_thinking": true,
+          "reasoning_effort": "low",
+          "thinking_budget": 64
+        }
+      },
+      "latency_s": 3.3332927000010386,
+      "response": {
+        "response_model_id": "glm-5.2",
+        "response_id": "chatcmpl-ab7e90e8-e4be-93e6-a70d-b3ce75c16c5c",
+        "finish_reason": "stop",
+        "has_content": true,
+        "has_reasoning_content": true,
+        "tool_call_names": [],
+        "tool_call_arguments": [],
+        "usage": {
+          "prompt_tokens": 23,
+          "completion_tokens": 77,
+          "total_tokens": 100,
+          "reasoning_tokens": 64,
+          "cached_tokens": 0
+        }
+      },
+      "error": null,
+      "findings": {
+        "server_rejects_both": false,
+        "silently_accepted": true,
+        "reasoning_tokens": 64,
+        "winner": "thinking_budget"
+      }
+    }
+  ]
+}

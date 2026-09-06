@@ -1,0 +1,28 @@
+{
+  "run_at": "2026-09-06T12:30:53.994179+00:00",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "api_key": "present(len=35)",
+  "models": [
+    "qwen3.7-max-2026-06-08"
+  ],
+  "note": "HTTP 200 不等于参数生效；结论须以 reasoning_tokens 差异或服务端报错为证据。",
+  "per_model_status": {
+    "qwen3.7-max-2026-06-08": {
+      "basic": "ok",
+      "tool_call": "ok",
+      "tool_result_roundtrip": "ok",
+      "stream_usage": "ok",
+      "sampling_params": "ok",
+      "truncation": "ok",
+      "thinking_off": "ok",
+      "reasoning_effort_minimal": "ok",
+      "reasoning_effort_low": "rejected",
+      "reasoning_effort_medium": "rejected",
+      "reasoning_effort_high": "ok",
+      "reasoning_effort_xhigh": "ok",
+      "reasoning_effort_max": "rejected",
+      "thinking_budget_64": "ok",
+      "thinking_mutual_exclusion": "ok"
+    }
+  }
+}

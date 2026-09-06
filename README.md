@@ -2,19 +2,20 @@
 
 零售客服 Agent 面试展示项目：处理订单查询、取消订单、退货申请，以可复现评测证明业务正确性、可靠性和成本表现。
 
-**当前状态：M0.1 已完成（协议与环境固定、静态检查、CI 骨架）。
-尚未调用任何模型、尚未实现业务闭环、尚未创建 AWS 资源。**
+**当前状态：M0.1、M0.2 已完成（协议与环境固定、CI 骨架、五个候选模型能力实测）。
+尚未实现业务闭环、尚未选定模型、尚未创建 AWS 资源。**
 
 ## 阅读顺序
 
 1. [项目目标与已确定选择](PROJECT_CONTEXT.md)
-2. [M0.1 协议与环境固定报告](docs/M0.1_PROTOCOL_FREEZE.md)（当前进度）
-3. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
-4. [模型能力核验与选型实验](docs/MODEL_EXPERIMENTS.md)
-5. [基线、指标与 CI/CD 门禁](docs/EVALUATION_AND_GATES.md)
-6. [架构、数据与权限](docs/ARCHITECTURE_AND_ACCESS.md)
-7. [本地和 AWS 一键启停设计](docs/OPERATIONS.md)
-8. [每步开发报告模板](docs/CHANGE_REPORT_TEMPLATE.md)
+2. [M0.1 协议与环境固定报告](docs/M0.1_PROTOCOL_FREEZE.md)
+3. [M0.2 模型能力核验报告](docs/M0.2_MODEL_CAPABILITY.md)（当前进度）
+4. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
+5. [模型能力核验与选型实验](docs/MODEL_EXPERIMENTS.md)
+6. [基线、指标与 CI/CD 门禁](docs/EVALUATION_AND_GATES.md)
+7. [架构、数据与权限](docs/ARCHITECTURE_AND_ACCESS.md)
+8. [本地和 AWS 一键启停设计](docs/OPERATIONS.md)
+9. [每步开发报告模板](docs/CHANGE_REPORT_TEMPLATE.md)
 
 开发人员或编码 Agent 先阅读 [AGENTS.md](AGENTS.md)。
 
@@ -22,15 +23,23 @@
 
 先完成 M0 的评测协议、最小业务流程、模型与思考参数实验，再冻结 MVP 基线。后续按单一改动主题推进，每一步报告相对 MVP 和上一通过版本的变化。完整路线图不是一次性实现全部功能的指令。
 
-M0.1 已实现并本地验证，详见 [M0.1 报告](docs/M0.1_PROTOCOL_FREEZE.md)。
-下一步是 M0.2（核验 5 个候选模型的可用性与思考参数），需要真实 API 调用与计费授权。
+M0.1、M0.2 已实现并验证。下一步是 M0.3（最小业务闭环：LangGraph + FastAPI + Gradio）。
+模型与思考配置的最终选择在 M0.4 由实验决定，现在不预设胜者。
 
 ## 本地开发（M0.1 可用）
 
 ```bash
-uv sync --only-group dev                     # 安装静态检查与测试依赖
+uv sync --group agent                        # 项目依赖 + 静态检查/测试 + 模型调用
 uv run python scripts/fetch_tau2.py          # 按固定 commit 拉取 τ²-bench 并校验 SHA256
 uv run ruff check . && uv run mypy && uv run pytest
+```
+
+会产生真实费用的模型探针（需 `DASHSCOPE_API_KEY`，本次实测约 0.31 元）：
+
+```bash
+uv run python scripts/probe_models.py --dry-run   # 先看将发多少请求
+uv run python scripts/probe_models.py
+uv run python scripts/summarize_capability.py
 ```
 
 密钥从 `.env` 读取（见 `.env.example`），`.env` 已被 gitignore，禁止提交。
