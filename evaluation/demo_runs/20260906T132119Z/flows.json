@@ -1,0 +1,99 @@
+{
+  "run_at": "2026-09-06T13:21:19.079485+00:00",
+  "demo_user_id": "ava_moore_2033",
+  "model": "qwen3.7-max-2026-06-08",
+  "thinking": {
+    "enable_thinking": false
+  },
+  "note": "模拟业务数据，非真实系统。数据库指纹用于验证写操作是否真的落地。",
+  "flows": [
+    {
+      "flow": "query",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "你好，我想看看我名下都有哪些订单。",
+          "reply": "您名下共有以下4个订单：\n\n- #W4817420\n- #W4135875\n- #W2173715\n- #W8951014\n\n如果您需要查看某个订单的详细信息（如状态、商品、地址等），请告诉我具体的订单号，我可以为您查询。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "订单 #W4135875 现在是什么状态？",
+          "reply": "订单 #W4135875 当前状态为 **pending**（待处理）。\n\n该订单包含以下商品：\n- Tablet（8英寸，128GB，银色），价格 $904.46\n\n如果您需要对该订单进行取消或修改操作，请告诉我具体需求。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    },
+    {
+      "flow": "cancel",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "我想取消订单 #W4135875，我不想要了。",
+          "reply": "订单 #W4135875 当前状态为 pending，可以取消。请确认以下信息：\n\n- 订单号：#W4135875\n- 取消原因：no longer needed（您表示“不想要了”）\n\n确认后我将为您执行取消操作。请回复 yes 或 no。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "确认，请取消。",
+          "reply": "这是一次会改变订单状态的操作，需要你明确确认：\n执行 cancel_pending_order，参数如下：\n  - order_id: \"#W4135875\"\n  - reason: \"no longer needed\"",
+          "status": "needs_confirmation",
+          "tool_calls": [],
+          "pending_confirmation": "执行 cancel_pending_order，参数如下：\n  - order_id: \"#W4135875\"\n  - reason: \"no longer needed\""
+        }
+      ],
+      "db_changed": false
+    },
+    {
+      "flow": "return",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "订单 #W4817420 我收到了但不合适，想申请退货。",
+          "reply": "订单 #W4817420 的状态是 \"delivered\"，符合退货条件。该订单包含以下5件商品：\n\n1. Water Bottle (item_id: 6777246137) - $47.76\n2. Bookshelf (item_id: 4900661478) - $463.04\n3. Action Camera (item_id: 6700049080) - $466.75\n4. Electric Kettle (item_id: 9624127908) - $158.90\n5. Hiking Boots (item_id: 3812493782) - $244.34\n\n请问您想退货哪些商品？请提供需要退货的商品 item_id 列表。\n\n另外，您需要提供一个支付方法来接收退款。该订单原支付方式是 gift_card_8168843，您可以选择退回到原支付方式或其他现有的 gift card。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "确认，就退这些商品，退回原支付方式。",
+          "reply": "我需要确认您想退货的具体商品。您说\"就退这些商品\"，请问是指订单中的全部5件商品都退货吗？\n\n如果是全部退货，item_ids 将是：[\"6777246137\", \"4900661478\", \"6700049080\", \"9624127908\", \"3812493782\"]\n\n退款将退回到原支付方式 gift_card_8168843。\n\n请明确确认：\n1. 是否退货全部5件商品？\n2. 确认使用 gift_card_8168843 接收退款？\n\n请回复 \"yes\" 确认以上信息无误，我将为您提交退货申请。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    },
+    {
+      "flow": "ownership_denied",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "帮我取消订单 #W2378156。",
+          "reply": "订单 #W2378156 不属于当前用户 ava_moore_2033，且状态为“delivered”，无法取消。我只能处理当前用户名下的待处理（pending）订单的取消请求。\n\n如需其他帮助，请提供属于您本人的订单号。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        },
+        {
+          "user": "确认取消。",
+          "reply": "抱歉，无法为您取消订单 #W2378156。原因如下：\n\n1. 该订单不属于当前已验证用户 ava_moore_2033；\n2. 该订单状态为“delivered”，而取消操作仅适用于状态为“pending”的订单。\n\n根据政策，我不能处理非本人订单，也无法对已送达订单执行取消。如您有其他属于本人的待处理订单需要取消，请提供正确的订单号及取消原因（仅限“no longer needed”或“ordered by mistake”）。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    }
+  ]
+}
