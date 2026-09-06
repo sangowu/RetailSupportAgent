@@ -1,5 +1,5 @@
 {
-  "$comment": "τ²-bench 上游固定记录。数值由 scripts/verify_tau2.py 对照实际检出校验，不得手工编辑。",
+  "$comment": "τ²-bench 上游固定记录，由 scripts/regen_manifest.py 生成，不要手工编辑。摘要针对上游提交时的原始字节（LF），跨平台一致。",
   "generated_at": "2026-09-06",
   "upstream": {
     "name": "Sierra tau2-bench",
@@ -112,18 +112,18 @@
     "note": "communicate 与 action 分量不在 retail 的 reward_basis 中，仅作诊断用途。"
   },
   "files_sha256": {
-    "LICENSE": "74741b87a33d4704c6f33e5c71742542446c984233f7a7e4905bf36f4da5a33b",
-    "data/tau2/domains/retail/db.json": "dbde692e380bb4ad17f9f7841172cf1e69bebad2daa405628ccdc52a42b3b9b0",
-    "data/tau2/domains/retail/policy.md": "4313d3fef8acf919f555fa17fbce929cc3ed1cef2dd8f0d35ff5c8c3364de176",
-    "data/tau2/domains/retail/tasks.json": "f44563d8f36362e2dc58282bb02cfb85010d22f27d9439808758d3e9b2bc16d2",
-    "data/tau2/domains/retail/split_tasks.json": "5f9949b833e6b99584b87e84ef22f9d81789ea67a52e534c6f7aa91eff08adc7",
-    "data/tau2/user_simulator/simulation_guidelines.md": "e054adb606a4aa6f586f33f3aa61542954b6f699d029c9cd4c156e28b6300067",
-    "src/tau2/domains/retail/tools.py": "b40ceefd87b428792e2fdce545b0156131273be6e3ad36e29093763f5dd370f4",
-    "src/tau2/domains/retail/data_model.py": "0abb14dc3bcddc10769a6b726924359c07eaf74614d3e7769e3ccb766e268806",
-    "src/tau2/domains/retail/environment.py": "3e62fee191a1d727275aaab1104afb0cebcb6cbb6175721497bd6158e74beb5b",
-    "src/tau2/domains/retail/utils.py": "1be2b0d4cc0621bcf5af5c2dd42e1ba8362c5123ca0a18c779ebfb40faeee76f",
-    "src/tau2/evaluator/evaluator.py": "10a87710931429d9abe80fe244cbe7fa0494333587a9c01522a233d64f94196a",
-    "src/tau2/evaluator/evaluator_env.py": "40751ab96a96acf878474cc460fadb3c16d189ffe493df8c130685ec0421ce60",
-    "src/tau2/evaluator/evaluator_nl_assertions.py": "f625ede39bac7052dbfa57a175a8d177d8574e9fe464058634fe161dcff763fc"
+    "LICENSE": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
+    "data/tau2/domains/retail/db.json": "413a65160adbdb5fde0ffc0015c49b6d70250b10c18128de169b597af7766765",
+    "data/tau2/domains/retail/policy.md": "2c9652afbce57d6e087768d37cda64d31c53d50b3e3225cfdb791bac66466467",
+    "data/tau2/domains/retail/tasks.json": "8e03ebce7901bd6218e7a7dc3105faa9324091a68058f7fe61c65262868812e8",
+    "data/tau2/domains/retail/split_tasks.json": "ed0580ec52575b63fbf76568af42490da6ee7783ecb4aa81af46961291358f20",
+    "data/tau2/user_simulator/simulation_guidelines.md": "740a29dfa64d7bc08eea3bf7493575b914a63f744acbaf7f199ee07eddaf72d3",
+    "src/tau2/domains/retail/tools.py": "34f4fe9702d36f0dd4697700fbcd63d0cf5386e6eb8e7499aaa336243bad8750",
+    "src/tau2/domains/retail/data_model.py": "f5ad09590953855cc49d2ab2ad5c0594be408cae74d1500fb278e5a6bf2c50d6",
+    "src/tau2/domains/retail/environment.py": "5b819fb895a4ef49df71404c3d9678ab09e8578eec841b8ec9229c8f51e32405",
+    "src/tau2/domains/retail/utils.py": "a385b085b63d0e5921c15f7e2201b00df1d984990f4dbb7b24a867e3bf7cb648",
+    "src/tau2/evaluator/evaluator.py": "204d95a82812402f2fee989250392d3c66de702a8bcc20258c7e2a8153a1ea8d",
+    "src/tau2/evaluator/evaluator_env.py": "b53ebfe6b0b06d7a2071b5f9dd03ee6ca8ac6000b0ef44f3bd345b346c30d8ac",
+    "src/tau2/evaluator/evaluator_nl_assertions.py": "cb6b3758cdceb02a726732b4ee1af618affcc08f8ab84b44f060146b8f3ad90a"
   }
 }

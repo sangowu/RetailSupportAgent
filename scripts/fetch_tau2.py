@@ -35,6 +35,11 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+# 关闭换行转换：Windows 默认的 autocrlf 会把上游文件改成 CRLF，
+# 使同一 commit 在不同平台算出不同 SHA256，摘要固定随之失效。
+LF_CONFIG = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"]
+
+
 def fetch(checkout: Path) -> None:
     """把固定 commit 取到本地。已存在则直接检出该 commit，不做隐式更新。"""
     manifest = load_manifest()
@@ -43,9 +48,15 @@ def fetch(checkout: Path) -> None:
 
     if not (checkout / ".git").is_dir():
         checkout.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "clone", "--filter=blob:none", repo, str(checkout)])
+        run(["git", *LF_CONFIG, "clone", "--filter=blob:none", repo, str(checkout)])
+    # 已存在的检出可能是早先带换行转换克隆的，这里把设置固化到仓库本身
+    run(["git", "config", "core.autocrlf", "false"], cwd=checkout)
+    run(["git", "config", "core.eol", "lf"], cwd=checkout)
     run(["git", "fetch", "--quiet", "origin", commit], cwd=checkout)
     run(["git", "checkout", "--quiet", "--detach", commit], cwd=checkout)
+    # 索引可能缓存着转换后的内容，强制按新设置重新落盘
+    run(["git", "rm", "--cached", "-r", "-q", "."], cwd=checkout)
+    run(["git", "reset", "--hard", "--quiet"], cwd=checkout)
     print(f"已检出 {repo} @ {commit}")
 
 
