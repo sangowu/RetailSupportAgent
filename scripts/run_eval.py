@@ -142,7 +142,12 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="τ²-bench Retail 评测（会产生真实费用）")
     parser.add_argument("--model", default=SELECTED_MODEL, help="被测 Agent 模型")
-    parser.add_argument("--split", default="dev", choices=["dev", "holdout", "regression"])
+    parser.add_argument(
+        "--split",
+        default="dev",
+        choices=["dev", "holdout", "regression", "full"],
+        help="full=全部 114 题（标准 τ²-bench Retail 口径）；dev/holdout 是它的子集",
+    )
     parser.add_argument("--limit", type=int, default=None, help="朴素截断前 N 题")
     parser.add_argument("--sample", type=int, default=None, help="按判官覆盖比例分层抽 N 题")
     parser.add_argument("--pilot", action="store_true", help="只跑 2 题冒烟（必含 NL 断言）")
@@ -345,7 +350,7 @@ def main() -> int:
         "results": summarize(all_simulations, expected=len(completed_ids) * args.trials),
     }
     (run_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     print(json.dumps(summary["results"], ensure_ascii=False, indent=2))
     results = summary["results"]

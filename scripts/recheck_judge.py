@@ -252,6 +252,7 @@ def main() -> int:
         )
         + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     print(f"明细：{out}")
     return 0

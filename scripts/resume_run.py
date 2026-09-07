@@ -176,6 +176,7 @@ def main() -> int:
         )
         + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     print(f"\n补回 {len(recovered)}/{len(missing)} 题。")
     if still:

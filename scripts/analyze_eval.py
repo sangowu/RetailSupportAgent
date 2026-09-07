@@ -1,7 +1,8 @@
 """从评测原始结果统计用量与成本，并按此推算更大规模运行的花费。
 
-上游用 litellm 记账，而 litellm 不知道 DashScope 与 DeepSeek 的价格，
-`agent_cost` 一律是 0。所以成本必须由我们自己按 token 用量乘价格快照算。
+上游用 litellm 记账。M0.5 起我们把价格快照按实际发出的模型名注册进了 litellm
+（见 pricing.register_with_litellm），所以 `agent_cost` 不再恒为 0；但成本仍由本脚本
+独立按 token 用量乘价格快照算，两条路径互相交叉核对——注册前跑的旧轮次那边仍是 0。
 
 三笔此前漏掉、且实测证明会改变结论的账：
 
@@ -204,6 +205,73 @@ def print_judge_cost(summary: dict[str, Any], judge_model: str) -> float | None:
     return cost
 
 
+# 本项目声明的三类业务（查询 / 取消 / 退货）只覆盖 114 题中的 42 题。
+# 这两个标签合起来就是那 42 题：read_only（只读，查询类）与 in_scope_write
+# （写操作仅涉及取消/退货）。其余 72 题涉及改单、换货、改地址、改支付等
+# 本项目**没有声明**支持的操作。
+IN_SCOPE_LABELS = ("read_only", "in_scope_write")
+
+
+def print_scope_breakdown(simulations: list[dict[str, Any]]) -> None:
+    """按业务范围分层报告成绩。
+
+    **两个口径都是真数字，谁也不冒充谁**：全集分是标准 τ²-bench Retail 分数，
+    42 题子集分是"本项目声明支持的业务"上的表现。只报前者会掩盖后者，
+    只报后者则不能再声称跑的是标准 τ²-bench——M0.1 定的规矩是两个都给。
+
+    这一节只在跑了全集时才有足够样本：holdout 40 题里只有 9 题落在子集内，
+    9 道题撑不住任何结论，所以样本太少时直接说明而不是硬报一个数。
+    """
+    labels_path = REPO / "evaluation" / "task_sets" / "scope_labels.json"
+    if not labels_path.is_file():
+        return
+    labels: dict[str, str] = json.loads(labels_path.read_text(encoding="utf-8"))["labels"]
+
+    scored = [
+        (str(sim.get("task_id")), float(reward))
+        for sim in simulations
+        if (reward := (sim.get("reward_info") or {}).get("reward")) is not None
+    ]
+    if not scored:
+        return
+
+    buckets: dict[str, list[float]] = collections.defaultdict(list)
+    for task_id, reward in scored:
+        buckets[labels.get(task_id, "unlabeled")].append(reward)
+
+    print("\n按业务范围分层（标签取自 evaluation/task_sets/scope_labels.json）")
+    order = ["read_only", "in_scope_write", "out_of_scope_write", "no_action", "unlabeled"]
+    names = {
+        "read_only": "只读（查询类）",
+        "in_scope_write": "范围内写（取消/退货）",
+        "out_of_scope_write": "范围外写（改单/换货/改址/改支付）",
+        "no_action": "上游未给评分动作",
+        "unlabeled": "无标签",
+    }
+    for key in order:
+        got = buckets.get(key)
+        if not got:
+            continue
+        passed = sum(1 for r in got if r >= 1.0)
+        print(f"  {names[key]:<32}{passed:3d}/{len(got):<4d} = {passed / len(got):.4f}")
+
+    in_scope = [r for key in IN_SCOPE_LABELS for r in buckets.get(key, [])]
+    if not in_scope:
+        return
+    passed = sum(1 for r in in_scope if r >= 1.0)
+    if len(in_scope) < 20:
+        print(
+            f"\n  本项目声明的三类业务子集只有 {len(in_scope)} 题落在本轮里，"
+            "样本太少，不单独报分（跑全集才有完整的 42 题）。"
+        )
+        return
+    print(
+        f"\n  本项目声明的三类业务（{len(in_scope)} 题子集）："
+        f"{passed}/{len(in_scope)} = {passed / len(in_scope):.4f}"
+    )
+    print("  这与上面的总分是两个口径：总分才是标准 τ²-bench Retail 分数，两者不互相冒充。")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="统计评测用量与成本")
     parser.add_argument("--run", default=None)
@@ -273,6 +341,8 @@ def main() -> int:
         )
     if durations:
         print(f"平均时长：{sum(durations) / len(durations):.0f} 秒/题")
+
+    print_scope_breakdown(simulations)
 
     print_usage_table(roles)
 

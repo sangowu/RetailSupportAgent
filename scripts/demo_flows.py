@@ -152,7 +152,7 @@ def main() -> int:
         "flows": [asdict(record) | {"db_changed": record.db_changed} for record in records],
     }
     (run_dir / "flows.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     print(f"\n存档：{run_dir / 'flows.json'}")
     return 0
