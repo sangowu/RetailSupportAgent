@@ -2,28 +2,32 @@
 
 零售客服 Agent 面试展示项目：处理订单查询、取消订单、退货申请，以可复现评测证明业务正确性、可靠性和成本表现。
 
-**当前状态：M0.1–M0.5 已完成。选定 `deepseek-v4-pro`，在 40 题独立
-全集 114 题上取得 **0.8509**（97/114，标准 τ²-bench Retail 口径），
-本项目声明的三类业务 42 题子集上 0.9286（39/42），每题 0.0855 元。
-成本记账与 Langfuse 观测已接入
-（成本口径以 `analyze_eval.py` 为准，原因见 M0.5 文档）。尚未冻结 `baseline-v1`、
-已冻结 `baseline-v2`。尚未创建 AWS 资源。**
+**当前状态：M0 已冻结（M0.1–M0.5 全部完成），M0 报告已交付。**
+
+选定 `deepseek-v4-pro`（思考 effort=high）。在 **τ²-bench Retail 全集 114 题**上
+取得 **0.8509**（97/114，标准口径）；本项目声明的三类业务所覆盖的 42 题子集上
+**0.9286**（39/42）。每题 0.0855 元。基线 `baseline-v2` 已冻结并带校验和，
+`baseline-v1`（holdout 40 题，0.8750）留档。
+
+**尚未做**：持久化、认证、跨进程恢复、人工接管、AWS 与在线演示地址。
+详见 [M0 交付报告 §9](docs/M0_REPORT.md)。
 
 选型是**成本决策**，不是质量比较：其余候选没有在同一评测栈下测量过
-（成本差 4.8 倍，不在一个量级，已决定不补测）。此前 A 轮的跨模型数字因判官
+（同一批 holdout 上成本差 4.8 倍，不在一个量级，已决定不补测）。此前 A 轮的跨模型数字因判官
 不一致而作废，详见 [§9.9.1](docs/M0.4_EXPERIMENT_PLAN.md)。
 
 ## 阅读顺序
 
-1. [项目目标与已确定选择](PROJECT_CONTEXT.md)
-2. [M0.1 协议与环境固定报告](docs/M0.1_PROTOCOL_FREEZE.md)
-3. [M0.2 模型能力核验报告](docs/M0.2_MODEL_CAPABILITY.md)
-4. [M0.3 最小业务闭环报告](docs/M0.3_BUSINESS_LOOP.md)
-5. [M0.4 选型实验方案与成本估算](docs/M0.4_EXPERIMENT_PLAN.md)
-6. [M0.5（一）成本记账与可观测接入](docs/M0.5_OBSERVABILITY.md)
-7. [M0.5（二）本地一键启停与演示流程](docs/M0.5_LOCAL_DEMO.md)
-8. [M0.5（三）冻结基线](docs/M0.5_BASELINE.md)（当前进度）
-9. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
+1. **[M0 交付报告](docs/M0_REPORT.md)** —— 先看这份，一页读完结论与局限
+2. [项目目标与已确定选择](PROJECT_CONTEXT.md)
+3. [M0.1 协议与环境固定报告](docs/M0.1_PROTOCOL_FREEZE.md)
+4. [M0.2 模型能力核验报告](docs/M0.2_MODEL_CAPABILITY.md)
+5. [M0.3 最小业务闭环报告](docs/M0.3_BUSINESS_LOOP.md)
+6. [M0.4 选型实验方案与成本估算](docs/M0.4_EXPERIMENT_PLAN.md)
+7. [M0.5（一）成本记账与可观测接入](docs/M0.5_OBSERVABILITY.md)
+8. [M0.5（二）本地一键启停与演示流程](docs/M0.5_LOCAL_DEMO.md)
+9. [M0.5（三）冻结基线](docs/M0.5_BASELINE.md)
+10. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
 7. [模型能力核验与选型实验](docs/MODEL_EXPERIMENTS.md)
 8. [基线、指标与 CI/CD 门禁](docs/EVALUATION_AND_GATES.md)
 9. [架构、数据与权限](docs/ARCHITECTURE_AND_ACCESS.md)
