@@ -64,13 +64,13 @@ class TestAverageReward:
 class TestSummarizeTakesMergedSimulations:
     def test_counts_across_phases(self) -> None:
         merged = [sim(1.0), sim(0.0), sim(1.0)]
-        summary = run_eval.summarize(merged)
+        summary = run_eval.summarize(merged, expected=len(merged))
         assert summary["simulation_count"] == 3
         assert summary["scored_count"] == 3
         assert summary["pass_count"] == 2
         assert summary["avg_reward"] == pytest.approx(2 / 3)
 
     def test_empty_run_does_not_crash(self) -> None:
-        summary = run_eval.summarize([])
+        summary = run_eval.summarize([], expected=0)
         assert summary["simulation_count"] == 0
         assert summary["avg_reward"] is None

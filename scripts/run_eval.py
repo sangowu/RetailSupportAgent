@@ -89,25 +89,41 @@ def average_reward(simulations: list[Any]) -> float | None:
     return sum(rewards) / len(rewards) if rewards else None
 
 
-def summarize(simulations: list[Any]) -> dict[str, Any]:
-    """从上游结果里抽出报告需要的数字。不自己重算奖励。"""
+def summarize(simulations: list[Any], expected: int) -> dict[str, Any]:
+    """从上游结果里抽出报告需要的数字。不自己重算奖励。
+
+    `expected` 是本应跑完的会话数（题数 × 轮数）。传它进来是为了**对账**：
+    上游把服务端故障的题从分母里剔掉，40 题丢 5 题会算出 0.886 而不是 0.875——
+    丢题不报错，还让成绩更好看。所以缺口必须被显式记下来，
+    而不是等着谁去翻日志才发现。
+    """
     rewards: list[float] = []
     terminations: dict[str, int] = {}
+    unscored: list[str] = []
     agent_cost = 0.0
 
     for sim in simulations:
         info = getattr(sim, "reward_info", None)
         if info is not None and getattr(info, "reward", None) is not None:
             rewards.append(float(info.reward))
+        else:
+            unscored.append(str(getattr(sim, "task_id", "?")))
         reason = str(getattr(sim, "termination_reason", "unknown"))
         terminations[reason] = terminations.get(reason, 0) + 1
         cost = getattr(sim, "agent_cost", None)
         if isinstance(cost, int | float):
             agent_cost += float(cost)
+
+    incomplete = len(rewards) < expected
     return {
         "agent_cost_reported_by_upstream": agent_cost,
         "simulation_count": len(simulations),
+        "expected_count": expected,
         "scored_count": len(rewards),
+        # 缺口不为零时，avg_reward 只是"跑通那部分的平均分"，不是本轮成绩。
+        # analyze_eval 读到 incomplete=True 会拒绝直接报它。
+        "incomplete": incomplete,
+        "unscored_task_ids": sorted(set(unscored), key=lambda t: (len(t), t)),
         "avg_reward": (sum(rewards) / len(rewards)) if rewards else None,
         "pass_count": sum(1 for r in rewards if r >= 1.0),
         "termination_reasons": terminations,
@@ -292,12 +308,27 @@ def main() -> int:
         "num_trials": args.trials,
         "stack": stack.describe(),
         "judge_usage": judge_usage.describe(),
-        "results": summarize(all_simulations),
+        "results": summarize(all_simulations, expected=len(completed_ids) * args.trials),
     }
     (run_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps(summary["results"], ensure_ascii=False, indent=2))
+    results = summary["results"]
+    if results["incomplete"]:
+        missing = results["expected_count"] - results["scored_count"]
+        print(
+            f"\n[严重] 本轮缺 {missing} 个会话未评分，"
+            f"上面的 avg_reward={results['avg_reward']} 是**剩下那部分**的平均分，不是本轮成绩。",
+            file=sys.stderr,
+        )
+        print(f"       未评分题：{results['unscored_task_ids']}", file=sys.stderr)
+        print(f"       终止原因：{results['termination_reasons']}", file=sys.stderr)
+        print(
+            "       补跑：uv run python scripts/resume_run.py "
+            f"{run_dir.name}（评测栈会逐项核对，不一致则拒绝）",
+            file=sys.stderr,
+        )
     print(f"判官用量：{judge_usage.describe()}")
     print(f"\n原始结果：{run_dir}")
     return 0

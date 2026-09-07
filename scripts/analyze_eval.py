@@ -208,6 +208,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="统计评测用量与成本")
     parser.add_argument("--run", default=None)
     parser.add_argument("--project", type=int, default=None, help="按每题均值推算 N 题的花费")
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="本轮有题未评分时，仍然打印平均分（默认拒绝：那不是本轮成绩）",
+    )
     args = parser.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
@@ -239,10 +244,32 @@ def main() -> int:
 
     print(f"运行目录：{run_dir.name}")
     print(f"被测模型：{agent_model}    模拟数：{count}")
-    if rewards:
+
+    # 缺题时**默认不报平均分**。上游把服务端故障的题从分母里剔掉，
+    # 40 题丢 5 题会算出 0.886 而不是 0.875——丢题不报错，还让成绩更好看。
+    # 一个更好看的数字比一个报错危险得多，所以这里宁可什么都不给。
+    expected = int(summary.get("results", {}).get("expected_count") or 0) or len(
+        summary.get("task_ids") or []
+    )
+    missing = expected - len(rewards) if expected else 0
+    if rewards and missing > 0 and not args.allow_incomplete:
+        unscored = [
+            str(sim.get("task_id"))
+            for sim in simulations
+            if (sim.get("reward_info") or {}).get("reward") is None
+        ]
+        print()
+        print(f"[拒绝报分] 应有 {expected} 题，只有 {len(rewards)} 题拿到分数，缺 {missing} 题。")
+        print(f"           未评分：{sorted(set(unscored), key=lambda t: (len(t), t))}")
+        print("           补跑：uv run python scripts/resume_run.py " + run_dir.name)
+        print("           只想看跑通那部分的平均分：加 --allow-incomplete")
+    elif rewards:
         avg = sum(rewards) / len(rewards)
+        label = "平均奖励"
+        if missing > 0:
+            label = f"平均奖励（**仅跑通的 {len(rewards)} 题**，非本轮成绩）"
         print(
-            f"平均奖励：{avg:.4f}    满分题数：{sum(1 for r in rewards if r >= 1.0)}/{len(rewards)}"
+            f"{label}：{avg:.4f}    满分题数：{sum(1 for r in rewards if r >= 1.0)}/{len(rewards)}"
         )
     if durations:
         print(f"平均时长：{sum(durations) / len(durations):.0f} 秒/题")
