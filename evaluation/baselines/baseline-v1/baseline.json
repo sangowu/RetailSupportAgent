@@ -1,9 +1,9 @@
 {
   "baseline_id": "baseline-v1",
-  "frozen_at": "2026-09-07T20:35:24.577554+00:00",
+  "frozen_at": "2026-09-07T20:39:25.210147+00:00",
   "code": {
-    "commit": "c1a37954f43b087a1b960c538961986c81fb7ad7",
-    "dirty": true,
+    "commit": "3f589def2f280cff1e390649cac0afbb44c2dc27",
+    "dirty": false,
     "dirty_excludes": "evaluation/baselines/baseline-v1"
   },
   "upstream": {
