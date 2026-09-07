@@ -15,7 +15,7 @@ dependencies = [
     "langgraph>=0.2.50",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "gradio>=5.5",
+    "gradio>=6.0",
 ]
 
 [dependency-groups]

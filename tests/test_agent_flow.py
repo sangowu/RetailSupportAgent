@@ -214,3 +214,68 @@ class TestAffirmativeDetection:
     @pytest.mark.parametrize("text", ["不用了", "先别", "no", "cancel", "我不确认"])
     def test_negative(self, text: str) -> None:
         assert not _is_affirmative(text)
+
+
+class TestReportedToolCalls:
+    """回给调用方的 `tool_calls` 必须是**本轮真正执行过**的工具。
+
+    这是被一次实跑抓出来的 bug：一轮通常是
+    think(要调工具) -> act(执行) -> think(给出答复)，
+    而最后那次 think 没有工具调用，原先在那里现造一个空列表，
+    把前面 act 执行过的工具全丢了。于是**读类查询永远报「未调用任何工具」**，
+    尽管它明明查了数据库——界面和 API 都据此展示，等于对着用户少报。
+
+    原有的读路径测试只断言 `domain.executed`（领域侧确实执行了），
+    没人断言"我们对外怎么说"，所以这个 bug 一直没被发现。
+    """
+
+    def test_read_query_reports_the_tool_it_used(self) -> None:
+        agent, domain = build(
+            [
+                tool_call("get_order_details", {"order_id": "#W001"}),
+                reply("你的订单 #W001 状态是 pending。"),
+            ]
+        )
+        result = agent.send("查一下 #W001")
+        assert result.status == "answered"
+        assert result.tool_calls == ["get_order_details"], "执行了却没报出来"
+        # 对外汇报要与领域侧实际执行一致，不能各说各的
+        assert result.tool_calls == [name for name, _ in domain.executed]
+
+    def test_multiple_rounds_all_get_reported(self) -> None:
+        agent, _ = build(
+            [
+                tool_call("get_order_details", {"order_id": "#W001"}, call_id="c1"),
+                tool_call("get_order_details", {"order_id": "#W002"}, call_id="c2"),
+                reply("两个订单都查到了。"),
+            ]
+        )
+        result = agent.send("查一下 #W001 和 #W002")
+        assert result.tool_calls == ["get_order_details", "get_order_details"]
+
+    def test_each_turn_reports_only_its_own_tools(self) -> None:
+        """累计器必须按轮清空，否则第二轮会把第一轮的工具也算进去。"""
+        agent, _ = build(
+            [
+                tool_call("get_order_details", {"order_id": "#W001"}),
+                reply("查到了。"),
+                reply("还有别的事吗？"),
+            ]
+        )
+        first = agent.send("查一下 #W001")
+        second = agent.send("谢谢")
+        assert first.tool_calls == ["get_order_details"]
+        assert second.tool_calls == [], "第二轮没调工具，不该继承第一轮的"
+
+    def test_confirmed_write_is_reported(self) -> None:
+        agent, domain = build(
+            [
+                tool_call("cancel_pending_order", {"order_id": "#W001"}),
+                tool_call("cancel_pending_order", {"order_id": "#W001"}, call_id="c2"),
+                reply("已为你取消。"),
+            ]
+        )
+        agent.send("帮我取消 #W001")
+        result = agent.send("确认执行")
+        assert result.tool_calls == ["cancel_pending_order"]
+        assert domain.executed == [("cancel_pending_order", {"order_id": "#W001"})]

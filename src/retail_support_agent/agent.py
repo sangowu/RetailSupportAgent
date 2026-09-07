@@ -108,6 +108,11 @@ class RetailAgent:
         self._domain = domain
         self._session = session
         self._guard = WriteGuard(domain.tool_names(), domain.order_owner)
+        # 本轮已真正执行的工具。**必须按轮累计，不能只记最后一步**：
+        # 一轮通常是 think(要调工具) -> act(执行) -> think(给出答复)，
+        # 最后那步没有工具调用，若在那里现造一个空列表，就把前面执行过的工具
+        # 全丢了——读类查询于是永远报「未调用任何工具」，而它明明查了数据库。
+        self._turn_tools: list[str] = []
         self._tools = domain.tool_schemas()
         self._graph = self._build_graph()
         self._messages: list[dict[str, Any]] = [
@@ -156,6 +161,7 @@ class RetailAgent:
             self._last = TurnResult(
                 reply=f"本次会话已停止：{stop}。请重新发起或转人工处理。",
                 status="stopped",
+                tool_calls=list(self._turn_tools),
                 stop_reason=stop,
             )
             return {"status": "stopped", "stop_reason": stop}
@@ -167,14 +173,17 @@ class RetailAgent:
 
         self._messages.append(_assistant_message(message, calls))
         if not calls:
-            self._last = TurnResult(reply=message.content or "", status="answered")
+            self._last = TurnResult(
+                reply=message.content or "",
+                status="answered",
+                tool_calls=list(self._turn_tools),
+            )
             return {"status": "answered"}
         return {"status": "tool_requested"}
 
     def _node_act(self, state: AgentState) -> AgentState:
         """逐个裁决并执行模型提议的工具调用。"""
         pending_calls = _tool_calls_of_last_assistant(self._messages)
-        executed: list[str] = []
 
         for call in pending_calls:
             arguments = _parse_arguments(call["function"].get("arguments"))
@@ -203,7 +212,7 @@ class RetailAgent:
                 self._last = TurnResult(
                     reply=verdict.reason,
                     status="needs_confirmation",
-                    tool_calls=executed,
+                    tool_calls=list(self._turn_tools),
                     pending_confirmation=proposed.describe(),
                 )
                 return {"status": "needs_confirmation"}
@@ -212,17 +221,21 @@ class RetailAgent:
                 self._messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": verdict.reason}
                 )
-                self._last = TurnResult(reply=verdict.reason, status="denied", tool_calls=executed)
+                self._last = TurnResult(
+                    reply=verdict.reason, status="denied", tool_calls=list(self._turn_tools)
+                )
                 continue
 
             self._session.tool_calls += 1
             result = self._domain.execute(proposed.name, proposed.arguments)
-            executed.append(proposed.name)
+            self._turn_tools.append(proposed.name)
             self._messages.append(result.as_tool_message(call["id"]))
 
             if proposed.name in HANDOFF_TOOLS:
                 self._last = TurnResult(
-                    reply="已转交人工客服处理。", status="answered", tool_calls=executed
+                    reply="已转交人工客服处理。",
+                    status="answered",
+                    tool_calls=list(self._turn_tools),
                 )
                 return {"status": "answered"}
 
@@ -235,8 +248,11 @@ class RetailAgent:
         self._maybe_consume_confirmation(user_message)
         self._messages.append({"role": "user", "content": user_message})
         self._last = None
+        self._turn_tools = []
         self._graph.invoke({"messages": []})
-        return self._last or TurnResult(reply="（模型未给出回答）", status="answered")
+        return self._last or TurnResult(
+            reply="（模型未给出回答）", status="answered", tool_calls=list(self._turn_tools)
+        )
 
     def _maybe_consume_confirmation(self, user_message: str) -> None:
         """把用户的肯定答复登记为对**当前挂起那组参数**的确认。"""

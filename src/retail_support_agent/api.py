@@ -57,6 +57,23 @@ class SessionRegistry:
     def reset(self, session_id: str) -> None:
         self._agents.pop(session_id, None)
 
+    def reset_all(self) -> int:
+        """丢掉全部会话，返回丢掉的条数。
+
+        每个会话各持一份内存里的数据库副本（见 `get`），所以丢掉会话就等于把
+        演示数据恢复成 τ²-bench 的初始状态——**不涉及任何磁盘上的东西**，
+        评测结果、基线和 .env 都不会被碰到。
+
+        返回条数是为了让调用方能说清"重置了什么"：0 条和 3 条都是成功，
+        但对操作者是两件不同的事。
+        """
+        count = len(self._agents)
+        self._agents.clear()
+        return count
+
+    def active_sessions(self) -> int:
+        return len(self._agents)
+
 
 def create_app(
     settings: Settings | None = None,
@@ -74,7 +91,13 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "milestone": "M0.3", "demo_user_id": user_id}
+        return {
+            "status": "ok",
+            "milestone": "M0.3",
+            "demo_user_id": user_id,
+            # 启停脚本据此判断"现在关掉会不会打断正在进行的演示"
+            "active_sessions": registry.active_sessions(),
+        }
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(request: ChatRequest) -> ChatResponse:
@@ -95,5 +118,15 @@ def create_app(
     def reset(session_id: str) -> dict[str, str]:
         registry.reset(session_id)
         return {"status": "reset", "session_id": session_id}
+
+    @app.post("/sessions/reset")
+    def reset_all() -> dict[str, Any]:
+        """重置全部演示会话。供 `scripts/reset-demo.ps1` 调用。
+
+        只清进程内的会话，磁盘上的东西一概不动。`cleared` 是被丢掉的会话数，
+        让调用方能把"重置了 3 个会话"和"本来就没有会话"区分开——
+        两者都是成功，但对操作者不是一回事。
+        """
+        return {"status": "reset", "scope": "all_sessions", "cleared": registry.reset_all()}
 
     return app

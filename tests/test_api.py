@@ -52,3 +52,30 @@ def test_reset_is_idempotent_for_unknown_session(client: TestClient) -> None:
 def test_demo_identity_is_a_simulated_user() -> None:
     # τ²-bench 模拟数据的 id 形如 <name>_<digits>，不是真实账户
     assert DEMO_USER_ID.endswith("_2033")
+
+
+class TestResetAllSessions:
+    """`scripts/reset-demo.ps1` 依赖的重置入口。
+
+    每个会话各持一份内存里的数据库副本，所以"重置演示"就是丢掉会话——
+    磁盘上的评测结果、基线和 .env 一概不碰。
+    """
+
+    def test_reset_all_reports_how_many_were_cleared(self, client: TestClient) -> None:
+        """0 条和 N 条都是成功，但对操作者是两件事，必须能区分。"""
+        assert client.post("/sessions/reset").json()["cleared"] == 0
+
+        # 用被拒绝的入参建不出会话，所以直接问 registry 太绕；
+        # 这里用 /session/<id>/reset 的幂等性反证"没有会话"这一初始状态。
+        assert client.post("/session/s1/reset").status_code == 200
+        assert client.post("/sessions/reset").json()["cleared"] == 0
+
+    def test_reset_all_declares_its_scope(self, client: TestClient) -> None:
+        """范围要写在响应里：操作者据此确认自己没有误删评测结果。"""
+        body = client.post("/sessions/reset").json()
+        assert body["status"] == "reset"
+        assert body["scope"] == "all_sessions"
+
+    def test_health_exposes_active_session_count(self, client: TestClient) -> None:
+        """停服脚本据此判断"现在关掉会不会打断正在进行的演示"。"""
+        assert client.get("/health").json()["active_sessions"] == 0

@@ -5,7 +5,7 @@
 **当前状态：M0.1–M0.4 已完成，M0.5 进行中。选定 `deepseek-v4-pro`，在 40 题独立
 验证集上取得 0.875（35/40），每题 0.0716 元。成本记账与 Langfuse 观测已接入
 （成本口径以 `analyze_eval.py` 为准，原因见 M0.5 文档）。尚未冻结 `baseline-v1`、
-尚未做本地一键启停、尚未创建 AWS 资源。**
+尚未创建 AWS 资源。**
 
 选型是**成本决策**，不是质量比较：其余候选没有在同一评测栈下测量过
 （成本差 5.4 倍，不在一个量级，已决定不补测）。此前 A 轮的跨模型数字因判官
@@ -18,8 +18,9 @@
 3. [M0.2 模型能力核验报告](docs/M0.2_MODEL_CAPABILITY.md)
 4. [M0.3 最小业务闭环报告](docs/M0.3_BUSINESS_LOOP.md)
 5. [M0.4 选型实验方案与成本估算](docs/M0.4_EXPERIMENT_PLAN.md)
-6. [M0.5（一）成本记账与可观测接入](docs/M0.5_OBSERVABILITY.md)（当前进度）
-7. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
+6. [M0.5（一）成本记账与可观测接入](docs/M0.5_OBSERVABILITY.md)
+7. [M0.5（二）本地一键启停与演示流程](docs/M0.5_LOCAL_DEMO.md)（当前进度）
+8. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
 7. [模型能力核验与选型实验](docs/MODEL_EXPERIMENTS.md)
 8. [基线、指标与 CI/CD 门禁](docs/EVALUATION_AND_GATES.md)
 9. [架构、数据与权限](docs/ARCHITECTURE_AND_ACCESS.md)
@@ -58,21 +59,26 @@ uv run python scripts/analyze_eval.py --project 74  # 用量与成本推算
 
 本地服务（仅绑定 127.0.0.1，固定模拟身份，无公开注册）：
 
-```bash
-uv run uvicorn retail_support_agent.api:create_app --factory --host 127.0.0.1 --port 8000
-uv run python -m retail_support_agent.ui
+```powershell
+pwsh scripts/start-local.ps1     # 检查前提，起接口 :8000 与界面 :7860，等健康后打印网址
+pwsh scripts/reset-demo.ps1      # 重置演示会话（不删任何文件）
+pwsh scripts/stop-local.ps1      # 只停本项目登记过的进程
 ```
+
+起服务本身不花钱，只有真的发消息才计费。脚本做了什么、为什么这么做，
+见 [M0.5（二）](docs/M0.5_LOCAL_DEMO.md)。
 
 密钥从 `.env` 读取（见 `.env.example`），`.env` 已被 gitignore，禁止提交。
 
-## 一键启动入口（规划中，尚不存在）
+## 一键启动入口
 
-| 环境 | 启动 | 关闭 |
-|---|---|---|
-| 本地 | `scripts/start-local.ps1` | `scripts/stop-local.ps1` |
-| AWS | GitHub Actions：`Start Demo` | GitHub Actions：`Stop Demo` |
+| 环境 | 启动 | 关闭 | 状态 |
+|---|---|---|---|
+| 本地 | `scripts/start-local.ps1` | `scripts/stop-local.ps1` | 已实现并实跑验证 |
+| AWS | GitHub Actions：`Start Demo` | GitHub Actions：`Stop Demo` | 规划中，M6 |
 
-这些入口将在对应阶段实现。现在没有可执行的启动命令，也没有在线演示地址。首次配置、依赖、模拟账户和排错说明随实际实现补齐，详见 [启停设计](docs/OPERATIONS.md)。
+本地脚本只控制**本项目登记过**的进程（按 PID 加启动时刻双重核对），不会去猜哪个
+python 属于本项目。没有在线演示地址。设计契约见 [启停设计](docs/OPERATIONS.md)。
 
 ## 基准归属
 
