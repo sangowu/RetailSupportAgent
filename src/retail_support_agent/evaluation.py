@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -25,6 +26,7 @@ from retail_support_agent.llm import (
     ZHIPU_THINKING_ALWAYS_ON,
     ThinkingConfig,
 )
+from retail_support_agent.pricing import LITELLM_COST_CURRENCY, register_with_litellm
 
 # 冻结的评测栈。二者都不在候选池内。
 #
@@ -660,6 +662,180 @@ def patch_user_reviewer(routing: dict[str, Any]) -> JudgeUsageRecorder:
     return recorder
 
 
+# Langfuse 的回调名有两个，**选错的那个不会报错，只会静默不上报**。
+#
+# 2026-09-07 在 langfuse 4.15.1 + litellm 1.82.6 上实测：
+#   "langfuse"      -> 初始化抛 AttributeError（module 'langfuse' has no attribute
+#                      'version'，那是 v2 SDK 的属性），litellm 捕获后返回 None
+#   "langfuse_otel" -> 正常返回 LangfuseOtelLogger
+#
+# 上游 tau2 用的正是前者（`llm_utils.py`: `litellm.success_callback = ["langfuse"]`），
+# 所以**不能靠把 tau2.config.USE_LANGFUSE 翻成 True 来接**——那样跑完一轮，
+# 面板上一条 trace 都没有，而运行本身完全正常，没有任何迹象。
+LANGFUSE_CALLBACK = "langfuse_otel"
+
+# 旧回调名。留在这里是为了让它出现在代码搜索里：谁按上游文档去配 "langfuse"，
+# 能顺着这个常量找到上面那段说明。
+LANGFUSE_BROKEN_CALLBACK = "langfuse"
+
+
+def enable_langfuse(settings: Settings) -> dict[str, Any]:
+    """按需接入 Langfuse，返回状态供 manifest 留痕（**不含密钥**）。
+
+    没配全三项就不启用——半套配置连不上，却要等到跑批中途才暴露。
+
+    **面板上的成本是 0，这是已知的、上游的缺口**（2026-09-07 实测）：
+
+      到达 Langfuse 的有 trace、延迟、模型名、输入/输出 token 数；
+      没有到达的是成本——litellm 1.82.6 的 langfuse_otel 集成从不发送
+      `langfuse.observation.cost_details.*`（整个模块里没有这个字符串），
+      它只把成本写成 `gen_ai.cost.*` 属性，而 Langfuse 的摄取端不认这个键。
+      实测 observation 里 `costDetails: {}`、`modelId: null`。
+
+    让 Langfuse 自己按用量算也不行：它收到的 `usageDetails` 只有 input/output，
+    **没有缓存明细**，而我们的被测侧 95% 的输入命中缓存（缓存价是全价的 1/30）。
+    按全价算会把成本抬高约 5 倍——一个看起来合理的错数字，比 0 更难被发现。
+
+    所以本项目的成本口径是：**Langfuse 只用于 trace / 延迟 / token 观测，
+    成本以 scripts/analyze_eval.py 为准**，后者与 litellm 的账交叉核对且严格相等。
+
+    另：我们注册进 litellm 的价格是**人民币**（见 pricing.LITELLM_COST_CURRENCY），
+    这一点在 summary.json 里留痕，免得日后有人把它当美元。
+    """
+    if not settings.has_langfuse():
+        return {"langfuse_enabled": False, "langfuse_reason": "未配置 LANGFUSE_* 三项"}
+
+    assert settings.langfuse_public_key and settings.langfuse_secret_key  # has_langfuse 已保证
+    host = str(settings.langfuse_host)
+    # litellm 的 langfuse_otel 回调从环境变量取配置，没有参数入口。
+    # 只在进程内设置，不写盘、不打日志。
+    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key.get_secret_value()
+    os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key.get_secret_value()
+    os.environ["LANGFUSE_HOST"] = host
+    os.environ["LANGFUSE_OTEL_HOST"] = host
+
+    import litellm
+
+    callbacks = list(getattr(litellm, "callbacks", []) or [])
+    if LANGFUSE_CALLBACK not in callbacks:
+        callbacks.append(LANGFUSE_CALLBACK)
+    litellm.callbacks = callbacks
+    return {
+        "langfuse_enabled": True,
+        "langfuse_callback": LANGFUSE_CALLBACK,
+        "langfuse_host": host,
+        # 面板会给这个数字加美元符号，但它是人民币。写进 manifest，
+        # 免得日后有人拿面板数字当美元去汇报。
+        "langfuse_cost_currency": LITELLM_COST_CURRENCY,
+        # 面板成本为 0 是已知缺口，不是本轮免费。成本以 analyze_eval.py 为准。
+        "langfuse_cost_reported": False,
+        "langfuse_cost_note": (
+            "litellm 1.82.6 的 langfuse_otel 不发送 cost_details；"
+            "且 Langfuse 收到的用量无缓存明细，自行折算会高估约 5 倍。"
+            "成本以 scripts/analyze_eval.py 为准"
+        ),
+    }
+
+
+# 面板上的 trace 必须能对回是哪一轮跑的，否则观测和结果各说各话。
+# Langfuse 的分组维度是 session：同一个 session_id 的调用在面板上聚成一条会话。
+# 我们用**运行目录名**当 session_id——它已经是本项目里一轮运行的唯一标识
+# （形如 20260907T141354Z_deepseek-v4-pro_dev），两边不用再维护一张对照表。
+LANGFUSE_TAG = "retail-support-agent"
+
+# 会话号放在字典里而不是闭包变量里：补跑会第二次调用 tag_langfuse_session，
+# 那时包装函数已经装好了，只需要换号，不该再套一层。
+_LANGFUSE_SESSION: dict[str, str] = {}
+
+
+def tag_langfuse_session(session_id: str) -> str:
+    """给本轮所有 LLM 调用打上会话标记，让面板上的 trace 能对回运行目录。
+
+    litellm 的 langfuse_otel 只认 `litellm_params["metadata"]` 里的
+    `session_id` / `tags`（见 `LangfuseOtelLogger._set_metadata_attributes`），
+    而它们只能**逐次调用**传入——没有全局入口，也没有环境变量
+    （唯一的环境变量 `LANGFUSE_TRACING_ENVIRONMENT` 是 dev/prod 那种环境名，
+    不是会话号）。上游 tau2 又不给我们传 metadata 的口子，所以在
+    `tau2.utils.llm_utils.completion` 这个**三个角色共用的唯一出口**上包一层。
+
+    包在这里而不是包 `litellm.completion`：被测 Agent、模拟用户、两个判官
+    最终都从这个名字发起调用，一处覆盖全部；而直接改 litellm 的全局函数
+    会波及同进程里任何别的用途。
+
+    `metadata` 是 litellm 自己的参数（在 `get_litellm_params` 的名单里），
+    不会被转发给模型服务端，也不受 `litellm.drop_params` 影响。
+
+    没启用 Langfuse 时打这个标记也无害：metadata 只是多一个没人读的字段。
+    """
+    from tau2.utils import llm_utils
+
+    _LANGFUSE_SESSION["id"] = session_id
+    original = llm_utils.completion
+    if getattr(original, "_rsa_session_tagger", False):
+        return session_id
+
+    def completion_with_session(*args: Any, **kwargs: Any) -> Any:
+        metadata = dict(kwargs.get("metadata") or {})
+        # setdefault：万一上游哪天自己开始传 metadata，以它的为准，不覆盖。
+        metadata.setdefault("session_id", _LANGFUSE_SESSION["id"])
+        metadata.setdefault("tags", [LANGFUSE_TAG, _LANGFUSE_SESSION["id"]])
+        return original(*args, **{**kwargs, "metadata": metadata})
+
+    completion_with_session._rsa_session_tagger = True  # type: ignore[attr-defined]
+    llm_utils.completion = completion_with_session
+    return session_id
+
+
+# 后台记日志的线程要几秒才把 span 建出来，之后批量导出器还压着一批没发。
+# 3 秒是实测够用的等待；宁可多等 3 秒，也不要丢掉整轮最后几题的 trace。
+LANGFUSE_FLUSH_WAIT_SECONDS = 3.0
+LANGFUSE_FLUSH_TIMEOUT_MS = 15_000
+
+
+def flush_langfuse(wait_seconds: float = LANGFUSE_FLUSH_WAIT_SECONDS) -> bool:
+    """跑完后把还压在缓冲区里的 trace 推出去。返回是否真的推成功。
+
+    **不做这一步会静默丢 trace**（2026-09-07 实测）：发一次调用就立刻退出的
+    进程，那条 trace 在面板上永远不出现，而进程退出码是 0，日志里什么都没有。
+    整轮评测因为跑得久，中途的 span 会被批量导出器按时发走，**丢的是末尾几题**
+    ——恰好是"跑完了去面板看看"时最想看的那几条。
+
+    OTEL 的 TracerProvider 本来会在退出时自己 shutdown，但 litellm 的
+    langfuse_otel 没有把 provider 设成全局的（`opentelemetry.trace.get_tracer_provider()`
+    拿到的仍是 ProxyTracerProvider），所以那条退出路径根本轮不到它。
+    唯一的入口是 logger 实例自己持有的 `tracer.span_processor`。
+
+    等待是必要的：litellm 的成功回调跑在另一个线程里，span 还没建出来就
+    force_flush 等于什么也没推。这里用固定等待，没有更精确的信号可用。
+
+    `_in_memory_loggers` 是上游私有名字，取不到就返回 False——观测推不出去
+    不该让整轮评测失败，所以只报告、不抛错。
+    """
+    try:
+        from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
+    except ImportError:
+        return False
+
+    processors = [
+        processor
+        for logger in _in_memory_loggers
+        if (processor := getattr(getattr(logger, "tracer", None), "span_processor", None))
+        is not None
+        and hasattr(processor, "force_flush")
+    ]
+    if not processors:
+        return False
+
+    time.sleep(wait_seconds)
+    flushed = True
+    for processor in processors:
+        try:
+            flushed = bool(processor.force_flush(LANGFUSE_FLUSH_TIMEOUT_MS)) and flushed
+        except Exception:  # 观测失败不该拖垮评测
+            flushed = False
+    return flushed
+
+
 def build_run_config(
     stack: EvalStack,
     task_ids: list[str],
@@ -669,6 +845,10 @@ def build_run_config(
     save_to: str | None,
 ) -> Any:
     """构造上游的运行配置。任务集与划分一律取自 M0.1 冻结的清单。"""
+    # 价格必须在任何调用发生前注册，否则上游 `get_response_cost()` 会一路
+    # 捕获异常并 `return 0.0`——那正是 agent_cost 长期恒为 0 的原因。
+    # **注册进去的是元，不是美元**，见 pricing.LITELLM_COST_CURRENCY。
+    register_with_litellm()
     # 思考模式下 DeepSeek 要求把历史 reasoning_content 回传，上游不会做，我们补上。
     if stack.echo_reasoning:
         echo_reasoning_content()

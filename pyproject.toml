@@ -7,7 +7,7 @@ readme = "README.md"
 # 在 3.13 上直接 ModuleNotFoundError。详见 docs/M0.3_BUSINESS_LOOP.md。
 requires-python = ">=3.12,<3.13"
 # M0.3 起这些都是运行时必需，不再分组延后。
-# Langfuse 尚未接入，等 M0.4 真正记录实验时再加，不提前声明未使用的依赖。
+# Langfuse 属 bench 组：它只在跑评测时上报 trace，服务本身不依赖它。
 dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -30,6 +30,7 @@ dev = [
 # 数据仍来自 third_party/ 下经 SHA256 校验的检出（TAU2_DATA_DIR 指向它）。
 # 单独成组：会拉入 litellm/pandas 等重依赖，只有实际跑领域环境或评测时才需要。
 bench = [
+    "langfuse>=4.15.1",
     "tau2",
 ]
 
@@ -62,6 +63,15 @@ warn_unreachable = true
 # 上游 tau2 未提供 py.typed，按外部未标注库处理
 [[tool.mypy.overrides]]
 module = ["tau2.*"]
+ignore_missing_imports = true
+
+# litellm 与 opentelemetry 同属 bench 组，CI 的 `uv sync --locked` 不安装它们。
+# 只写 ignore_missing_imports 不够：装了的机器读到真类型、没装的读到 Any，
+# 于是同一处 `# type: ignore` 在本地必需、在 CI 却成了「未使用的 ignore」而报错。
+# follow_imports = "skip" 让两边都按未标注库处理，使本地 `uv run mypy` 与 CI 严格等价。
+[[tool.mypy.overrides]]
+module = ["litellm.*", "opentelemetry.*"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # gradio 自带的类型标注与运行时不符（如 Button.click 实际存在却未标注），

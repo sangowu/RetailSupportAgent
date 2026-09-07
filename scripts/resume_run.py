@@ -29,8 +29,11 @@ from retail_support_agent.config import Settings  # noqa: E402
 from retail_support_agent.evaluation import (  # noqa: E402
     EvalStack,
     build_run_config,
+    enable_langfuse,
+    flush_langfuse,
     patch_nl_judge,
     prepare_environment,
+    tag_langfuse_session,
 )
 from retail_support_agent.results_io import is_scored, load_simulations  # noqa: E402
 
@@ -133,6 +136,12 @@ def main() -> int:
     print("评测栈与原轮逐项一致，开始补跑。")
 
     judge_usage = patch_nl_judge(stack)
+    # 补跑的 trace 要落进**原轮**那条会话，否则面板上会多出一条只有几题的孤儿会话。
+    langfuse_status = enable_langfuse(settings)
+    session_id = tag_langfuse_session(run_dir.name)
+    if langfuse_status["langfuse_enabled"]:
+        print(f"Langfuse 会话号 = {session_id}（与原轮同一条会话）")
+
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     config = build_run_config(
         stack,
@@ -146,6 +155,9 @@ def main() -> int:
 
     run_domain(config)
 
+    if langfuse_status["langfuse_enabled"]:
+        langfuse_status["langfuse_flushed"] = flush_langfuse()
+
     still = unscored_task_ids(run_dir)
     recovered = [t for t in missing if t not in still]
     # 补跑本身也要留痕：谁在什么时候补了哪几题，否则这一轮的结果无法解释
@@ -157,6 +169,7 @@ def main() -> int:
                 "recovered_task_ids": recovered,
                 "still_unscored_task_ids": still,
                 "judge_usage": judge_usage.describe(),
+                "observability": langfuse_status,
             },
             ensure_ascii=False,
             indent=2,

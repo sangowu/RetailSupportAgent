@@ -26,8 +26,11 @@ from retail_support_agent.evaluation import (  # noqa: E402
     EvalStack,
     EvaluationSetupError,
     build_run_config,
+    enable_langfuse,
+    flush_langfuse,
     patch_nl_judge,
     prepare_environment,
+    tag_langfuse_session,
 )
 from retail_support_agent.llm import THINKING_EFFORT, VALID_EFFORTS  # noqa: E402
 from retail_support_agent.task_meta import load_task_facts, split_composition  # noqa: E402
@@ -232,6 +235,20 @@ def main() -> int:
             "[注意] 模拟用户已关思考：这改变了冻结评测栈，本次成绩与既有运行不可比。",
             flush=True,
         )
+    # Langfuse 按需接入：没配全三项就不启用，并在下面打印原因。
+    # 注意成本口径——面板上的数字是**人民币**，尽管它显示美元符号。
+    langfuse_status = enable_langfuse(settings)
+    if langfuse_status["langfuse_enabled"]:
+        print(
+            f"Langfuse 已启用（{langfuse_status['langfuse_host']}，"
+            f"回调 {langfuse_status['langfuse_callback']}）。"
+            "面板只有 trace/延迟/token，**成本恒为 0**（上游缺口，非免费）；"
+            "成本请看 analyze_eval.py。",
+            flush=True,
+        )
+    else:
+        print(f"Langfuse 未启用：{langfuse_status['langfuse_reason']}", flush=True)
+
     # 返回的记录器负责给判官记账：它的调用不在 messages 里，不主动记就永远统计不到
     judge_usage = patch_nl_judge(stack)
     for warning in stack.warnings():
@@ -240,6 +257,15 @@ def main() -> int:
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = OUTPUT_ROOT / f"{run_id}_{args.model.replace('/', '_')}_{args.split}"
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # 让面板上的 trace 能对回运行目录：会话号就取目录名，两边不用再维护对照表。
+    session_id = tag_langfuse_session(run_dir.name)
+    if langfuse_status["langfuse_enabled"]:
+        langfuse_status["langfuse_session_id"] = session_id
+        print(
+            f"Langfuse 会话号 = {session_id}（面板 Tracing -> Sessions 搜这个号）",
+            flush=True,
+        )
 
     # 提前终止：先跑前 N 题，明显不合格就不再往下烧钱。
     # 分段落盘，读的时候由 results_io 合并回一次运行。
@@ -298,6 +324,13 @@ def main() -> int:
 
     elapsed = time.monotonic() - started
 
+    # 必须显式推一次：不推的话，末尾几题的 trace 会静默丢在缓冲区里，
+    # 而进程退出码是 0、日志里什么都没有（2026-09-07 实测）。
+    if langfuse_status["langfuse_enabled"]:
+        langfuse_status["langfuse_flushed"] = flush_langfuse()
+        if not langfuse_status["langfuse_flushed"]:
+            print("[警告] Langfuse trace 未能全部推出，面板上可能缺末尾几题。", file=sys.stderr)
+
     summary = {
         "run_id": run_id,
         "run_at": datetime.now(UTC).isoformat(),
@@ -307,6 +340,7 @@ def main() -> int:
         "stopped_early": stopped_early,
         "num_trials": args.trials,
         "stack": stack.describe(),
+        "observability": langfuse_status,
         "judge_usage": judge_usage.describe(),
         "results": summarize(all_simulations, expected=len(completed_ids) * args.trials),
     }

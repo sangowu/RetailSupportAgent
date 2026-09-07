@@ -15,10 +15,13 @@ from retail_support_agent.config import Settings
 
 TEMPLATE = Path(__file__).resolve().parents[1] / ".env.example"
 
-# 已知在模板里、但 Settings 不读的变量。留着是有意的标记，不是遗漏。
-# Langfuse 三项目前**没有任何代码读取**（tau2 的 USE_LANGFUSE=False，
-# 且包未安装），模板里写明了这一点。
-DELIBERATELY_UNREAD = {"LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"}
+# 模板里所有变量现在都有代码读取，因此这个例外集是空的。
+# 留着它是为了保留机制：将来若又出现「写进模板但没人读」的变量，
+# 必须显式加进来并说明理由，而不是让下面那条测试悄悄放行。
+#
+# 2026-09-07 清空：Langfuse 三项此前无人读取，现在由 Settings.has_langfuse()
+# 与 evaluation.enable_langfuse() 真正使用。
+DELIBERATELY_UNREAD: set[str] = set()
 
 
 def template_vars() -> set[str]:
@@ -39,7 +42,7 @@ def test_every_settings_field_appears_in_the_template() -> None:
 def test_template_has_no_variables_the_code_ignores() -> None:
     """模板里出现代码根本不读的变量，会让人以为配了就生效。
 
-    Langfuse 三项是例外，且模板里已明确标注「未接入、配了也不生效」。
+    2026-09-07 起没有例外：Langfuse 三项已真正接入。
     """
     stray = template_vars() - settings_vars() - DELIBERATELY_UNREAD
     assert not stray, f".env.example 里有代码不读的变量：{sorted(stray)}"
