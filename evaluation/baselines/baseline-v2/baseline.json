@@ -3,10 +3,10 @@
   "status": "current",
   "task_split": "full",
   "scope_note": "全集 114 题，可称标准 τ²-bench Retail 分数。包含 dev 74 题，其中部分曾用于调参——因此它是标准口径分，而不是「独立验证分」，两个口径不互相冒充。",
-  "frozen_at": "2026-09-07T21:28:21.654970+00:00",
+  "frozen_at": "2026-09-07T21:33:07.216933+00:00",
   "code": {
-    "commit": "57c20e238d394bb2823bc7d76c63961bcab74919",
-    "dirty": true,
+    "commit": "4eed95c8c26a33702d4bd06b46078583f26b9785",
+    "dirty": false,
     "dirty_excludes": "evaluation/baselines"
   },
   "upstream": {
