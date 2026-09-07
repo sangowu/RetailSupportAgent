@@ -29,6 +29,8 @@ from retail_support_agent.evaluation import (
 )
 from retail_support_agent.pricing import LITELLM_COST_CURRENCY
 
+pytest.importorskip("litellm", reason="litellm 属 bench 组，未装则跳过")
+
 PUBLIC = "pk-lf-test-0000000000"
 SECRET = "sk-lf-test-1111111111"
 HOST = "https://langfuse.example.com"
@@ -83,19 +85,18 @@ class TestCallbackChoice:
         这条会随依赖升级而变化——它变绿的那天，说明 litellm 修好了对 v4 的支持，
         那时可以重新评估用哪个。**变化本身就是信号**，所以不 skip。
         """
-        pytest.importorskip("litellm")
         pytest.importorskip("langfuse")
         from litellm.litellm_core_utils.litellm_logging import (
             _init_custom_logger_compatible_class,
         )
 
         broken = _init_custom_logger_compatible_class(
-            LANGFUSE_BROKEN_CALLBACK,  # type: ignore[arg-type]
+            LANGFUSE_BROKEN_CALLBACK,
             internal_usage_cache=None,
             llm_router=None,
         )
         working = _init_custom_logger_compatible_class(
-            LANGFUSE_CALLBACK,  # type: ignore[arg-type]
+            LANGFUSE_CALLBACK,
             internal_usage_cache=None,
             llm_router=None,
         )
@@ -164,6 +165,7 @@ class TestSessionCorrelation:
     @pytest.fixture
     def calls(self) -> Iterator[list[dict[str, Any]]]:
         """把 tau2 的共用出口换成记录器，用例结束后原样放回。"""
+        pytest.importorskip("tau2", reason="tau2 属 bench 组，未装则跳过")
         from tau2.utils import llm_utils
 
         recorded: list[dict[str, Any]] = []
@@ -308,6 +310,7 @@ class TestFlushOnExit:
         但那里拿到的是 ProxyTracerProvider，连 force_flush 都没有。
         哪天 litellm 改成设全局了，这条会变红，届时可以换回标准写法。
         """
+        pytest.importorskip("opentelemetry", reason="随 litellm 的 OTEL 集成安装，未装则跳过")
         from opentelemetry import trace
 
         assert not hasattr(trace.get_tracer_provider(), "force_flush")
