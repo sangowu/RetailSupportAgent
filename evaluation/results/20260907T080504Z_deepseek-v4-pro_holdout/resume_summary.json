@@ -1,0 +1,17 @@
+{
+  "resumed_task_ids": [
+    "62",
+    "68",
+    "70",
+    "108",
+    "111"
+  ],
+  "judge_usage": {
+    "judge_calls": 5,
+    "prompt_tokens": 21809,
+    "completion_tokens": 728,
+    "cached_tokens": 0,
+    "reasoning_tokens": 0
+  },
+  "reason": "原轮 5 题因智谱免费额度耗尽未开始（infrastructure_error，消息数 0）"
+}
