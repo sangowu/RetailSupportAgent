@@ -84,6 +84,6 @@ GitHub branch/ruleset 的能力依账户方案核验；不支持时使用明确�
 
 ## 归档
 
-M0 在本地生成 manifest、checksums、逐题 results、summary、运行日志及 Langfuse 链接；AWS 阶段复制到 S3 并校验。建议路径模式：`artifacts/experiments/<run-id>/`、`artifacts/baselines/baseline-v1/`，当前尚未创建实验产物。
+M0 在本地生成 manifest、checksums、逐题 results、summary、运行日志及 Langfuse 会话号；AWS 阶段复制到 S3 并校验。**`baseline-v1` 已冻结**，落在 `evaluation/baselines/baseline-v1/`（与建议的 `artifacts/` 前缀不同，理由见 [M0.5（三）§5](M0.5_BASELINE.md)）；逐轮产物在 `evaluation/results/<run-id>/`。校验和分入库文件与本机原始轨迹两段，CI 每次校验前者。原始逐题轨迹尚未复制到 S3，摘要已记，丢失能发现但找不回来。
 
 初版基线、当前发布和必要回滚镜像保留；临时构建清理规则不得误删它们。数据集或评估器错误通过新版本纠正，同时保留旧结果并注明失效原因，不悄悄改写历史。
