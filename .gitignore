@@ -26,6 +26,10 @@ evaluation/results/**/*.json/
 !evaluation/results/**/summary.json
 !evaluation/results/**/judge_recheck_*.json
 
+# 本地启停的运行时产物：进程登记（PID + 启动时刻）与服务日志。
+# 登记文件是机器相关的，日志可能含请求内容，都不入库。
+.local/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

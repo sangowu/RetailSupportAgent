@@ -46,7 +46,9 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
     with gr.Blocks(title="RetailSupportAgent") as demo:
         gr.Markdown(INTRO)
         agent_state = gr.State(None)
-        chatbot = gr.Chatbot(type="messages", height=460, label="对话")
+        # 不传 type：gradio 6 起 messages 是唯一格式，参数本身被删掉了，
+        # 传了会 TypeError。我们本来产出的就是 {"role", "content"} 这种格式。
+        chatbot = gr.Chatbot(height=460, label="对话")
         status = gr.Markdown("")
         with gr.Row():
             box = gr.Textbox(placeholder="例如：帮我查一下我的订单", scale=5, show_label=False)

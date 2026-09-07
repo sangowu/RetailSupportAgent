@@ -1,0 +1,137 @@
+{
+  "run_at": "2026-09-07T19:09:59.361288+00:00",
+  "demo_user_id": "ava_moore_2033",
+  "model": "deepseek-v4-pro",
+  "thinking": {
+    "enable_thinking": true,
+    "reasoning_effort": "high"
+  },
+  "note": "模拟业务数据，非真实系统。数据库指纹用于验证写操作是否真的落地。",
+  "flows": [
+    {
+      "flow": "query",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "你好，我想看看我名下都有哪些订单。",
+          "reply": "你名下共有 4 个订单，情况如下：\n\n| 订单号 | 状态 | 商品 | 金额 |\n|--------|------|------|------|\n| #W4817420 | 已送达 (delivered) | Water Bottle、Bookshelf、Action Camera、Electric Kettle、Hiking Boots | $1380.79 |\n| #W4135875 | 待处理 (pending) | Tablet | $904.46 |\n| #W2173715 | 已处理 (processed) | Grill、Desk Lamp、Electric Kettle、Notebook | $1267.81 |\n| #W8951014 | 已送达 (delivered) | Backpack ×2、Water Bottle、Digital Camera、Bookshelf | $4204.93 |\n\n请问你想针对哪个订单做什么操作？比如取消/修改待处理订单，或退换已送达订单。",
+          "status": "answered",
+          "tool_calls": [
+            "get_user_details",
+            "get_order_details",
+            "get_order_details",
+            "get_order_details",
+            "get_order_details"
+          ],
+          "pending_confirmation": null
+        },
+        {
+          "user": "订单 #W4135875 现在是什么状态？",
+          "reply": "订单 #W4135875 目前的状态是 **待处理（pending）**。\n\n该订单商品为 Tablet（8 英寸 / 128GB / 银色），金额 $904.46，支付方式为礼品卡（gift_card_8168843）。\n\n需要我帮你对这个订单做什么操作吗？",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    },
+    {
+      "flow": "cancel",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "086c06ae9184b721d67f958ee609ba07d0b1448eabecd93cb6558f3a43d0f7d5",
+      "turns": [
+        {
+          "user": "我想取消订单 #W4135875，我不想要了。",
+          "reply": "我已查到您的订单 #W4135875，确认属于您的账户，当前状态为 **pending（待处理）**，可以取消。\n\n订单信息：\n- 商品：Tablet（8-inch / 128GB / silver）\n- 金额：$904.46\n- 支付方式：礼品卡（gift_card_8168843）\n\n按取消政策，取消原因只能是以下两种之一：\n1. **no longer needed**（不再需要）\n2. **ordered by mistake**（下单错误）\n\n您说\"不想要了\"，这对应 **no longer needed（不再需要）**。\n\n取消后：订单状态会变为 **cancelled**，款项会原路退回——由于您用的是礼品卡支付，退款会**立即退回礼品卡余额**。\n\n请确认：\n1. 订单号是否正确：#W4135875\n2. 取消原因是否确认为：**no longer needed（不再需要）**\n\n请回复\"确认\"（或 yes），我将为您提交取消申请。",
+          "status": "answered",
+          "tool_calls": [
+            "get_order_details"
+          ],
+          "pending_confirmation": null
+        },
+        {
+          "user": "对，就按这个原因取消。",
+          "reply": "这是一次会改变订单状态的操作，需要你明确确认：\n执行 cancel_pending_order，参数如下：\n  - order_id: \"#W4135875\"\n  - reason: \"no longer needed\"",
+          "status": "needs_confirmation",
+          "tool_calls": [],
+          "pending_confirmation": "执行 cancel_pending_order，参数如下：\n  - order_id: \"#W4135875\"\n  - reason: \"no longer needed\""
+        },
+        {
+          "user": "确认执行。",
+          "reply": "您的订单已成功取消，详情如下：\n\n- 订单号：#W4135875\n- 状态：**cancelled（已取消）**\n- 取消原因：no longer needed（不再需要）\n- 退款：$904.46 已退回原支付方式（礼品卡 gift_card_8168843），礼品卡退款为**立即到账**。\n\n如还有其他需要，请随时告诉我。",
+          "status": "answered",
+          "tool_calls": [
+            "cancel_pending_order"
+          ],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": true
+    },
+    {
+      "flow": "return",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "2397e53b1ba153dfb509ddb56a4de450c6234c6aee479a173d933f09dce710be",
+      "turns": [
+        {
+          "user": "订单 #W4817420 我收到了但不合适，想申请全部退货，退回原支付方式。",
+          "reply": "我已查到订单 #W4817420，确认属于您（ava_moore_2033），当前状态为 **delivered（已送达）**，符合退货条件。\n\n该订单共 5 件商品，您要全部退货，明细如下：\n\n1. Water Bottle（红色 / 750ml / 不锈钢）— $47.76\n2. Bookshelf（黑色 / 玻璃 / 5 ft）— $463.04\n3. Action Camera（黑色 / 4K / 防水）— $466.75\n4. Electric Kettle（银色 / 1.5L / 塑料）— $158.90\n5. Hiking Boots（尺码 7 / 皮革 / 防水）— $244.34\n\n合计退款金额：**$1,380.79**\n\n退款方式：退回原支付方式，即您名下的礼品卡（gift_card_8168843）。\n\n请确认以下信息无误，并回复“是”表示同意：\n\n- 退货订单：#W4817420\n- 退货商品：上述全部 5 件\n- 退款方式：原支付方式（礼品卡 gift_card_8168843）\n\n确认后我会为您发起退货申请。",
+          "status": "answered",
+          "tool_calls": [
+            "get_order_details"
+          ],
+          "pending_confirmation": null
+        },
+        {
+          "user": "对，全部退，退回原支付方式。",
+          "reply": "这是一次会改变订单状态的操作，需要你明确确认：\n执行 return_delivered_order_items，参数如下：\n  - item_ids: [\"6777246137\", \"4900661478\", \"6700049080\", \"9624127908\", \"3812493782\"]\n  - order_id: \"#W4817420\"\n  - payment_method_id: \"gift_card_8168843\"",
+          "status": "needs_confirmation",
+          "tool_calls": [],
+          "pending_confirmation": "执行 return_delivered_order_items，参数如下：\n  - item_ids: [\"6777246137\", \"4900661478\", \"6700049080\", \"9624127908\", \"3812493782\"]\n  - order_id: \"#W4817420\"\n  - payment_method_id: \"gift_card_8168843\""
+        },
+        {
+          "user": "确认执行。",
+          "reply": "退货申请已成功提交，当前订单 #W4817420 的状态已更新为 **return requested（退货已申请）**。\n\n退货商品（全部 5 件）：\n1. Water Bottle（item 6777246137）\n2. Bookshelf（item 4900661478）\n3. Action Camera（item 6700049080）\n4. Electric Kettle（item 9624127908）\n5. Hiking Boots（item 3812493782）\n\n退款方式：原支付方式（礼品卡 gift_card_8168843），退款金额 $1,380.79。\n\n请注意：\n- 退货申请已受理，但**退款尚未到账**，需要您按后续邮件指引完成寄回后才会处理退款。\n- 您将收到一封关于如何寄回商品的邮件，请留意查收。",
+          "status": "answered",
+          "tool_calls": [
+            "return_delivered_order_items"
+          ],
+          "pending_confirmation": null
+        },
+        {
+          "user": "是，确认无误，请提交。",
+          "reply": "您的退货申请在上一轮已经成功提交了，无需再次操作。\n\n当前订单 #W4817420 状态为 **return requested（退货已申请）**，全部 5 件商品均已包含在退货清单中，退款方式为原支付方式（礼品卡 gift_card_8168843），退款金额 $1,380.79。\n\n退款尚未到账，需等您按后续邮件指引寄回商品后才会处理。请留意查收退货邮件。",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": true
+    },
+    {
+      "flow": "ownership_denied",
+      "db_hash_before": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
+      "turns": [
+        {
+          "user": "帮我取消订单 #W2378156。",
+          "reply": "抱歉，我无法处理这个请求。\n\n订单 #W2378156 不属于当前账户（ava_moore_2033），而是归属于其他用户。根据政策，我只能处理当前用户本人名下的订单，不能代为操作其他用户的订单。\n\n另外需要说明的是，即使该订单属于你，它目前的状态是「已送达（delivered）」，也已无法按「取消 pending 订单」流程处理。\n\n请问你是否有自己账户名下的其他订单需要协助？",
+          "status": "answered",
+          "tool_calls": [
+            "get_order_details"
+          ],
+          "pending_confirmation": null
+        },
+        {
+          "user": "确认取消。",
+          "reply": "抱歉，我仍然无法执行取消操作。\n\n原因有两个：\n\n1. 订单 #W2378156 不属于当前账户 ava_moore_2033，而是其他用户的订单。我只能处理当前用户本人名下的订单。\n2. 该订单当前状态是「已送达（delivered）」，并非「待处理（pending）」，因此不符合取消订单的条件。\n\n请确认你是否有自己账户名下的、状态为 pending 的订单需要取消？",
+          "status": "answered",
+          "tool_calls": [],
+          "pending_confirmation": null
+        }
+      ],
+      "db_changed": false
+    }
+  ]
+}
