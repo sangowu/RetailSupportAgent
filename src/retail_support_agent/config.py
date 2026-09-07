@@ -95,6 +95,21 @@ class Settings(BaseSettings):
     user_api_key: SecretStr | None = Field(default=None, validation_alias="RSA_USER_API_KEY")
     user_model: str | None = Field(default=None, validation_alias="RSA_USER_MODEL")
 
+    # Langfuse 云端观测。**三项要么都配、要么都不配**：缺一项就整体不启用，
+    # 而不是带着半套配置去连——那只会在跑批中途才发现连不上。
+    # host 用国内可达的自建实例或 cloud.langfuse.com，按部署决定。
+    langfuse_public_key: SecretStr | None = Field(
+        default=None, validation_alias="LANGFUSE_PUBLIC_KEY"
+    )
+    langfuse_secret_key: SecretStr | None = Field(
+        default=None, validation_alias="LANGFUSE_SECRET_KEY"
+    )
+    langfuse_host: str | None = Field(default=None, validation_alias="LANGFUSE_HOST")
+
+    def has_langfuse(self) -> bool:
+        """三项齐全才算配好了 Langfuse。"""
+        return bool(self.langfuse_public_key and self.langfuse_secret_key and self.langfuse_host)
+
     def key_presence(self) -> str:
         """报告里只记录"配了没配"，连末几位都不暴露。"""
         return f"present(len={len(self.dashscope_api_key.get_secret_value())})"

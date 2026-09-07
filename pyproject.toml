@@ -30,6 +30,7 @@ dev = [
 # 数据仍来自 third_party/ 下经 SHA256 校验的检出（TAU2_DATA_DIR 指向它）。
 # 单独成组：会拉入 litellm/pandas 等重依赖，只有实际跑领域环境或评测时才需要。
 bench = [
+    "langfuse>=4.15.1",
     "tau2",
 ]
 

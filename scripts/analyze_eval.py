@@ -285,6 +285,22 @@ def main() -> int:
         f"输出 {agent.completion / count:.0f} tok"
     )
     print(f"被测成本：{format_cost(agent_model, agent)}（价格快照 {PRICE_SNAPSHOT_DATE}）")
+
+    # 与上游 litellm 的账交叉核对。两条完全独立的路径：litellm 逐次调用累加，
+    # 我们按 token 总量折算。注册人民币而不是换算美元，图的就是这里能**严格相等**；
+    # 对不上就是有一方错了，不是舍入。
+    upstream = summary.get("results", {}).get("agent_cost_reported_by_upstream")
+    ours = role_cost(agent_model, agent)
+    if isinstance(upstream, int | float) and ours is not None:
+        if upstream == 0:
+            print("    上游 litellm 记账为 0——该轮跑在价格注册之前，不是真的免费")
+        elif abs(upstream - ours) <= max(1e-6, ours * 1e-6):
+            print(f"    与上游 litellm 独立记账一致（{upstream:.6f} 元），缓存与推理口径均已对上")
+        else:
+            print(
+                f"    [不一致] 上游 litellm 记 {upstream:.6f} 元，本脚本折算 {ours:.6f} 元。"
+                "两套账应当严格相等，请先查明原因再引用任何成本数字"
+            )
     print(f"模拟用户：{format_cost(user_model, user)}")
     if user.reasoning and user.completion:
         print(
