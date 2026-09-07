@@ -80,7 +80,9 @@ def scope_label(actions: list[dict[str, Any]]) -> str:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
 
 
 def build(checkout: Path) -> None:
@@ -160,6 +162,19 @@ def build(checkout: Path) -> None:
     }
     write_json(MANIFEST_PATH, manifest)
 
+    write_json(
+        TASK_SETS_DIR / "full.json",
+        {
+            "$comment": (
+                "全集＝上游 base 划分（train + test），按上游原始顺序。"
+                "覆盖全部 114 题才能称「标准 τ²-bench Retail 分数」；"
+                "dev/holdout 是它的两个子集，子集分不得冒充全集分。"
+            ),
+            "source": "tau2-bench v1.0.1 split_tasks.json:base",
+            "count": len(split["base"]),
+            "task_ids": split["base"],
+        },
+    )
     write_json(
         TASK_SETS_DIR / "dev.json",
         {

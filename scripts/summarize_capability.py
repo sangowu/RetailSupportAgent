@@ -171,7 +171,7 @@ def main() -> int:
 
     models = load_run(run_dir)
     markdown = build_markdown(run_dir.name, models)
-    (run_dir / "matrix.md").write_text(markdown, encoding="utf-8")
+    (run_dir / "matrix.md").write_text(markdown, encoding="utf-8", newline="\n")
     print(markdown)
     print(f"已写入 {run_dir / 'matrix.md'}")
     return 0

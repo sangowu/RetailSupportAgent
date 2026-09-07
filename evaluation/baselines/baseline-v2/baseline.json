@@ -1,0 +1,70 @@
+{
+  "baseline_id": "baseline-v2",
+  "status": "current",
+  "task_split": "full",
+  "scope_note": "全集 114 题，可称标准 τ²-bench Retail 分数。包含 dev 74 题，其中部分曾用于调参——因此它是标准口径分，而不是「独立验证分」，两个口径不互相冒充。",
+  "frozen_at": "2026-09-07T21:28:21.654970+00:00",
+  "code": {
+    "commit": "57c20e238d394bb2823bc7d76c63961bcab74919",
+    "dirty": true,
+    "dirty_excludes": "evaluation/baselines"
+  },
+  "upstream": {
+    "repo": "https://github.com/sierra-research/tau2-bench",
+    "tag": "v1.0.1",
+    "commit": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+    "license": "MIT",
+    "pinned_file_count": 13
+  },
+  "price_snapshot_date": "2026-09-06",
+  "run": {
+    "run_dir": "20260907T205640Z_deepseek-v4-pro_full",
+    "run_id": "20260907T205640Z",
+    "run_at": "2026-09-07T21:28:02.974645+00:00",
+    "task_split": "holdout",
+    "task_count": 114,
+    "num_trials": 1,
+    "expected_simulations": 114,
+    "scored_simulations": 114,
+    "complete": true,
+    "avg_reward": 0.8508771929824561,
+    "pass_count": 97,
+    "stack": {
+      "agent_model": "deepseek-v4-pro",
+      "agent_extra": {},
+      "user_simulator": "glm-5.3-flash",
+      "user_simulator_independent_endpoint": true,
+      "user_simulator_base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "nl_judge": "qwen3.7-flash-2026-07-15",
+      "agent_temperature": 0.0,
+      "agent_thinking_enabled": true,
+      "agent_thinking_effort": "high",
+      "echo_reasoning_content": true,
+      "agent_args_sent": {
+        "extra_body": {
+          "thinking": {
+            "type": "enabled",
+            "reasoning_effort": "high"
+          }
+        }
+      },
+      "user_simulator_thinking_effort": "high",
+      "agent_independent_endpoint": true,
+      "agent_base_url": "https://api.deepseek.com",
+      "nl_judge_independent_endpoint": true,
+      "nl_judge_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "nl_judge_thinking_disabled": true,
+      "nl_judge_response_format": "json_schema",
+      "frozen_stack_temperature": 0.0,
+      "user_thinking_disabled": false,
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "warnings": [
+        "模拟用户 glm-5.3-flash 与候选模型 glm-5.2 同属 glm 家族：同源模型可能偏爱自家风格的输出，解读该候选成绩时必须注明此风险",
+        "NL 断言评判模型 qwen3.7-flash-2026-07-15 与候选模型 qwen3.7-max-2026-06-08 同属 qwen3.7 家族：同源模型可能偏爱自家风格的输出，解读该候选成绩时必须注明此风险"
+      ]
+    },
+    "resumed_task_ids": []
+  },
+  "checksum_file": "checksums.sha256",
+  "note": "成本以 scripts/analyze_eval.py 现算为准，不在此处冻结数字——价格快照会随时间新增条目，把成本抄进基线会让它悄悄过期。"
+}

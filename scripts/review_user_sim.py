@@ -166,7 +166,9 @@ def main() -> int:
         result = review_run(run_dir, args.reviewer, tasks)
         results.append(result)
         out = run_dir / f"user_sim_review_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
-        out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        out.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
         print(f"{result['user_simulator']:<26} 明细 -> {out.name}")
 
     print(f"\n{'模拟用户':<26}{'已审':>6}{'有错':>6}{'严重':>6}   分级")

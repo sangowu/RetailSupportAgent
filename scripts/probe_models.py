@@ -140,7 +140,9 @@ def main() -> int:
     for report in reports:
         name = report.model_id_requested.replace("/", "_")
         (run_dir / f"{name}.json").write_text(
-            json.dumps(report.to_json(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            json.dumps(report.to_json(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
 
     summary = {
@@ -154,7 +156,7 @@ def main() -> int:
         },
     }
     (run_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
 
     print(f"\n原始记录已写入 {run_dir}")

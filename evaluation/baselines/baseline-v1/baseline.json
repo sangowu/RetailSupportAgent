@@ -1,10 +1,13 @@
 {
   "baseline_id": "baseline-v1",
-  "frozen_at": "2026-09-07T20:39:25.210147+00:00",
+  "status": "archived",
+  "task_split": "holdout",
+  "scope_note": "保留验证集 40 题。**不是标准 τ²-bench Retail 分数**，是子集分；它的价值在于「未用于调参的独立验证」这一性质，故留档不删。",
+  "frozen_at": "2026-09-07T20:58:06.448946+00:00",
   "code": {
-    "commit": "3f589def2f280cff1e390649cac0afbb44c2dc27",
-    "dirty": false,
-    "dirty_excludes": "evaluation/baselines/baseline-v1"
+    "commit": "57c20e238d394bb2823bc7d76c63961bcab74919",
+    "dirty": true,
+    "dirty_excludes": "evaluation/baselines"
   },
   "upstream": {
     "repo": "https://github.com/sierra-research/tau2-bench",
