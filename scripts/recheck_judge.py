@@ -1,16 +1,20 @@
-"""用另一个判官对**已保存的轨迹**重新判定 NL 断言，量化判官噪声。
+"""Re-judge NL assertions on saved trajectories to quantify judge noise.
 
-为什么值得单独做：上游对断言是全有全无——
-`reward = 1.0 if all(met) else 0.0`——判官在任意一条断言上抖一下，
-整题就从满分掉到零分。噪声不会被平均掉，只会被放大。
+Worth doing separately because upstream scores assertions all-or-nothing:
+`reward = 1.0 if all(met) else 0.0`. One assertion flipping takes a task from
+full marks to zero. The noise is amplified, not averaged away.
 
-关键性质：**不重跑 Agent**。判官只吃"对话 + 断言"，两者都已存在结果文件里，
-所以复判只花判官那一侧的 token，是整个项目里最便宜的一次可信度检查。
+The agent is not re-run. The judge consumes only the conversation and the
+assertions, both already in the result files, so re-judging spends tokens on the
+judge alone. It is the cheapest credibility check in the project.
 
-用法：
-    uv run python scripts/recheck_judge.py --run <目录名>            # 用当前配置的判官复判
-    uv run python scripts/recheck_judge.py --run <目录名> --repeat 3 # 同一判官跑三遍看自洽性
-    uv run python scripts/recheck_judge.py --list                    # 只看哪些运行含可复判的题
+Usage:
+    # re-judge with the currently configured judge
+    uv run python scripts/recheck_judge.py --run <dir>
+    # three passes with the same judge, for self-consistency
+    uv run python scripts/recheck_judge.py --run <dir> --repeat 3
+    # list which runs contain re-judgeable tasks
+    uv run python scripts/recheck_judge.py --list
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ DATA_DIR = REPO / "third_party" / "tau2-bench" / "data"
 
 
 def assertions_of(task_id: str) -> list[str]:
-    """断言文本取自上游任务文件，而不是结果文件——结果文件里可能是空的。"""
+    """Assertion text comes from the upstream task file, not the result file, which
+    may hold an empty list."""
     tasks_path = REPO / "third_party" / "tau2-bench" / "data" / "tau2" / "domains" / "retail"
     raw: Any = json.loads((tasks_path / "tasks.json").read_text(encoding="utf-8"))
     tasks = raw.get("tasks", raw) if isinstance(raw, dict) else raw
@@ -53,7 +58,8 @@ def assertions_of(task_id: str) -> list[str]:
 
 
 def trajectory_of(sim: dict[str, Any]) -> list[Any]:
-    """判官只用到 role 与 content，用轻量替身即可，不必反序列化整个 Message。"""
+    """The judge uses only role and content, so a lightweight stand-in is enough and
+    the full Message need not be deserialized."""
     return [
         SimpleNamespace(role=str(m.get("role")), content=m.get("content"))
         for m in (sim.get("messages") or [])
@@ -66,15 +72,22 @@ def stored_verdicts(sim: dict[str, Any]) -> dict[str, bool]:
 
 
 def main() -> int:
-    # 必须在 parse_args 之前：--help 走 stdout，GBK 控制台遇中文会抛 UnicodeEncodeError。
+    # Before parse_args: --help writes to stdout, and a non-UTF-8 console would raise
+    # UnicodeEncodeError on non-ASCII characters.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="离线复判 NL 断言（只花判官侧 token）")
-    parser.add_argument("--run", default=None, help="evaluation/results 下的运行目录名")
-    parser.add_argument("--repeat", type=int, default=1, help="同一判官重复判定次数，看自洽性")
-    parser.add_argument("--list", action="store_true", help="列出各运行里可复判的题数后退出")
+    parser = argparse.ArgumentParser(
+        description="Re-judge NL assertions offline (spends judge-side tokens only)"
+    )
+    parser.add_argument("--run", default=None, help="run directory under evaluation/results")
+    parser.add_argument(
+        "--repeat", type=int, default=1, help="passes with the same judge, for self-consistency"
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="list re-judgeable task counts per run and exit"
+    )
     args = parser.parse_args()
 
     facts = load_task_facts()
@@ -87,11 +100,11 @@ def main() -> int:
                 for s in sims
                 if (tid := str(s.get("task_id"))) in facts and facts[tid].invokes_judge
             )
-            print(f"{run_dir.name:<50} 模拟 {len(sims):>3}    可复判 {judgeable:>3}")
+            print(f"{run_dir.name:<50} sims {len(sims):>3}    re-judgeable {judgeable:>3}")
         return 0
 
     if not args.run:
-        raise SystemExit("需要 --run <目录名>，或用 --list 先看有哪些运行")
+        raise SystemExit("--run <dir> is required, or use --list to see the runs")
 
     run_dir = RESULTS_ROOT / args.run
     sims = load_simulations(run_dir)
@@ -99,27 +112,33 @@ def main() -> int:
         s for s in sims if (tid := str(s.get("task_id"))) in facts and facts[tid].invokes_judge
     ]
     if not targets:
-        print(f"{args.run} 里没有任何带 NL 断言的题——这次运行从未调用过判官，无可复判。")
-        print("请先在带断言的题上跑一次评测（scripts/run_eval.py --pilot 已改为只选带断言的题）。")
+        print(
+            f"{args.run} contains no task with NL assertions: this run never called the "
+            "judge, so there is nothing to re-judge."
+        )
+        print(
+            "Run an evaluation on assertion-bearing tasks first "
+            "(scripts/run_eval.py --pilot now selects only those)."
+        )
         return 1
 
     prepare_environment(str(DATA_DIR))
     try:
         settings = Settings()  # type: ignore[call-arg]
     except Exception as exc:
-        print(f"配置读取失败（检查 .env）：{type(exc).__name__}", file=sys.stderr)
+        print(f"failed to read configuration (check .env): {type(exc).__name__}", file=sys.stderr)
         return 2
 
-    # agent_model 在复判里不发任何请求，只为构造合法的 EvalStack。
+    # agent_model sends no request during a re-judge; it only makes EvalStack valid.
     stack = EvalStack(settings=settings, agent_model="unused-in-recheck")
     judge_usage = patch_nl_judge(stack)
     for warning in stack.warnings():
-        print(f"[警告] {warning}")
+        print(f"[warning] {warning}")
 
     from tau2.evaluator.evaluator_nl_assertions import NLAssertionsEvaluator
 
-    print(f"复判判官：{stack.judge_model}    独立端点：{stack.judge_is_independent}")
-    print(f"可复判题数：{len(targets)}    每题判定 {args.repeat} 次\n")
+    print(f"judge: {stack.judge_model}    independent endpoint: {stack.judge_is_independent}")
+    print(f"re-judgeable tasks: {len(targets)}    passes per task: {args.repeat}\n")
 
     records: list[dict[str, Any]] = []
     disagreements = 0
@@ -134,9 +153,10 @@ def main() -> int:
         rounds: list[dict[str, bool]] = []
         broken = 0
         for _ in range(args.repeat):
-            # 上游拿到判官回复直接 json.loads，没有容错：判官吐出非 JSON 就整轮崩。
-            # 这里把"判官坏了"当成一条要记录的观测，而不是让它毁掉整次复判——
-            # 一个产不出可解析输出的判官，本身就是必须报告的结论。
+            # Upstream calls json.loads on the judge's reply with no error handling, so a
+            # non-JSON response aborts the run. Here a broken judge is recorded as an
+            # observation instead of destroying the re-judge: a judge that cannot produce
+            # parseable output is itself a result that must be reported.
             try:
                 checks = NLAssertionsEvaluator.evaluate_nl_assertions(trajectory, assertions)
             except json.JSONDecodeError:
@@ -144,7 +164,7 @@ def main() -> int:
                 continue
             rounds.append({c.nl_assertion: bool(c.met) for c in checks})
         if broken:
-            print(f"任务 {task_id:<5} 判官 {broken}/{args.repeat} 次返回非 JSON，无法解析")
+            print(f"task {task_id:<5} judge returned non-JSON {broken}/{args.repeat} times")
         if not rounds:
             records.append(
                 {
@@ -159,14 +179,14 @@ def main() -> int:
             )
             continue
 
-        # 自洽性：同一判官多轮之间是否给出同样结论
+        # Self-consistency: whether the same judge reaches the same verdict each pass.
         per_assertion_stable = {
             a: len({r.get(a) for r in rounds}) == 1 for a in {k for r in rounds for k in r}
         }
         task_stable = all(per_assertion_stable.values())
         unstable += 0 if task_stable else 1
 
-        # 与原判官的分歧
+        # Disagreements with the original judge.
         first = rounds[0]
         diffs = [a for a, met in first.items() if a in previous and previous[a] != met]
         disagreements += len(diffs)
@@ -176,15 +196,19 @@ def main() -> int:
 
         flag = ""
         if not task_stable:
-            flag = "  ← 同一判官自相矛盾"
+            flag = "  <- the same judge contradicted itself"
         elif diffs:
-            flag = "  ← 与原判官分歧"
+            flag = "  <- differs from the original judge"
         print(
-            f"任务 {task_id:<5} 断言 {len(assertions)}    "
-            f"原判 {old_reward:.0f} → 复判 {new_reward:.0f}    分歧 {len(diffs)}{flag}"
+            f"task {task_id:<5} assertions {len(assertions)}    "
+            f"original {old_reward:.0f} -> re-judged {new_reward:.0f}    "
+            f"disagreements {len(diffs)}{flag}"
         )
         for assertion in diffs:
-            print(f"    原判 {previous[assertion]} / 复判 {first[assertion]}：{assertion[:80]}")
+            print(
+                f"    original {previous[assertion]} / re-judged {first[assertion]}: "
+                f"{assertion[:80]}"
+            )
 
         records.append(
             {
@@ -202,15 +226,23 @@ def main() -> int:
     unparseable = sum(int(r.get("judge_unparseable") or 0) for r in records)
     if unparseable:
         print(
-            f"\n[严重] 判官共 {unparseable} 次返回非 JSON——上游对此没有容错，"
-            f"真跑评测时会直接把整轮跑崩。这个判官不可用于正式运行。"
+            f"\n[serious] the judge returned non-JSON {unparseable} times. Upstream has no "
+            "error handling for this and a real run would abort. This judge cannot be used "
+            "for an official run."
         )
-    print(f"\n合计断言 {total_assertions} 条，与原判官分歧 {disagreements} 条")
+    print(
+        f"\n{total_assertions} assertions in total, {disagreements} disagreeing with the "
+        "original judge"
+    )
     if args.repeat > 1:
-        print(f"同一判官自相矛盾的题数：{unstable}/{len(records)}")
-    print("提示：分歧多不代表新判官更差，只代表两者不可互换——历史成绩必须整体重判。")
+        print(f"tasks where the same judge contradicted itself: {unstable}/{len(records)}")
+    print(
+        "More disagreements do not mean the new judge is worse, only that the two are not "
+        "interchangeable: historical scores would have to be re-judged as a whole."
+    )
 
-    # 这次复判到底花了多少：判官是唯一发请求的一方，Agent 侧一分钱没花
+    # What this re-judge cost: the judge is the only party sending requests, and the
+    # agent side spends nothing.
     usage = judge_usage.describe()
     tier = deepseek_tier()
     price = price_for(str(stack.judge_model))
@@ -220,14 +252,14 @@ def main() -> int:
         else None
     )
     print(
-        f"\n判官用量：{usage['judge_calls']} 次调用，"
-        f"输入 {usage['prompt_tokens']} tok（缓存命中 {usage['cached_tokens']}），"
-        f"输出 {usage['completion_tokens']} tok（其中推理 {usage['reasoning_tokens']}）"
+        f"\njudge usage: {usage['judge_calls']} calls, "
+        f"input {usage['prompt_tokens']} tok (cached {usage['cached_tokens']}), "
+        f"output {usage['completion_tokens']} tok (reasoning {usage['reasoning_tokens']})"
     )
     if cost is None:
-        print(f"本次复判花费：{stack.judge_model} 不在价格快照里，无法折算")
+        print(f"cost: {stack.judge_model} is not in the price snapshot, cannot be computed")
     else:
-        print(f"本次复判花费：约 {cost:.4f} 元（{tier} 时段价；Agent 侧零成本）")
+        print(f"cost: about {cost:.4f} CNY ({tier} tier; the agent side spends nothing)")
 
     out = run_dir / f"judge_recheck_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
     out.write_text(
@@ -254,7 +286,7 @@ def main() -> int:
         encoding="utf-8",
         newline="\n",
     )
-    print(f"明细：{out}")
+    print(f"details: {out}")
     return 0
 
 

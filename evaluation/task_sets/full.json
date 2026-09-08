@@ -1,5 +1,5 @@
 {
-  "$comment": "全集＝上游 base 划分（train + test），按上游原始顺序。覆盖全部 114 题才能称「标准 τ²-bench Retail 分数」；dev/holdout 是它的两个子集，子集分不得冒充全集分。",
+  "$comment": "The full set is upstream's base split (train + test) in upstream order. Only all 114 tasks may be called a standard τ²-bench Retail score; dev and holdout are subsets and a subset score must not stand in for it.",
   "source": "tau2-bench v1.0.1 split_tasks.json:base",
   "count": 114,
   "task_ids": [

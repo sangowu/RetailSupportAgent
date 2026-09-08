@@ -3,9 +3,9 @@
   "status": "archived",
   "task_split": "holdout",
   "scope_note": "The 40-task holdout. Not a standard τ²-bench Retail score but a subset score; its value is the property of being an independent verification never used for tuning, so it is archived rather than deleted.",
-  "frozen_at": "2026-09-08T16:36:20.507004+00:00",
+  "frozen_at": "2026-09-08T16:42:48.107702+00:00",
   "code": {
-    "commit": "ce8d039331b86f71fe8c25b3107552a7966d3326",
+    "commit": "73ea9bc6327074a4fad69c9334f643e9f9f3bd42",
     "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },

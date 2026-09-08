@@ -1,5 +1,5 @@
 {
-  "$comment": "开发集＝上游 train 划分。仅此集合可用于筛选、调参与提示词迭代。",
+  "$comment": "The dev set is upstream's train split. Only this set may be used for selection, tuning and prompt iteration.",
   "source": "tau2-bench v1.0.1 split_tasks.json:train",
   "count": 74,
   "task_ids": [

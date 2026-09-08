@@ -3,9 +3,9 @@
   "status": "reference",
   "task_split": "full",
   "scope_note": "All 114 tasks, which may be called a standard τ²-bench Retail score. It includes the 74 dev tasks, some of which were used for tuning, so it is a standard-scope score rather than an independent verification; the two are not interchangeable. The subject under test is upstream's llm_agent, not this project's agent. It now serves as the control for baseline-v3 and is kept and verified.",
-  "frozen_at": "2026-09-08T16:36:20.876562+00:00",
+  "frozen_at": "2026-09-08T16:42:48.495822+00:00",
   "code": {
-    "commit": "ce8d039331b86f71fe8c25b3107552a7966d3326",
+    "commit": "73ea9bc6327074a4fad69c9334f643e9f9f3bd42",
     "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },

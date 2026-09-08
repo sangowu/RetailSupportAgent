@@ -1,21 +1,24 @@
-"""离线审查**模拟用户**的行为质量。换模拟用户时，这是唯一站得住的"更好"口径。
+"""Review the behaviour of the simulated user offline. When replacing a simulated
+user, this is the only defensible definition of "better".
 
-为什么不能用 Agent 分数衡量模拟用户：分数高可能恰恰因为模拟用户变差了。
-2026-09-06 实测：关掉模拟用户的思考后 Agent 分数从 18/24 涨到 23/24——
-原因是它把一道复合任务拆成了几道单任务，把考卷改简单了。
-上游把这类错误明确归为 `critical_helped`（帮了 Agent 不该帮的忙）。
+The agent's score cannot measure the simulated user: a higher score may be caused
+by the simulated user getting worse. Measured 2026-09-06: disabling the simulated
+user's thinking raised the agent from 18/24 to 23/24, because it split a compound
+task into several single tasks and made the test easier. Upstream classifies that
+as `critical_helped`.
 
-用上游的 `UserOnlyReviewer`：它逐条核对模拟用户说过的每个事实是否能从
-任务指令里推出来，并分级：
-  critical_helped   —— 让任务变简单（泄露信息、代替 Agent 解题）
-  critical_hindered —— 让任务变难或不可能（说了错话、自相矛盾）
-  minor             —— 有错但没影响结果
+Uses upstream's `UserOnlyReviewer`, which checks whether every fact the simulated
+user stated follows from the task instructions, and grades them:
+  critical_helped   - made the task easier (leaked information, solved it for the agent)
+  critical_hindered - made the task harder or impossible (wrong or contradictory)
+  minor             - wrong but did not affect the outcome
 
-**审查模型必须跨候选保持同一个**，否则比的是审查模型不是模拟用户。
+The reviewer model must stay the same across candidates, or the comparison is
+between reviewers rather than between simulated users.
 
-用法：
-    uv run python scripts/review_user_sim.py --run <目录名>
-    uv run python scripts/review_user_sim.py --run <A> --run <B>   # 并排比较
+Usage:
+    uv run python scripts/review_user_sim.py --run <dir>
+    uv run python scripts/review_user_sim.py --run <A> --run <B>   # side by side
 """
 
 from __future__ import annotations
@@ -44,9 +47,10 @@ from retail_support_agent.results_io import load_simulations  # noqa: E402
 RESULTS_ROOT = REPO / "evaluation" / "results"
 DATA_DIR = REPO / "third_party" / "tau2-bench" / "data"
 
-# 审查模型：与被测（deepseek-v4）、判官（qwen3.7-flash）、以及正在比较的两个
-# 模拟用户（qwen3.6-plus / glm-5.3-flash）都不同源，避免"自家人给自家人打分"。
-# 一旦选定就不要换——换了就不是在比模拟用户了。
+# The reviewer shares no origin with the agent under test (deepseek-v4), the judge
+# (qwen3.7-flash), or either simulated user being compared (qwen3.6-plus,
+# glm-5.3-flash), so no family grades its own. Once chosen it does not change, or
+# the comparison stops being about simulated users.
 DEFAULT_REVIEWER = "qwen3.8-max"
 
 
@@ -82,9 +86,10 @@ def review_run(run_dir: Path, reviewer: str, tasks: dict[str, Any]) -> dict[str,
         task_raw = tasks.get(task_id)
         if task_raw is None:
             continue
-        # 上游没把 user_info 落盘（`sim["info"]` 是空的），所以自己构造：
-        # guidelines 取自数据目录里的同一份文件，与运行时用的是同一段文本。
-        # retail 域的模拟用户不使用工具，故 use_tools=False。
+        # Upstream does not persist user_info (`sim["info"]` is empty), so it is
+        # reconstructed here. The guidelines come from the same file in the data
+        # directory that the run used. The retail simulated user has no tools, hence
+        # use_tools=False.
         user_info = UserInfo(
             implementation="user_simulator",
             llm=user_model,
@@ -133,8 +138,12 @@ def main() -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="离线审查模拟用户的行为质量")
-    parser.add_argument("--run", action="append", required=True, help="可重复，用于并排比较")
+    parser = argparse.ArgumentParser(
+        description="Review the behaviour of the simulated user offline"
+    )
+    parser.add_argument(
+        "--run", action="append", required=True, help="repeatable, for a side-by-side comparison"
+    )
     parser.add_argument("--reviewer", default=DEFAULT_REVIEWER)
     args = parser.parse_args()
 
@@ -143,10 +152,11 @@ def main() -> int:
     try:
         settings = Settings()  # type: ignore[call-arg]
     except Exception as exc:
-        print(f"配置读取失败（检查 .env）：{type(exc).__name__}", file=sys.stderr)
+        print(f"failed to read configuration (check .env): {type(exc).__name__}", file=sys.stderr)
         return 2
 
-    # 审查判官跑在 DashScope 上：它既不是被测、也不是模拟用户候选，额度互不影响。
+    # The reviewer runs on DashScope: it is neither the agent under test nor a
+    # simulated-user candidate, so their quotas are independent.
     usage = patch_user_reviewer(
         {
             "api_base": settings.base_url,
@@ -158,7 +168,7 @@ def main() -> int:
     )
 
     tasks = load_tasks()
-    print(f"审查模型：{args.reviewer}（跨候选必须保持同一个）\n")
+    print(f"reviewer model: {args.reviewer} (must stay the same across candidates)\n")
 
     results = []
     for name in args.run:
@@ -169,36 +179,47 @@ def main() -> int:
         out.write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
         )
-        print(f"{result['user_simulator']:<26} 明细 -> {out.name}")
+        print(f"{result['user_simulator']:<26} details -> {out.name}")
 
-    print(f"\n{'模拟用户':<26}{'已审':>6}{'有错':>6}{'严重':>6}   分级")
+    print(
+        f"\n{'simulated user':<26}{'reviewed':>10}{'with errors':>13}{'critical':>10}   by severity"
+    )
     for r in results:
         by = r["errors_by_severity"]
-        detail = "  ".join(f"{k} {v}" for k, v in sorted(by.items())) or "无"
+        detail = "  ".join(f"{k} {v}" for k, v in sorted(by.items())) or "none"
         print(
-            f"{r['user_simulator']:<26}{r['reviewed']:>6}"
-            f"{r['sims_with_any_error']:>6}{r['sims_with_critical_error']:>6}   {detail}"
+            f"{r['user_simulator']:<26}{r['reviewed']:>10}"
+            f"{r['sims_with_any_error']:>13}{r['sims_with_critical_error']:>10}   {detail}"
         )
         if r["skipped"]:
-            print(f"{'':<26}（{r['skipped']} 题缺 guidelines，未审）")
+            print(f"{'':<26}({r['skipped']} tasks lacked guidelines and were not reviewed)")
         if r["errors_by_tag"]:
             top = sorted(r["errors_by_tag"].items(), key=lambda kv: -kv[1])[:5]
-            print(f"{'':<26}高频标签：{'  '.join(f'{k} {v}' for k, v in top)}")
+            print(f"{'':<26}most frequent tags: {'  '.join(f'{k} {v}' for k, v in top)}")
 
-    print("\n口径提醒：critical_helped 是「把考卷改简单」，对模拟用户而言是最坏的一类错，")
-    print("          它会让 Agent 分数虚高。绝不能因为 Agent 分数高就说模拟用户更好。")
+    print(
+        "\nNote: critical_helped means the test was made easier, the worst class of "
+        "error for a simulated user."
+    )
+    print(
+        "      It inflates the agent's score, so a higher agent score is never evidence "
+        "that the simulated user is better."
+    )
     totals = usage.describe()
     price = price_for(args.reviewer)
     if price is None:
-        print(f"\n[注意] 审查模型 {args.reviewer} 不在价格快照里，本次审查成本无法折算。")
+        print(
+            f"\n[note] the reviewer {args.reviewer} is not in the price snapshot, so this "
+            "review's cost cannot be computed."
+        )
     else:
         cost = price.cost(
             totals["prompt_tokens"], totals["completion_tokens"], totals["cached_tokens"]
         )
         print(
-            f"\n审查用量：{totals['judge_calls']} 次调用，"
-            f"输入 {totals['prompt_tokens']} tok（缓存 {totals['cached_tokens']}），"
-            f"输出 {totals['completion_tokens']} tok，约 {cost:.4f} 元"
+            f"\nreview usage: {totals['judge_calls']} calls, "
+            f"input {totals['prompt_tokens']} tok (cached {totals['cached_tokens']}), "
+            f"output {totals['completion_tokens']} tok, about {cost:.4f} CNY"
         )
     return 0
 
