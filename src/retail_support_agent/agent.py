@@ -16,6 +16,7 @@ DB component of the benchmark reward.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, TypedDict
@@ -82,6 +83,17 @@ class TurnResult:
     tool_calls: list[str] = field(default_factory=list)
     pending_confirmation: str | None = None
     stop_reason: str | None = None
+
+
+@dataclass
+class RecoveryReport:
+    """What a recovery restored. Returned so a caller can log it and tests can assert on
+    it, instead of inferring recovery from side effects."""
+
+    recovered: bool
+    messages: int = 0
+    operations_replayed: int = 0
+    pending_confirmation: bool = False
 
 
 ChatFn = Callable[[list[dict[str, Any]], list[dict[str, Any]]], Any]
@@ -282,7 +294,76 @@ class RetailAgent:
             tool_calls=list(self._turn_tools),
         )
         self._journal("assistant", result.reply, result.tool_calls)
+        self._save_progress()
         return result
+
+    # ---- recovery (M2) --------------------------------------------------
+
+    def recover(self) -> RecoveryReport:
+        """Rebuild this session from the database after a restart.
+
+        Four things are restored, in this order:
+
+        1. **The business state**, by replaying every succeeded write from `operations`
+           onto the fresh domain. The retail tools are deterministic - no randomness and
+           no clock - so replaying the same arguments in the same order onto the same
+           initial data reproduces the same database. `db_hash` makes that checkable
+           rather than assumed.
+        2. **The conversation**, from `messages`. Only the visible turns were journaled,
+           not the intermediate tool messages, so the model resumes with what the user
+           saw rather than the full tool transcript. That is enough to continue the
+           conversation and avoids storing a second copy of tool results that are
+           already in `operations`.
+        3. **The authorizations**: every confirmed fingerprint, so a write the user
+           already approved is not held again, plus any confirmation still pending.
+        4. **The stop conditions**: the counters and the session's age. Without them a
+           restart would reset the limits, making a restart a way around them.
+
+        Replay calls the domain directly and never goes through `execute_once`: a
+        recovery that recorded new operations would turn rebuilding into new work, and
+        the audit trail would show a write that no user authorized.
+        """
+        if self._store is None or self._session_id is None:
+            return RecoveryReport(recovered=False)
+
+        operations = self._store.operations(self._session_id)
+        for op in operations:
+            if op.status != "succeeded":
+                continue
+            self._domain.execute(op.tool_name, dict(op.arguments))
+
+        stored = self._store.messages(self._session_id)
+        for row in stored:
+            if row.role in ("user", "assistant"):
+                self._messages.append({"role": row.role, "content": row.content})
+
+        self._session.confirmed_fingerprints |= self._store.confirmed_fingerprints(self._session_id)
+        self._confirmation_id = self._store.last_confirmation_id(self._session_id)
+
+        pending = self._store.pending_confirmation(self._session_id)
+        if pending is not None:
+            self._session.pending = ProposedCall(pending.tool_name, dict(pending.arguments))
+
+        progress = self._store.progress(self._session_id)
+        if progress is not None:
+            self._session.steps = progress.steps
+            self._session.tool_calls = progress.tool_calls
+            # The deadline is measured from when the session was created, not from when
+            # this process started. Rebasing the monotonic origin keeps elapsed() honest
+            # without giving SessionState a second notion of time.
+            self._session.started_at = time.monotonic() - progress.age_seconds
+
+        return RecoveryReport(
+            recovered=bool(stored or operations),
+            messages=len(stored),
+            operations_replayed=sum(1 for op in operations if op.status == "succeeded"),
+            pending_confirmation=pending is not None,
+        )
+
+    def db_hash(self) -> str:
+        """Fingerprint of the domain database. Used to check a recovery reproduced the
+        state, rather than trusting that it did."""
+        return self._domain.db_hash()
 
     # ---- persistence (no-ops when store is None) ------------------------
 
@@ -298,6 +379,12 @@ class RetailAgent:
             return
         seq = self._store.next_seq(self._session_id)
         self._store.append_message(self._session_id, seq, role, content, tool_calls)
+
+    def _save_progress(self) -> None:
+        """Persist the stop-condition counters so a restart resumes them."""
+        if self._store is None or self._session_id is None:
+            return
+        self._store.save_progress(self._session_id, self._session.steps, self._session.tool_calls)
 
     def _record_confirmation_request(self, proposed: ProposedCall) -> None:
         if self._store is None or self._session_id is None:

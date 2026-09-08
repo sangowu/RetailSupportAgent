@@ -142,4 +142,4 @@ the machine's locale encoding (GBK), and the migration test failed with
   which was not done and is not claimed.
 - **Resuming a conversation across processes.** After a restart the agent instance and
   the domain environment are rebuilt, and although the message history is persisted it is
-  not replayed. That is M2's subject.
+  not replayed. That is M2's subject, now delivered in [M2](M2_RECOVERY.md).

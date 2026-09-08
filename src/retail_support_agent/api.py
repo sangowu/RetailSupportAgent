@@ -6,6 +6,7 @@ registration or public access. Real authentication (Cognito) is M3.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -23,6 +24,11 @@ from retail_support_agent.store import Store
 # because it owns both a pending order (cancellable) and a delivered order
 # (returnable), so all three flows can be demonstrated under one identity.
 DEMO_USER_ID = "ava_moore_2033"
+
+# How long one process holds a session before another may take it over. It has to
+# outlast a normal turn (a model call plus tool calls, seconds) and stay well under the
+# 180s session limit, so a crashed process does not block a session for its whole life.
+CLAIM_TTL_SECONDS = 60.0
 
 
 class ChatRequest(BaseModel):
@@ -51,13 +57,19 @@ def make_store(settings: Settings) -> Store | None:
     return Store(make_session_factory(engine))
 
 
+class SessionBusyError(RuntimeError):
+    """Another process holds this session's lease."""
+
+
 class SessionRegistry:
     """Session table. One session is processed serially.
 
-    With a database configured, sessions, messages, confirmations and write
-    operations are persisted (M1). Agent instances still live in the process because
-    the domain environment is in memory. Resuming a conversation across processes is
-    M2 and is not claimed here.
+    With a database configured, sessions, messages, confirmations and write operations
+    are persisted (M1), and a session missing from this process is rebuilt from the
+    database rather than started over (M2).
+
+    Agent instances still live in the process because the domain environment is in
+    memory; what M2 adds is the ability to reconstruct one.
     """
 
     def __init__(
@@ -66,26 +78,50 @@ class SessionRegistry:
         config: ModelConfig,
         user_id: str,
         store: Store | None = None,
+        owner: str | None = None,
     ) -> None:
         self._settings = settings
         self._config = config
         self._user_id = user_id
         self._store = store
+        # Identifies this process in the claims table. Generated per app instance, so
+        # two processes never share one, and a restart does not inherit the old lease -
+        # it waits for it to expire, which is the correct behaviour when the previous
+        # process may still be finishing a turn.
+        self._owner = owner or f"p-{uuid.uuid4().hex[:12]}"
         self._agents: dict[str, RetailAgent] = {}
 
+    @property
+    def owner(self) -> str:
+        return self._owner
+
     def get(self, session_id: str) -> RetailAgent:
+        """Return the session's agent, rebuilding it from the database if this process
+        does not have it.
+
+        Raises SessionBusyError when another process holds the lease. Refusing is the only
+        safe answer: two processes advancing one session would interleave their writes,
+        and one's confirmation could authorize the other's call.
+        """
+        if self._store is not None and not self._store.claim_session(
+            session_id, self._owner, CLAIM_TTL_SECONDS
+        ):
+            raise SessionBusyError(session_id)
+
         if session_id not in self._agents:
             # Each session gets its own domain environment and database copy.
             domain = RetailDomain()
             state = SessionState(user_id=self._user_id, limits=SessionLimits())
             chat_fn = make_chat_fn(self._settings, self._config)
-            self._agents[session_id] = RetailAgent(
-                chat_fn, domain, state, store=self._store, session_id=session_id
-            )
+            agent = RetailAgent(chat_fn, domain, state, store=self._store, session_id=session_id)
+            agent.recover()
+            self._agents[session_id] = agent
         return self._agents[session_id]
 
     def reset(self, session_id: str) -> None:
         self._agents.pop(session_id, None)
+        if self._store is not None:
+            self._store.release_session(session_id, self._owner)
 
     def reset_all(self) -> int:
         """Drop every session and return how many were dropped.
@@ -98,6 +134,9 @@ class SessionRegistry:
         none". Both are success, but they are different events for an operator.
         """
         count = len(self._agents)
+        if self._store is not None:
+            for session_id in self._agents:
+                self._store.release_session(session_id, self._owner)
         self._agents.clear()
         return count
 
@@ -129,7 +168,8 @@ def create_app(
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "milestone": "M0.3",
+            "milestone": "M2",
+            "owner": registry.owner,
             "demo_user_id": user_id,
             # The start/stop scripts use this to tell whether stopping now would
             # interrupt a demo in progress.
@@ -138,7 +178,16 @@ def create_app(
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(request: ChatRequest) -> ChatResponse:
-        agent = registry.get(request.session_id)
+        try:
+            agent = registry.get(request.session_id)
+        except SessionBusyError as exc:
+            # 409, not 503: the request is not going to succeed on retry against a
+            # different instance either, and the caller has to stop sending this
+            # session elsewhere. A 5xx would invite a retry loop.
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session {request.session_id} is being handled by another process.",
+            ) from exc
         try:
             result = agent.send(request.message)
         except Exception as exc:
