@@ -64,24 +64,41 @@ class Permission(StrEnum):
     ORDER_WRITE = "order:write"
     AUDIT_READ = "audit:read"
     SESSION_RESET_ALL = "session:reset_all"
+    # M4. Reading a ticket, working one that is assigned to you, assigning one, and
+    # deciding an escalation are four different powers and are held by different roles:
+    # a supervisor assigns and decides but does not work a case, because deciding an
+    # action you performed yourself is not a control.
+    TICKET_READ = "ticket:read"
+    TICKET_WORK = "ticket:work"
+    TICKET_ASSIGN = "ticket:assign"
+    ESCALATION_DECIDE = "escalation:decide"
 
 
 # The role matrix from docs/ARCHITECTURE_AND_ACCESS.md, restricted to what this stage
 # can actually enforce.
 #
-# `agent` gains nothing over `customer` here, and that is honest rather than an
-# oversight: an agent acting on another customer's order requires a ticket assignment,
-# which is M4. Granting a permission the code cannot honour would make the matrix
-# decorative.
+# `supervisor` deliberately does not hold TICKET_WORK: it assigns cases and decides
+# escalations, and an approver who also performs the action is not an approver. That is
+# the same rule as "a supervisor cannot confirm on a customer's behalf".
 ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
     "customer": frozenset({Permission.ORDER_READ, Permission.ORDER_WRITE}),
-    "agent": frozenset({Permission.ORDER_READ, Permission.ORDER_WRITE}),
+    "agent": frozenset(
+        {
+            Permission.ORDER_READ,
+            Permission.ORDER_WRITE,
+            Permission.TICKET_READ,
+            Permission.TICKET_WORK,
+        }
+    ),
     "supervisor": frozenset(
         {
             Permission.ORDER_READ,
             Permission.ORDER_WRITE,
             Permission.AUDIT_READ,
             Permission.SESSION_RESET_ALL,
+            Permission.TICKET_READ,
+            Permission.TICKET_ASSIGN,
+            Permission.ESCALATION_DECIDE,
         }
     ),
     # Read-only access to the audit trail and nothing else. It exists to make the

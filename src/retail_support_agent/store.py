@@ -14,6 +14,7 @@ Three rules; everything else is detail:
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from collections.abc import Callable, Iterable
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from retail_support_agent.auth import Identity
 from retail_support_agent.db import (
+    ApprovalRow,
     AuditEventRow,
     ConfirmationRow,
     IdentityRow,
@@ -35,6 +37,8 @@ from retail_support_agent.db import (
     RoleMembershipRow,
     SessionClaimRow,
     SessionRow,
+    TicketAssignmentRow,
+    TicketRow,
 )
 from retail_support_agent.guardrails import ProposedCall
 
@@ -59,6 +63,48 @@ class SessionProgress:
     steps: int
     tool_calls: int
     age_seconds: float
+
+
+# How long a human decision stays valid. The architecture document fixes the default at
+# 30 minutes: long enough for someone to read a case, short enough that an authorization
+# is not sitting in a table waiting to be used tomorrow. Callers may pass their own.
+APPROVAL_TTL_SECONDS = 30 * 60.0
+
+
+@dataclass(frozen=True)
+class TicketSummary:
+    """A ticket as the API reports it, with its current assignee resolved."""
+
+    id: int
+    session_id: str
+    user_id: str
+    state: str
+    summary: str
+    requested_by: str | None
+    assignee: str | None
+    resolution: str
+    created_at: dt.datetime
+    closed_at: dt.datetime | None
+
+    @property
+    def is_open(self) -> bool:
+        return self.state in ("open", "assigned")
+
+
+@dataclass(frozen=True)
+class SessionTiming:
+    """How long a session took, split by who was holding it up.
+
+    Reporting one total would make a session look slower the longer a person took to
+    answer, and every latency comparison against a baseline would stop meaning anything.
+    """
+
+    total_seconds: float
+    waiting_seconds: float
+
+    @property
+    def system_seconds(self) -> float:
+        return max(0.0, self.total_seconds - self.waiting_seconds)
 
 
 @dataclass(frozen=True)
@@ -453,6 +499,293 @@ class Store:
                 .order_by(AuditEventRow.id)
             )
             return list(db.scalars(stmt))
+
+    # ---- tickets, assignments and approvals (M4) ------------------------
+    def open_ticket(
+        self, session_id: str, user_id: str, summary: str, requested_by: str | None
+    ) -> TicketSummary:
+        """Record a handoff to a human, or return the ticket this session already has.
+
+        A second handoff on a session that is already waiting is the same case, not a new
+        one. The partial unique index says so; this method reads it back rather than
+        letting the insert fail, because "you already asked" is a normal outcome.
+        """
+        existing = self.open_ticket_for(session_id)
+        if existing is not None:
+            return existing
+        with self._sessions.begin() as db:
+            row = TicketRow(
+                session_id=session_id,
+                user_id=user_id,
+                summary=summary,
+                requested_by=requested_by,
+                state="open",
+            )
+            db.add(row)
+            db.flush()
+            ticket_id = int(row.id)
+        found = self.ticket(ticket_id)
+        assert found is not None  # just inserted
+        return found
+
+    def ticket(self, ticket_id: int) -> TicketSummary | None:
+        with self._sessions() as db:
+            row = db.get(TicketRow, ticket_id)
+            return self._summarize(db, row) if row is not None else None
+
+    def open_ticket_for(self, session_id: str) -> TicketSummary | None:
+        """The live ticket suspending this session, if there is one."""
+        with self._sessions() as db:
+            stmt = select(TicketRow).where(
+                TicketRow.session_id == session_id,
+                TicketRow.state.in_(("open", "assigned")),
+            )
+            row = db.scalars(stmt).one_or_none()
+            return self._summarize(db, row) if row is not None else None
+
+    def tickets(self, assignee: str | None = None, open_only: bool = False) -> list[TicketSummary]:
+        """Tickets, oldest first. `assignee` restricts to cases currently held by one
+        person, which is how an agent sees their own queue and nobody else's."""
+        with self._sessions() as db:
+            stmt = select(TicketRow).order_by(TicketRow.id)
+            if open_only:
+                stmt = stmt.where(TicketRow.state.in_(("open", "assigned")))
+            if assignee is not None:
+                stmt = stmt.join(
+                    TicketAssignmentRow, TicketAssignmentRow.ticket_id == TicketRow.id
+                ).where(
+                    TicketAssignmentRow.assignee == assignee,
+                    TicketAssignmentRow.released_at.is_(None),
+                )
+            return [self._summarize(db, row) for row in db.scalars(stmt)]
+
+    def assign_ticket(self, ticket_id: int, assignee: str, assigned_by: str) -> bool:
+        """Give a ticket to someone, releasing whoever held it. False if it is closed.
+
+        Reassignment releases rather than overwrites: who could reach a customer's orders,
+        and when, has to stay readable afterwards.
+        """
+        with self._sessions.begin() as db:
+            ticket = db.get(TicketRow, ticket_id)
+            if ticket is None or ticket.state not in ("open", "assigned"):
+                return False
+            stmt = select(TicketAssignmentRow).where(
+                TicketAssignmentRow.ticket_id == ticket_id,
+                TicketAssignmentRow.released_at.is_(None),
+            )
+            for held in db.scalars(stmt):
+                held.released_at = _utcnow(db)
+            db.flush()
+            db.add(
+                TicketAssignmentRow(ticket_id=ticket_id, assignee=assignee, assigned_by=assigned_by)
+            )
+            ticket.state = "assigned"
+            return True
+
+    def close_ticket(self, ticket_id: int, state: str, resolution: str) -> bool:
+        """Resolve or reject a ticket and release its assignment. False if already closed."""
+        if state not in ("resolved", "rejected"):
+            raise ValueError("a ticket closes as resolved or rejected")
+        with self._sessions.begin() as db:
+            ticket = db.get(TicketRow, ticket_id)
+            if ticket is None or ticket.state not in ("open", "assigned"):
+                return False
+            stmt = select(TicketAssignmentRow).where(
+                TicketAssignmentRow.ticket_id == ticket_id,
+                TicketAssignmentRow.released_at.is_(None),
+            )
+            for held in db.scalars(stmt):
+                held.released_at = _utcnow(db)
+            ticket.state = state
+            ticket.resolution = resolution
+            ticket.closed_at = _utcnow(db)
+            return True
+
+    def assignee_of(self, ticket_id: int) -> str | None:
+        """Who currently holds the ticket. Read per request rather than cached: a released
+        assignment must stop granting access immediately, the same rule M3 applies to
+        roles."""
+        with self._sessions() as db:
+            return self._assignee(db, ticket_id)
+
+    def open_approval(
+        self,
+        session_id: str,
+        call: ProposedCall,
+        requested_by: str,
+        ticket_id: int | None = None,
+        ttl_seconds: float = APPROVAL_TTL_SECONDS,
+    ) -> int:
+        """Ask a human to decide one specific action, and return the request's id.
+
+        A pending request for the same fingerprint is reused, so a model proposing the
+        same call twice does not fill a supervisor's queue with copies of one decision.
+        """
+        with self._sessions.begin() as db:
+            stmt = select(ApprovalRow).where(
+                ApprovalRow.session_id == session_id,
+                ApprovalRow.fingerprint == call.fingerprint,
+                ApprovalRow.state == "pending",
+                ApprovalRow.expires_at > func.now(),
+            )
+            existing = db.scalars(stmt).first()
+            if existing is not None:
+                return int(existing.id)
+            row = ApprovalRow(
+                ticket_id=ticket_id,
+                session_id=session_id,
+                tool_name=call.name,
+                fingerprint=call.fingerprint,
+                arguments=dict(call.arguments),
+                requested_by=requested_by,
+                state="pending",
+                # The database sets the deadline, not the application: two processes with
+                # different clocks must not disagree about when an authorization ends.
+                expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_seconds),
+            )
+            db.add(row)
+            db.flush()
+            return int(row.id)
+
+    def decide_approval(self, approval_id: int, approve: bool, decided_by: str) -> str:
+        """Approve or reject a pending request. Returns what happened.
+
+        The rule that nobody decides their own escalation is enforced here rather than in
+        the API, because it is a property of the record: a second entry point must not be
+        able to skip it.
+        """
+        with self._sessions.begin() as db:
+            row = db.get(ApprovalRow, approval_id)
+            if row is None:
+                return "not_found"
+            if row.state != "pending":
+                return "already_decided"
+            if row.requested_by == decided_by:
+                return "self_decision"
+            if db.scalar(select(func.now() > row.expires_at)):
+                return "expired"
+            row.state = "approved" if approve else "rejected"
+            row.decided_by = decided_by
+            row.decided_at = _utcnow(db)
+            return str(row.state)
+
+    def approval(self, approval_id: int) -> ApprovalRow | None:
+        with self._sessions() as db:
+            return db.get(ApprovalRow, approval_id)
+
+    def pending_approvals(self, session_id: str | None = None) -> list[ApprovalRow]:
+        """Requests still waiting for a human, excluding those that ran out of time.
+
+        An expired request is not offered as pending: deciding it would produce an
+        approval that authorizes nothing, which is worse than not offering the button.
+        """
+        with self._sessions() as db:
+            stmt = select(ApprovalRow).where(
+                ApprovalRow.state == "pending", ApprovalRow.expires_at > func.now()
+            )
+            if session_id is not None:
+                stmt = stmt.where(ApprovalRow.session_id == session_id)
+            return list(db.scalars(stmt.order_by(ApprovalRow.id)))
+
+    def approved_fingerprints(self, session_id: str) -> set[str]:
+        """Argument sets a human approved and that are still valid.
+
+        Expiry is applied by the database in the same query rather than compared in
+        Python afterwards, so one approval cannot be valid for one reader and expired for
+        another.
+        """
+        with self._sessions() as db:
+            stmt = select(ApprovalRow.fingerprint).where(
+                ApprovalRow.session_id == session_id,
+                ApprovalRow.state == "approved",
+                ApprovalRow.expires_at > func.now(),
+            )
+            return set(db.scalars(stmt))
+
+    def bind_session_to_ticket(
+        self, session_id: str, user_id: str, subject: str, ticket_id: int
+    ) -> None:
+        """Mark a session as an agent working one ticket, creating it if needed."""
+        with self._sessions.begin() as db:
+            row = db.get(SessionRow, session_id)
+            if row is None:
+                db.add(
+                    SessionRow(id=session_id, user_id=user_id, subject=subject, ticket_id=ticket_id)
+                )
+                return
+            row.ticket_id = ticket_id
+
+    def session_ticket(self, session_id: str) -> int | None:
+        with self._sessions() as db:
+            row = db.get(SessionRow, session_id)
+            return row.ticket_id if row else None
+
+    def session_timing(self, session_id: str) -> SessionTiming:
+        """Total elapsed time, and the part of it a human was holding.
+
+        Waiting intervals are merged before they are summed: a ticket open while an
+        approval is pending is one wait, and adding both would report more waiting than
+        the session has existed.
+        """
+        spans: list[tuple[dt.datetime, dt.datetime]] = []
+        with self._sessions() as db:
+            session = db.get(SessionRow, session_id)
+            if session is None:
+                return SessionTiming(0.0, 0.0)
+            now: dt.datetime | None = db.scalar(select(func.now()))
+            assert now is not None  # SELECT now() always returns a row
+            total = (now - session.created_at).total_seconds()
+
+            for ticket in db.scalars(select(TicketRow).where(TicketRow.session_id == session_id)):
+                spans.append((ticket.created_at, ticket.closed_at or now))
+            for approval in db.scalars(
+                select(ApprovalRow).where(ApprovalRow.session_id == session_id)
+            ):
+                end = approval.decided_at or min(approval.expires_at, now)
+                if end > approval.created_at:
+                    spans.append((approval.created_at, end))
+
+        waiting = _merged_seconds(spans)
+        return SessionTiming(total_seconds=total, waiting_seconds=min(waiting, total))
+
+    # ---- shared helpers -------------------------------------------------
+    def _assignee(self, db: Session, ticket_id: int) -> str | None:
+        stmt = select(TicketAssignmentRow.assignee).where(
+            TicketAssignmentRow.ticket_id == ticket_id,
+            TicketAssignmentRow.released_at.is_(None),
+        )
+        return db.scalar(stmt)
+
+    def _summarize(self, db: Session, row: TicketRow) -> TicketSummary:
+        return TicketSummary(
+            id=int(row.id),
+            session_id=row.session_id,
+            user_id=row.user_id,
+            state=row.state,
+            summary=row.summary,
+            requested_by=row.requested_by,
+            assignee=self._assignee(db, int(row.id)),
+            resolution=row.resolution,
+            created_at=row.created_at,
+            closed_at=row.closed_at,
+        )
+
+
+def _merged_seconds(spans: list[tuple[dt.datetime, dt.datetime]]) -> float:
+    """Total length of a set of intervals, counting overlapping time once."""
+    if not spans:
+        return 0.0
+    ordered = sorted(spans, key=lambda span: span[0])
+    total = 0.0
+    current_start, current_end = ordered[0]
+    for start, end in ordered[1:]:
+        if start > current_end:
+            total += (current_end - current_start).total_seconds()
+            current_start, current_end = start, end
+        elif end > current_end:
+            current_end = end
+    total += (current_end - current_start).total_seconds()
+    return total
 
 
 def _utcnow(db: Session) -> Any:

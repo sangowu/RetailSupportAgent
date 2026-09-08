@@ -32,7 +32,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
-from retail_support_agent.store import Store
+from retail_support_agent.store import APPROVAL_TTL_SECONDS, Store
 
 # This prompt is for the application demo only.
 # The standard τ²-bench run uses upstream's own identification protocol and agent
@@ -80,7 +80,18 @@ class TurnResult:
     """Result of one turn, consumed by the API and the UI."""
 
     reply: str
-    status: Literal["answered", "needs_confirmation", "denied", "stopped"]
+    # M4 adds three: the turn produced a ticket, the session is suspended behind one, or
+    # the action is waiting for a supervisor's decision. They are distinct states rather
+    # than shades of "answered", because a caller acts differently on each.
+    status: Literal[
+        "answered",
+        "needs_confirmation",
+        "needs_approval",
+        "denied",
+        "stopped",
+        "handed_off",
+        "waiting_for_human",
+    ]
     tool_calls: list[str] = field(default_factory=list)
     pending_confirmation: str | None = None
     stop_reason: str | None = None
@@ -126,6 +137,7 @@ class RetailAgent:
         session: SessionState,
         store: Store | None = None,
         session_id: str | None = None,
+        approval_ttl_seconds: float = APPROVAL_TTL_SECONDS,
     ) -> None:
         self._chat = chat_fn
         self._domain = domain
@@ -136,6 +148,11 @@ class RetailAgent:
         self._store = store
         self._session_id = session_id
         self._confirmation_id: int | None = None
+        # Who is driving the session, and the ticket they are working (M4). Both stay
+        # None for a customer's own session and for the demo path.
+        self._subject: str | None = None
+        self._ticket_id: int | None = None
+        self._approval_ttl = approval_ttl_seconds
         if self._store is not None and self._session_id is not None:
             self._store.ensure_session(self._session_id, session.user_id)
         self._guard = WriteGuard(domain.tool_names(), domain.order_owner)
@@ -158,14 +175,31 @@ class RetailAgent:
         ]
         self._last: TurnResult | None = None
 
-    def apply_permissions(self, permissions: frozenset[Permission]) -> None:
-        """Set what this session may do, before the turn runs (M3).
+    def apply_context(
+        self,
+        permissions: frozenset[Permission],
+        subject: str | None = None,
+        ticket_id: int | None = None,
+    ) -> None:
+        """Set who is driving this session and what they may do, before the turn runs.
 
-        Called on every request rather than only at construction: an agent cached in
-        this process would otherwise keep the permissions it was built with, and a role
-        revoked in the database would keep working until the process restarted.
+        Called on every request rather than only at construction: an agent cached in this
+        process would otherwise keep the permissions it was built with, and a role
+        revoked (M3) or an assignment released (M4) would keep working until the process
+        restarted.
+
+        The approvals are read here too, so a decision that expired between two turns
+        stops authorizing the action without anything having to expire it in memory.
+        Recovery gets this for free: a rebuilt session reads the same rows.
         """
         self._session.permissions = permissions
+        self._subject = subject
+        self._ticket_id = ticket_id
+        self._session.acting_for_other = ticket_id is not None
+        if self._session.acting_for_other and self._store is not None and self._session_id:
+            self._session.approved_fingerprints = self._store.approved_fingerprints(
+                self._session_id
+            )
 
     # ---- graph wiring ---------------------------------------------------
 
@@ -264,6 +298,34 @@ class RetailAgent:
                 )
                 return {"status": "needs_confirmation"}
 
+            if verdict.decision is Decision.NEEDS_APPROVAL:
+                # The request is recorded so a supervisor has something to decide. The
+                # turn ends here: continuing would let the model answer as though the
+                # action had run.
+                if self._store is not None and self._session_id is not None:
+                    self._store.open_approval(
+                        self._session_id,
+                        proposed,
+                        requested_by=self._subject or "",
+                        ticket_id=self._ticket_id,
+                        ttl_seconds=self._approval_ttl,
+                    )
+                self._messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": "Not executed: this action is waiting for a supervisor's "
+                        "approval.",
+                    }
+                )
+                self._last = TurnResult(
+                    reply=verdict.reason,
+                    status="needs_approval",
+                    tool_calls=list(self._turn_tools),
+                    pending_confirmation=proposed.describe(),
+                )
+                return {"status": "needs_approval"}
+
             if not verdict.allowed:
                 self._messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": verdict.reason}
@@ -279,19 +341,67 @@ class RetailAgent:
             self._messages.append(result.as_tool_message(call["id"]))
 
             if proposed.name in HANDOFF_TOOLS:
-                self._last = TurnResult(
-                    reply="Handed off to a human agent.",
-                    status="answered",
-                    tool_calls=list(self._turn_tools),
-                )
+                self._last = self._hand_off(proposed)
                 return {"status": "answered"}
 
         return {"status": "tool_executed"}
 
     # ---- public interface -----------------------------------------------
 
+    def _hand_off(self, call: ProposedCall) -> TurnResult:
+        """Turn a transfer into a ticket a human owns (M4).
+
+        Without a database this is what it was before: a sentence. With one, the case
+        becomes a record with a requester and an outcome, and the session is suspended
+        until a human closes it - otherwise the model would keep working on a case it
+        had just escalated.
+        """
+        summary = str(call.arguments.get("summary", ""))
+        if self._store is None or self._session_id is None:
+            return TurnResult(
+                reply="Handed off to a human agent.",
+                status="answered",
+                tool_calls=list(self._turn_tools),
+            )
+        ticket = self._store.open_ticket(
+            self._session_id, self._session.user_id, summary, self._subject
+        )
+        return TurnResult(
+            reply=f"Handed off to a human agent. Ticket #{ticket.id} is open; "
+            "a person will take it from here.",
+            status="handed_off",
+            tool_calls=list(self._turn_tools),
+        )
+
+    def _waiting_for_human(self) -> TurnResult | None:
+        """The reply for a session a human is holding, or None if it may proceed.
+
+        Checked before anything else in a turn, so a suspended session bills no model
+        call and runs no tool.
+        """
+        if self._store is None or self._session_id is None:
+            return None
+        ticket = self._store.open_ticket_for(self._session_id)
+        if ticket is None or self._ticket_id is not None:
+            # An agent working the ticket is not blocked by it; the customer is.
+            return None
+        return TurnResult(
+            reply=f"Ticket #{ticket.id} is with a human agent. "
+            "You will get an answer here once they have looked at it.",
+            status="waiting_for_human",
+            tool_calls=[],
+        )
+
     def send(self, user_message: str) -> TurnResult:
         """Handle one user message. Calls for one session must be serialized."""
+        waiting = self._waiting_for_human()
+        if waiting is not None:
+            # The message is still journaled: what the customer said while waiting is
+            # part of the case, and the human handling it needs to see it.
+            self._journal("user", user_message, [])
+            self._journal("assistant", waiting.reply, [])
+            return waiting
+
         self._maybe_consume_confirmation(user_message)
         self._messages.append({"role": "user", "content": user_message})
         self._journal("user", user_message, [])

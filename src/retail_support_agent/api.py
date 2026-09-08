@@ -14,12 +14,17 @@ Three refusals that must not be confused with each other:
   someone else. Retrying changes nothing.
 - 409 (M2): another process is driving this session. The caller has to stop sending this
   session elsewhere.
+
+M4 adds tickets: a handoff creates one, the customer's session is suspended while it is
+open, a supervisor assigns it and decides the escalations raised against it, and the
+assignee works it in a session of their own bound to that ticket.
 """
 
 from __future__ import annotations
 
+import hashlib
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -39,7 +44,7 @@ from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.domain import RetailDomain
 from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
-from retail_support_agent.store import Store
+from retail_support_agent.store import Store, TicketSummary
 
 # Fixed demo identity from the τ²-bench simulated data, not a real user. Chosen
 # because it owns both a pending order (cancellable) and a delivered order
@@ -63,6 +68,61 @@ class ChatResponse(BaseModel):
     tool_calls: list[str] = []
     pending_confirmation: str | None = None
     stop_reason: str | None = None
+
+
+class AssignRequest(BaseModel):
+    assignee: str = Field(min_length=1, max_length=128)
+
+
+class CloseTicketRequest(BaseModel):
+    state: Literal["resolved", "rejected"]
+    resolution: str = Field(default="", max_length=2000)
+
+
+class DecisionRequest(BaseModel):
+    approve: bool
+
+
+class Ticket(BaseModel):
+    id: int
+    session_id: str
+    user_id: str
+    state: str
+    summary: str
+    requested_by: str | None
+    assignee: str | None
+    resolution: str
+    created_at: str
+    closed_at: str | None
+
+
+class PendingApproval(BaseModel):
+    """A request waiting for a human. `arguments` is what would run, so the person
+    deciding sees the actual action rather than its name."""
+
+    id: int
+    session_id: str
+    ticket_id: int | None
+    tool_name: str
+    arguments: dict[str, Any]
+    requested_by: str
+    expires_at: str
+
+
+class SessionTimingResponse(BaseModel):
+    """Elapsed time split by who was holding it up. Reporting one total would make a
+    session look slower the longer a person took to answer."""
+
+    session_id: str
+    total_seconds: float
+    system_seconds: float
+    waiting_for_human_seconds: float
+
+
+class AgentSession(BaseModel):
+    session_id: str
+    ticket_id: int
+    user_id: str
 
 
 class AuditEvent(BaseModel):
@@ -167,6 +227,15 @@ class SessionBusyError(RuntimeError):
     """Another process holds this session's lease."""
 
 
+class TicketAccessError(RuntimeError):
+    """This session works a ticket that is not assigned to the caller.
+
+    Separate from SessionOwnershipError because it can change without anyone doing
+    anything wrong: a supervisor reassigning the case revokes access, and the message has
+    to say so rather than accusing the caller of reaching into someone else's session.
+    """
+
+
 class SessionOwnershipError(RuntimeError):
     """This session belongs to another subject.
 
@@ -235,25 +304,48 @@ class SessionRegistry:
             if not self._store.claim_session(session_id, self._owner, CLAIM_TTL_SECONDS):
                 raise SessionBusyError(session_id)
 
+        # A session bound to a ticket is an agent working a case (M4). The customer it
+        # acts for comes from the ticket, never from the request, and the assignment is
+        # re-read every turn so that reassigning the case ends the access at once.
+        ticket_id = self._store.session_ticket(session_id) if self._store is not None else None
+        acting_user = identity.user_id
+        if ticket_id is not None and self._store is not None:
+            if self._store.assignee_of(ticket_id) != identity.subject:
+                raise TicketAccessError(session_id)
+            ticket = self._store.ticket(ticket_id)
+            if ticket is None or not ticket.is_open:
+                raise TicketAccessError(session_id)
+            acting_user = ticket.user_id
+
         if session_id not in self._agents:
             # Each session gets its own domain environment and database copy.
             domain = RetailDomain()
             state = SessionState(
-                user_id=identity.user_id,
+                user_id=acting_user,
                 limits=SessionLimits(),
                 permissions=identity.permissions,
             )
             chat_fn = make_chat_fn(self._settings, self._config)
-            agent = RetailAgent(chat_fn, domain, state, store=self._store, session_id=session_id)
+            agent = RetailAgent(
+                chat_fn,
+                domain,
+                state,
+                store=self._store,
+                session_id=session_id,
+                approval_ttl_seconds=self._settings.approval_ttl_seconds,
+            )
             agent.recover()
             self._agents[session_id] = agent
 
         agent = self._agents[session_id]
-        # Refresh permissions on every turn: a cached agent would otherwise keep the
-        # set it was built with, and a role revoked in the database would keep working
-        # until the process restarted. That is the reason roles are not read from the
-        # token, so it would be a strange thing to reintroduce here.
-        agent.apply_permissions(identity.permissions)
+        # Refresh the context on every turn: a cached agent would otherwise keep the
+        # permissions it was built with, and a role revoked, an assignment released or an
+        # approval expired would keep working until the process restarted. That is the
+        # reason roles are not read from the token, so it would be strange to reintroduce
+        # it here.
+        agent.apply_context(
+            identity.permissions, subject=identity.subject or None, ticket_id=ticket_id
+        )
         return agent
 
     def assert_owner(self, session_id: str, identity: Identity) -> None:
@@ -327,7 +419,7 @@ def create_app(
         title="RetailSupportAgent",
         version="0.0.0",
         description="Retail support agent, minimal business loop "
-        "(M3, token and role checks when an issuer is configured)",
+        "(M4, tickets, assignment and approval on top of M3 token and role checks)",
     )
     # What the shared dependency needs, kept on the app rather than in a closure.
     app.state.auth = resolved_auth
@@ -337,6 +429,11 @@ def create_app(
     def session_agent(session_id: str, identity: Identity) -> RetailAgent:
         try:
             return registry.get(session_id, identity)
+        except TicketAccessError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Ticket session {session_id} is not assigned to this account.",
+            ) from exc
         except SessionOwnershipError as exc:
             raise HTTPException(
                 status_code=403, detail=f"Session {session_id} belongs to another account."
@@ -354,7 +451,7 @@ def create_app(
     def health() -> dict[str, Any]:
         body: dict[str, Any] = {
             "status": "ok",
-            "milestone": "M3",
+            "milestone": "M4",
             "owner": registry.owner,
             # Which mode is live. An operator must never have to guess whether the
             # service in front of them is authenticating its callers.
@@ -406,6 +503,158 @@ def create_app(
             )
             for row in resolved_store.audit_events(session_id)
         ]
+
+    def need_store() -> Store:
+        if resolved_store is None:
+            raise HTTPException(
+                status_code=503, detail="Tickets and approvals need the application database."
+            )
+        return resolved_store
+
+    def as_ticket(summary: TicketSummary) -> Ticket:
+        return Ticket(
+            id=summary.id,
+            session_id=summary.session_id,
+            user_id=summary.user_id,
+            state=summary.state,
+            summary=summary.summary,
+            requested_by=summary.requested_by,
+            assignee=summary.assignee,
+            resolution=summary.resolution,
+            created_at=summary.created_at.isoformat(),
+            closed_at=summary.closed_at.isoformat() if summary.closed_at else None,
+        )
+
+    @app.get("/tickets", response_model=list[Ticket])
+    def list_tickets(identity: CurrentIdentity, open_only: bool = False) -> list[Ticket]:
+        """A supervisor sees every ticket; an agent sees the ones assigned to them.
+
+        The narrowing is applied here rather than left to the client, because "an agent
+        cannot widen their own data visibility" is a rule and not a default view.
+        """
+        require(identity, Permission.TICKET_READ)
+        store = need_store()
+        assignee = None if identity.may(Permission.TICKET_ASSIGN) else identity.subject
+        return [as_ticket(t) for t in store.tickets(assignee=assignee, open_only=open_only)]
+
+    @app.post("/tickets/{ticket_id}/assign", response_model=Ticket)
+    def assign_ticket(ticket_id: int, request: AssignRequest, identity: CurrentIdentity) -> Ticket:
+        """Give a case to an agent. A supervisor may not take it themselves: assigning
+        and deciding are the powers of this role, and performing the work as well would
+        leave the decision with nobody to check it."""
+        require(identity, Permission.TICKET_ASSIGN)
+        store = need_store()
+        if request.assignee == identity.subject:
+            raise HTTPException(
+                status_code=403, detail="A supervisor cannot assign a ticket to themselves."
+            )
+        if store.identity_for(request.assignee) is None:
+            raise HTTPException(status_code=404, detail="That subject has no account here.")
+        if not store.assign_ticket(ticket_id, request.assignee, identity.subject):
+            raise HTTPException(status_code=409, detail="That ticket is not open.")
+        assigned = store.ticket(ticket_id)
+        assert assigned is not None  # assign_ticket returned True
+        return as_ticket(assigned)
+
+    @app.post("/tickets/{ticket_id}/close", response_model=Ticket)
+    def close_ticket(
+        ticket_id: int, request: CloseTicketRequest, identity: CurrentIdentity
+    ) -> Ticket:
+        """Resolve or reject a case. The assignee may close their own; a supervisor may
+        close any. Closing releases the assignment and lets the customer's session run
+        again."""
+        require(identity, Permission.TICKET_READ)
+        store = need_store()
+        ticket = store.ticket(ticket_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="No such ticket.")
+        if not identity.may(Permission.TICKET_ASSIGN) and ticket.assignee != identity.subject:
+            raise HTTPException(status_code=403, detail="That ticket is assigned to someone else.")
+        if not store.close_ticket(ticket_id, request.state, request.resolution):
+            raise HTTPException(status_code=409, detail="That ticket is already closed.")
+        closed = store.ticket(ticket_id)
+        assert closed is not None  # close_ticket returned True
+        return as_ticket(closed)
+
+    @app.post("/tickets/{ticket_id}/session", response_model=AgentSession)
+    def work_ticket(ticket_id: int, identity: CurrentIdentity) -> AgentSession:
+        """Open the session in which the assignee works this case.
+
+        The agent gets their own session rather than the customer's: the customer's
+        conversation belongs to the customer, and M3's ownership check says so. The
+        session id is derived from the ticket and the subject, so returning to the case
+        continues it instead of starting over.
+        """
+        require(identity, Permission.TICKET_WORK)
+        store = need_store()
+        ticket = store.ticket(ticket_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="No such ticket.")
+        if ticket.assignee != identity.subject:
+            raise HTTPException(status_code=403, detail="That ticket is assigned to someone else.")
+        if not ticket.is_open:
+            raise HTTPException(status_code=409, detail="That ticket is closed.")
+        digest = hashlib.sha256(identity.subject.encode()).hexdigest()[:12]
+        session_id = f"t{ticket_id}-{digest}"
+        store.bind_session_to_ticket(session_id, ticket.user_id, identity.subject, ticket_id)
+        return AgentSession(session_id=session_id, ticket_id=ticket_id, user_id=ticket.user_id)
+
+    @app.get("/approvals", response_model=list[PendingApproval])
+    def list_approvals(identity: CurrentIdentity) -> list[PendingApproval]:
+        """Escalations waiting for a decision. Expired ones are not listed: deciding one
+        would produce an approval that authorizes nothing."""
+        require(identity, Permission.ESCALATION_DECIDE)
+        store = need_store()
+        return [
+            PendingApproval(
+                id=int(row.id),
+                session_id=row.session_id,
+                ticket_id=row.ticket_id,
+                tool_name=row.tool_name,
+                arguments=dict(row.arguments),
+                requested_by=row.requested_by,
+                expires_at=row.expires_at.isoformat(),
+            )
+            for row in store.pending_approvals()
+        ]
+
+    @app.post("/approvals/{approval_id}/decision")
+    def decide_approval(
+        approval_id: int, request: DecisionRequest, identity: CurrentIdentity
+    ) -> dict[str, Any]:
+        """Approve or reject one escalated action.
+
+        A rejection is final for that request: the action does not run, and nothing about
+        the rejected row can authorize it later. Asking again means a new request, which
+        a human decides again.
+        """
+        require(identity, Permission.ESCALATION_DECIDE)
+        store = need_store()
+        outcome = store.decide_approval(approval_id, request.approve, identity.subject)
+        if outcome == "not_found":
+            raise HTTPException(status_code=404, detail="No such approval request.")
+        if outcome == "self_decision":
+            raise HTTPException(status_code=403, detail="Nobody may decide their own escalation.")
+        if outcome == "expired":
+            raise HTTPException(
+                status_code=409, detail="That request expired and must be raised again."
+            )
+        if outcome == "already_decided":
+            raise HTTPException(status_code=409, detail="That request was already decided.")
+        return {"approval_id": approval_id, "state": outcome}
+
+    @app.get("/session/{session_id}/timing", response_model=SessionTimingResponse)
+    def session_timing(session_id: str, identity: CurrentIdentity) -> SessionTimingResponse:
+        """How long the session took, split into system time and human waiting."""
+        require(identity, Permission.AUDIT_READ)
+        store = need_store()
+        timing = store.session_timing(session_id)
+        return SessionTimingResponse(
+            session_id=session_id,
+            total_seconds=timing.total_seconds,
+            system_seconds=timing.system_seconds,
+            waiting_for_human_seconds=timing.waiting_seconds,
+        )
 
     @app.post("/session/{session_id}/reset")
     def reset(session_id: str, identity: CurrentIdentity) -> dict[str, str]:

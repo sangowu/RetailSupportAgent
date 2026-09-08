@@ -76,6 +76,14 @@ class SessionRow(Base):
         nullable=True,
         index=True,
     )
+    # The ticket this session is working, for a session an agent opened on a customer's
+    # behalf (M4). NULL for a customer's own session. It is what makes "acting for
+    # someone else" a stored fact rather than a claim in a request.
+    #
+    # No foreign key, deliberately: `tickets.session_id` already points the other way,
+    # and a second constraint closing the cycle would make either row impossible to
+    # insert first. The value is written only after the ticket exists.
+    ticket_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     steps: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[dt.datetime] = _now()
@@ -143,6 +151,116 @@ class SessionClaimRow(Base):
     owner: Mapped[str] = mapped_column(String(64), nullable=False)
     claimed_at: Mapped[dt.datetime] = _now()
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TicketRow(Base):
+    """One human handoff (M4).
+
+    Created when the agent transfers a case to a human. The session is suspended while
+    the ticket is open: without that, the model would keep working on a case it had just
+    escalated, which is the failure this table exists to prevent.
+
+    `user_id` is copied rather than read through the session, because the scope check
+    ("may this agent act for that customer") must not depend on the session row still
+    being reachable, and because a ticket outlives the session that raised it.
+    """
+
+    __tablename__ = "tickets"
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('open', 'assigned', 'resolved', 'rejected')", name="ck_tickets_state"
+        ),
+        # One open ticket per session. A second handoff on a session that is already
+        # waiting for a human is the same case, not a new one, and two open tickets
+        # would make "is this session suspended" ambiguous.
+        Index(
+            "uq_tickets_one_open_per_session",
+            "session_id",
+            unique=True,
+            postgresql_where=text("state in ('open', 'assigned')"),
+            sqlite_where=text("state in ('open', 'assigned')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Who asked for a human. NULL when authentication is off, where there is no subject.
+    requested_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    resolution: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[dt.datetime] = _now()
+    closed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TicketAssignmentRow(Base):
+    """Who is working a ticket, and who was working it before (M4).
+
+    History rather than a column on `tickets`: reassignment is a supervisor action that
+    must stay visible afterwards, and an assignment that is simply overwritten leaves no
+    record of who had access to a customer's orders and when.
+
+    The partial unique index allows one active assignment per ticket, the same mechanism
+    that gives a session one pending confirmation.
+    """
+
+    __tablename__ = "ticket_assignments"
+    __table_args__ = (
+        Index(
+            "uq_ticket_assignments_one_active",
+            "ticket_id",
+            unique=True,
+            postgresql_where=text("released_at is null"),
+            sqlite_where=text("released_at is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    assignee: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    assigned_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    assigned_at: Mapped[dt.datetime] = _now()
+    released_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApprovalRow(Base):
+    """A human decision on one specific action (M4).
+
+    Bound to a fingerprint, not to an action type, so approving "cancel #W001" cannot
+    authorize "cancel #W002" and changing an argument invalidates it. That is the same
+    rule confirmations follow, for the same reason.
+
+    `expires_at` is set by the database clock at creation. An approval that never expires
+    is an authorization sitting in a table waiting to be used months later, and the
+    architecture document requires it to be re-requested instead.
+    """
+
+    __tablename__ = "approvals"
+    __table_args__ = (
+        CheckConstraint("state in ('pending', 'approved', 'rejected')", name="ck_approvals_state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    arguments: Mapped[Any] = mapped_column(JSON_TYPE, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[dt.datetime] = _now()
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MessageRow(Base):
