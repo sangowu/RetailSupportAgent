@@ -298,6 +298,9 @@ class TestBlockedTurnStillReportsItsCost:
     def test_held_message_keeps_cost_and_drops_tool_calls(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # tau2 属 bench 组，CI 用 `uv sync --locked` 装不到它。这条 importorskip
+        # 必须写在用例开头：helper 里那条来不及拦住用例体自己的 import。
+        pytest.importorskip("tau2", reason="tau2 属 bench 组，未装则跳过")
         from tau2.data_model.message import AssistantMessage, ToolCall, UserMessage
 
         wanted = AssistantMessage.text(
@@ -327,6 +330,7 @@ class TestBlockedTurnStillReportsItsCost:
 
     def test_allowed_call_passes_through_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """读操作原样放行，连消息对象都不该被换掉。"""
+        pytest.importorskip("tau2", reason="tau2 属 bench 组，未装则跳过")
         from tau2.data_model.message import AssistantMessage, ToolCall, UserMessage
 
         wanted = AssistantMessage.text(
