@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 implemented.**
+**Status: M0 frozen (M0.1-M0.6), M1 and M2 implemented.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -42,12 +42,13 @@ judge was not held constant; see
 9. [M0.5 part three: frozen baselines](docs/M0.5_BASELINE.md)
 10. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
 11. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
-12. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-13. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-14. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-15. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-16. [Local and AWS start/stop design](docs/OPERATIONS.md)
-17. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+12. [M2 cross-process recovery](docs/M2_RECOVERY.md)
+13. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+14. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+15. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+16. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+17. [Local and AWS start/stop design](docs/OPERATIONS.md)
+18. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
@@ -55,7 +56,7 @@ Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
 M0 established the evaluation protocol, the minimal business loop, and the model and
 thinking-parameter experiments, and froze the baselines. M1 added application-state
-persistence. Each step changes one theme and reports its effect against the current
+persistence, and M2 made a session survive a restart. Each step changes one theme and reports its effect against the current
 baseline and the previous passing version. The roadmap is not an instruction to build
 everything at once.
 

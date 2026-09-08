@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -10,6 +11,16 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+# Point upstream at the verified data checkout before any test module is imported.
+# `tau2` resolves its data directory at import time, so whichever test imports it first
+# fixes that directory for the whole process. Without this the answer depends on test
+# order: a file that only calls `pytest.importorskip("tau2")` would pin the packaged
+# path, which holds no data, and every later test needing the real domain would fail
+# with a missing db.json. Only set when absent, so an explicit TAU2_DATA_DIR still wins.
+_DATA_DIR = Path(__file__).resolve().parents[1] / "third_party" / "tau2-bench" / "data"
+if not os.getenv("TAU2_DATA_DIR") and _DATA_DIR.is_dir():
+    os.environ["TAU2_DATA_DIR"] = str(_DATA_DIR)
 
 # Every credential and endpoint variable this project knows. Adding a field means
 # adding it here too.

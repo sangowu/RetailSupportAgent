@@ -48,16 +48,46 @@ def _now() -> Mapped[dt.datetime]:
 
 
 class SessionRow(Base):
-    """One session. `user_id` is a τ²-bench simulated identity, not a real user."""
+    """One session. `user_id` is a τ²-bench simulated identity, not a real user.
+
+    `steps` and `tool_calls` are the session's stop-condition counters (M2). They are
+    persisted rather than derived, because a restart that reset them to zero would make
+    restarting a way around the limits, and no other table records them: `messages` has
+    one row per visible turn, not per model step.
+    """
 
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    steps: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class SessionClaimRow(Base):
+    """A lease saying which process currently drives a session (M2).
+
+    One session must be driven by one process at a time. Two processes replaying and
+    advancing the same session would interleave their writes, and the confirmation
+    fingerprint of one could authorize the other's call.
+
+    The lease expires rather than being held forever: a process that crashes mid-turn
+    never releases anything, and without an expiry that session would be unusable until
+    someone deleted the row by hand.
+    """
+
+    __tablename__ = "session_claims"
+
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner: Mapped[str] = mapped_column(String(64), nullable=False)
+    claimed_at: Mapped[dt.datetime] = _now()
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MessageRow(Base):

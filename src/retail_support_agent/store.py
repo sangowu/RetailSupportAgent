@@ -20,7 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -29,6 +30,7 @@ from retail_support_agent.db import (
     ConfirmationRow,
     MessageRow,
     OperationRow,
+    SessionClaimRow,
     SessionRow,
 )
 from retail_support_agent.guardrails import ProposedCall
@@ -45,6 +47,15 @@ def idempotency_key(session_id: str, call: ProposedCall, confirmation_id: int | 
     canonical = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)
     raw = f"{session_id}|{call.name}|{canonical}|{confirmation_id or ''}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class SessionProgress:
+    """Stop-condition counters plus the session's age, both read from the database."""
+
+    steps: int
+    tool_calls: int
+    age_seconds: float
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,79 @@ class Store:
         with self._sessions() as db:
             row = db.get(SessionRow, session_id)
             return row.user_id if row else None
+
+    def progress(self, session_id: str) -> SessionProgress | None:
+        """The stop-condition counters and how long the session has been open.
+
+        `age_seconds` is computed by the database, not by the application: after a
+        restart the process clock says nothing about when the session started, and two
+        processes' clocks can differ.
+        """
+        with self._sessions() as db:
+            stmt = select(
+                SessionRow.steps,
+                SessionRow.tool_calls,
+                func.extract("epoch", func.now() - SessionRow.created_at),
+            ).where(SessionRow.id == session_id)
+            row = db.execute(stmt).one_or_none()
+            if row is None:
+                return None
+            return SessionProgress(int(row[0]), int(row[1]), float(row[2]))
+
+    def save_progress(self, session_id: str, steps: int, tool_calls: int) -> None:
+        """Store the counters after a turn. Missing rows are ignored: without a session
+        there is nothing to limit."""
+        with self._sessions.begin() as db:
+            row = db.get(SessionRow, session_id)
+            if row is None:
+                return
+            row.steps = steps
+            row.tool_calls = tool_calls
+
+    # ---- claims ---------------------------------------------------------
+    def claim_session(self, session_id: str, owner: str, ttl_seconds: float) -> bool:
+        """Take or renew the lease on a session. False means another process holds it.
+
+        One statement does the whole thing: insert the claim, and on conflict take it
+        over only if this owner already holds it or the existing lease has expired. A
+        read-then-write would let two processes both see a free session.
+
+        The expiry is computed by the database (`now() + interval`), so two application
+        processes with different clocks cannot disagree about when a lease ends.
+        """
+        expires = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_seconds)
+        stmt = (
+            pg_insert(SessionClaimRow)
+            .values(session_id=session_id, owner=owner, expires_at=expires)
+            .on_conflict_do_update(
+                index_elements=[SessionClaimRow.session_id],
+                set_={"owner": owner, "claimed_at": func.now(), "expires_at": expires},
+                where=(SessionClaimRow.owner == owner) | (SessionClaimRow.expires_at < func.now()),
+            )
+        )
+        with self._sessions.begin() as db:
+            # RETURNING is the portable way to learn whether the conflict clause fired:
+            # an ON CONFLICT DO UPDATE whose WHERE fails updates nothing and returns no
+            # row, which is exactly "someone else holds the lease".
+            taken = db.scalar(stmt.returning(SessionClaimRow.session_id))
+            return taken is not None
+
+    def release_session(self, session_id: str, owner: str) -> None:
+        """Give up the lease. Another owner's claim is left alone: releasing a lease we
+        do not hold would hand the session to a third process mid-turn."""
+        with self._sessions.begin() as db:
+            row = db.get(SessionClaimRow, session_id)
+            if row is not None and row.owner == owner:
+                db.delete(row)
+
+    def claim_owner(self, session_id: str) -> str | None:
+        """Who holds an unexpired lease, or None."""
+        with self._sessions() as db:
+            stmt = select(SessionClaimRow.owner).where(
+                SessionClaimRow.session_id == session_id,
+                SessionClaimRow.expires_at > func.now(),
+            )
+            return db.scalar(stmt)
 
     # ---- messages -------------------------------------------------------
     def append_message(
@@ -164,6 +248,37 @@ class Store:
             row.state = "confirmed"
             row.resolved_at = _utcnow(db)
             return int(row.id)
+
+    def confirmed_fingerprints(self, session_id: str) -> set[str]:
+        """Every argument set the user has confirmed in this session.
+
+        Recovery needs these: without them a write the user already authorized before a
+        restart would be held for confirmation again, and the user would be asked twice
+        for the same thing.
+        """
+        with self._sessions() as db:
+            stmt = select(ConfirmationRow.fingerprint).where(
+                ConfirmationRow.session_id == session_id,
+                ConfirmationRow.state == "confirmed",
+            )
+            return set(db.scalars(stmt))
+
+    def last_confirmation_id(self, session_id: str) -> int | None:
+        """The most recent confirmed confirmation, used to rebuild the idempotency key
+        after a restart. A different id would produce a different key, and the write
+        would run a second time."""
+        with self._sessions() as db:
+            stmt = (
+                select(ConfirmationRow.id)
+                .where(
+                    ConfirmationRow.session_id == session_id,
+                    ConfirmationRow.state == "confirmed",
+                )
+                .order_by(ConfirmationRow.id.desc())
+                .limit(1)
+            )
+            row = db.scalar(stmt)
+            return int(row) if row is not None else None
 
     def pending_confirmation(self, session_id: str) -> ConfirmationRow | None:
         with self._sessions() as db:
