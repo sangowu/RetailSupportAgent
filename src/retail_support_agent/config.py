@@ -77,6 +77,21 @@ class Settings(BaseSettings):
     # held in SecretStr and never leaks through printing or a traceback.
     database_url: SecretStr | None = Field(default=None, validation_alias="RSA_DATABASE_URL")
 
+    # Authentication (M3). Unset means authentication is off: the service keeps the M0
+    # fixed-identity, loopback-only behaviour, because the evaluation loop and the local
+    # demo do not go through an identity provider and a hard dependency would stop
+    # evaluation from running at all. Setting the issuer and the audience turns it on
+    # for every route.
+    #
+    # For a Cognito user pool the issuer is
+    # https://cognito-idp.<region>.amazonaws.com/<pool id> and the key set is the
+    # standard path under it, which is why the URL is derived rather than configured
+    # twice. None of these are secrets: they identify a pool, they do not open it.
+    auth_issuer: str | None = Field(default=None, validation_alias="RSA_AUTH_ISSUER")
+    auth_audience: str | None = Field(default=None, validation_alias="RSA_AUTH_AUDIENCE")
+    auth_jwks_url: str | None = Field(default=None, validation_alias="RSA_AUTH_JWKS_URL")
+    auth_token_use: str = Field(default="access", validation_alias="RSA_AUTH_TOKEN_USE")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -122,6 +137,23 @@ class Settings(BaseSettings):
     def has_langfuse(self) -> bool:
         """Langfuse counts as configured only when all three values are present."""
         return bool(self.langfuse_public_key and self.langfuse_secret_key and self.langfuse_host)
+
+    def has_auth(self) -> bool:
+        """Authentication counts as configured only with both an issuer and an audience.
+
+        Both, because a token is only meaningful as "minted by this issuer for this
+        application": an issuer with no audience accepts a token issued for a different
+        client of the same pool.
+        """
+        return bool(self.auth_issuer and self.auth_audience)
+
+    def jwks_url(self) -> str | None:
+        """Where the signing keys come from, derived from the issuer unless overridden."""
+        if self.auth_jwks_url:
+            return self.auth_jwks_url
+        if not self.auth_issuer:
+            return None
+        return f"{self.auth_issuer.rstrip('/')}/.well-known/jwks.json"
 
     def key_presence(self) -> str:
         """Reports record only whether a key is set, never any part of its value."""

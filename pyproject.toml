@@ -21,6 +21,10 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "alembic>=1.14",
+    # RS256 verification of Cognito-shaped tokens (M3). A signature check is not a
+    # place for hand-written code; the algorithm allowlist and required claims are
+    # passed explicitly rather than left to defaults.
+    "pyjwt[crypto]>=2.10",
 ]
 
 [dependency-groups]

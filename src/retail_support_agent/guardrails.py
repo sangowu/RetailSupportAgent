@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from retail_support_agent.auth import DEFAULT_PERMISSIONS, Permission
 from retail_support_agent.domain import WRITE_TOOLS
 
 # Argument names that may carry an order or user id. Used by the ownership check.
@@ -30,6 +31,7 @@ class Decision(StrEnum):
     ALLOW = "allow"  # read action, or a write whose fingerprint is already confirmed
     NEEDS_CONFIRMATION = "needs_confirmation"  # write action, not confirmed for these arguments
     DENIED_OWNERSHIP = "denied_ownership"  # order does not belong to the session identity
+    DENIED_PERMISSION = "denied_permission"  # the account's roles do not grant this action
     DENIED_UNKNOWN_TOOL = "denied_unknown_tool"  # not in the upstream tool list
 
 
@@ -94,6 +96,10 @@ class SessionState:
 
     user_id: str
     limits: SessionLimits = field(default_factory=SessionLimits)
+    # What the account's roles allow (M3). The default is the customer set, which is
+    # what the demo and evaluation paths run as; under authentication it is whatever
+    # `role_memberships` grants, never what the token claims.
+    permissions: frozenset[Permission] = DEFAULT_PERMISSIONS
     started_at: float = field(default_factory=time.monotonic)
     steps: int = 0
     tool_calls: int = 0
@@ -121,7 +127,12 @@ class SessionState:
 
 
 class WriteGuard:
-    """Rules on every tool call. Does not rely on the model policing itself."""
+    """Rules on every tool call. Does not rely on the model policing itself.
+
+    Order of checks: known tool, then permission, then ownership, then confirmation.
+    Each one is stricter than the last, and the reason given to the user is the first
+    that fails, so a refusal never reveals more than the caller was entitled to ask.
+    """
 
     def __init__(self, known_tools: set[str], owner_lookup: Any) -> None:
         """`owner_lookup(order_id) -> user_id | None`, supplied by RetailDomain."""
@@ -136,7 +147,26 @@ class WriteGuard:
                 call,
             )
         if call.name not in WRITE_TOOLS:
+            if Permission.ORDER_READ not in state.permissions:
+                return GuardVerdict(
+                    Decision.DENIED_PERMISSION,
+                    f"This account is not allowed to read order data, so {call.name} will not run.",
+                    call,
+                )
             return GuardVerdict(Decision.ALLOW, call=call)
+
+        # Permission before ownership, and both before the confirmation. An account
+        # with no write permission must be refused whether or not it owns the order,
+        # and answering "that order is not yours" first would tell it which orders
+        # exist.
+        if Permission.ORDER_WRITE not in state.permissions:
+            return GuardVerdict(
+                Decision.DENIED_PERMISSION,
+                f"This account is not allowed to change orders, so {call.name} will "
+                "not run. A confirmation does not grant a permission the account does "
+                "not have.",
+                call,
+            )
 
         ownership = self._check_ownership(call, state)
         if ownership is not None:

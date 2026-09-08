@@ -64,6 +64,10 @@ def test_template_carries_no_secret_values() -> None:
         # loopback interface only. Not a credential for anything real, and keeping it
         # here makes it obvious which database a developer is pointed at.
         "postgresql+psycopg://rsa:rsa_local_dev@127.0.0.1:55432/rsa",
+        # Which kind of token the service expects (M3). A protocol value, not a
+        # credential, and the wrong one refuses every request, so prefilling the common
+        # case is worth more than an empty line.
+        "access",
     }
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
         if not re.match(r"^[A-Z][A-Z0-9_]*=", line):

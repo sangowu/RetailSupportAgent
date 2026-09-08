@@ -470,10 +470,11 @@ class TestTheApiRefusesAContestedSession:
 
         monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
         session_id = new_session(store)
+        # M3 moved the identity from the constructor to the request: the registry no
+        # longer holds one user id for every session.
         registry = SessionRegistry(
             Settings(),  # type: ignore[call-arg]
             ModelConfig(),
-            "alice",
             store=store,
             owner="process-a",
         )
