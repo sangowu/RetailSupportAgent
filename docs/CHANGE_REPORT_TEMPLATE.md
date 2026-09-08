@@ -1,49 +1,57 @@
-# 单步开发报告模板
+# Per-step change report template
 
-本文件是模板，不是已有实验报告。每步复制为独立、可版本追踪的报告，缺失项明确写“不适用”及原因，不填虚构数值。
+This file is a template, not a report. Copy it per step into its own version-tracked
+report. Where an item does not apply, write "not applicable" and why. Never fill in an
+invented number.
 
-## 1. 变更卡（开发前填写）
+## 1. Change card (written before the work)
 
-- 阶段与步骤：
-- 类型：新功能 / 优化 / 修复 / 维护
-- 具体问题或失败任务：
-- 本次唯一主题：
-- 本次不修改的实验控制变量：
-- 预期收益及可能代价：
-- 主指标、保护指标和验收阈值：
-- 基线、上一版本、任务集与评测协议版本：
+- Stage and step:
+- Type: feature / optimization / fix / maintenance
+- The specific problem or failing task:
+- The single theme of this change:
+- Control variables this change does not touch:
+- Expected benefit and possible cost:
+- Primary metric, protective metrics, acceptance thresholds:
+- Baseline, previous version, task set and evaluation protocol version:
 
-## 2. 实现与验证
+## 2. Implementation and verification
 
-- 改动文件和职责：
-- 代码/镜像/依赖标识：
-- 模型、实际参数、endpoint、返回模型标识：
-- 模拟用户与评估器配置：
-- 环境、并发、缓存、重复次数：
-- 修改前检查及已有失败：
-- 修改后自动化测试：
-- 新增能力或修复场景的可核验证据：
+- Files changed and their responsibilities:
+- Code, image and dependency identifiers:
+- Model, actual parameters, endpoint, model id returned:
+- Simulated user and evaluator configuration:
+- Environment, concurrency, caching, repetitions:
+- Checks before the change and the failures that already existed:
+- Automated tests after the change:
+- Verifiable evidence for the new capability or the fixed scenario:
 
-## 3. 对比结果
+## 3. Comparison
 
-| 指标 | MVP | 上一通过版本 | 当前候选 | 相对上一版差异及区间 | 相对 MVP 差异 | 结论 |
+| Metric | MVP | Previous passing version | Current candidate | Difference vs previous, with interval | Difference vs MVP | Conclusion |
 |---|---|---|---|---|---|---|
-| 任务成功率（含分类） | 待填 | 待填 | 待填 | 待填 | 待填 | 待填 |
-| 安全违规数/分母 | 待填 | 待填 | 待填 | 待填 | 待填 | 待填 |
-| 系统处理 P95 | 待填 | 待填 | 待填 | 待填 | 待填 | 待填 |
-| 每任务/每成功任务成本 | 待填 | 待填 | 待填 | 待填 | 待填 | 待填 |
-| 本次新增能力 | 待填 | 待填 | 待填 | 待填 | 待填 | 待填 |
+| Task success rate (with breakdown) | | | | | | |
+| Safety violations / denominator | | | | | | |
+| System-side P95 | | | | | | |
+| Cost per task / per successful task | | | | | | |
+| Capability added by this change | | | | | | |
 
-记录样本量、成功次数与原始结果路径；不同环境或不同任务分母不可直接对比。复用测试证据须注明镜像和输入为何等价。MVP 未冻结时写“尚未建立”，同时列出 M0 实验参照。
+Record the sample size, the number of successes and the path to the raw results.
+Different environments or different task denominators are not directly comparable.
+Reused test evidence must state why the image and inputs are equivalent. Where the MVP
+is not yet frozen, write "not established" and list the M0 reference instead.
 
-## 4. 失败分析与结论
+## 4. Failure analysis and conclusion
 
-- 新增通过任务、退步任务及原因：
-- 参数是否被忽略/映射，是否截断，供应商是否异常：
-- 统计不确定性与结论限制：
-- PASS / FAIL / INCONCLUSIVE：
-- 入选/淘汰/保留原因：
-- 原始结果、manifest、校验和及 Langfuse 实验链接：
-- 后续是否需要新的单独步骤：
+- Newly passing tasks, regressed tasks, and why:
+- Whether parameters were ignored or remapped, whether output was truncated, whether the
+  provider misbehaved:
+- Statistical uncertainty and the limits of the conclusion:
+- PASS / FAIL / INCONCLUSIVE:
+- Why the change was accepted, rejected or held:
+- Links to raw results, manifest, checksums and the Langfuse experiment:
+- Whether a separate follow-up step is needed:
 
-不得省略失败运行，也不得将“新增了框架”当作效果改善。只在符合协议时更新 last-accepted，不覆盖 baseline-v1。
+Do not omit failed runs, and do not present "a component was added" as an improvement.
+Update last-accepted only when the protocol allows it, and never overwrite an existing
+baseline.
