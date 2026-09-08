@@ -1,0 +1,26 @@
+{
+  "resumed_at": "2026-09-08T09:34:40.339442+00:00",
+  "requested_task_ids": [
+    "13"
+  ],
+  "recovered_task_ids": [
+    "13"
+  ],
+  "still_unscored_task_ids": [],
+  "judge_usage": {
+    "judge_calls": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "cached_tokens": 0,
+    "reasoning_tokens": 0
+  },
+  "observability": {
+    "langfuse_enabled": true,
+    "langfuse_callback": "langfuse_otel",
+    "langfuse_host": "https://cloud.langfuse.com",
+    "langfuse_cost_currency": "CNY",
+    "langfuse_cost_reported": false,
+    "langfuse_cost_note": "litellm 1.82.6 的 langfuse_otel 不发送 cost_details；且 Langfuse 收到的用量无缓存明细，自行折算会高估约 5 倍。成本以 scripts/analyze_eval.py 为准",
+    "langfuse_flushed": true
+  }
+}

@@ -148,3 +148,44 @@ class TestResumeRefusesADifferentStack:
         described = self._described(settings) | {"nl_judge": "some-other-judge"}
         with pytest.raises(SystemExit, match="评测栈与原轮不一致"):
             rebuild_stack(settings, described)
+
+
+class TestResumeKnowsWhichSubjectItIsResuming:
+    """补跑必须用**同一个被测对象**。
+
+    上游 agent 与带护栏的 agent 是两个不同的被测对象，成绩不可比。
+    用另一个去补跑，就是把两者混进同一个目录，而合并后的平均分
+    看不出任何异常——正是 resume_run 存在要防的那类掺假。
+
+    实际踩过：`--guarded` 加进来时 summary.json 根本没记被测对象，
+    resume_run 会默默用上游 agent 去补带护栏的轮次。
+    """
+
+    def _resolve(self, name: str, summary: dict[str, Any]) -> Any:
+        """本机的 pytest tmp_path 有权限问题，改用 TemporaryDirectory。"""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        from resume_run import resolve_subject
+
+        with tempfile.TemporaryDirectory(prefix="rsa_subject_") as d:
+            run_dir = Path(d) / name
+            run_dir.mkdir()
+            return resolve_subject(run_dir, summary)
+
+    def test_guarded_run_resumes_guarded(self) -> None:
+        assert self._resolve("r_guarded", {"agent_under_test": "guarded"}) is True
+
+    def test_upstream_run_resumes_upstream(self) -> None:
+        assert self._resolve("r_upstream", {"agent_under_test": "upstream"}) is False
+
+    def test_pre_m06_run_without_the_field_is_upstream(self) -> None:
+        """M0.6 之前只有上游一个被测对象，缺字段按 upstream 处理。"""
+        assert self._resolve("20260907T080504Z_x_holdout", {}) is False
+
+    def test_missing_field_on_a_guarded_looking_dir_is_refused(self) -> None:
+        """目录名说 guarded 而字段缺失——两个信号打架，宁可中止也不猜。"""
+        with pytest.raises(SystemExit, match="无法确认被测对象"):
+            self._resolve("r_guarded", {})
+
+    def test_contradiction_between_name_and_record_is_refused(self) -> None:
+        with pytest.raises(SystemExit, match="不一致"):
+            self._resolve("r_upstream", {"agent_under_test": "guarded"})

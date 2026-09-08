@@ -1,12 +1,12 @@
 {
   "baseline_id": "baseline-v2",
-  "status": "current",
+  "status": "reference",
   "task_split": "full",
-  "scope_note": "全集 114 题，可称标准 τ²-bench Retail 分数。包含 dev 74 题，其中部分曾用于调参——因此它是标准口径分，而不是「独立验证分」，两个口径不互相冒充。",
-  "frozen_at": "2026-09-07T21:33:07.216933+00:00",
+  "scope_note": "全集 114 题，可称标准 τ²-bench Retail 分数。包含 dev 74 题，其中部分曾用于调参——因此它是标准口径分，而不是「独立验证分」，两个口径不互相冒充。**被测对象是上游 llm_agent**，不是本项目的 Agent；它现在的角色是baseline-v3 的对照组，故保留并继续校验。",
+  "frozen_at": "2026-09-08T15:15:40.173145+00:00",
   "code": {
-    "commit": "4eed95c8c26a33702d4bd06b46078583f26b9785",
-    "dirty": false,
+    "commit": "d136a76c59ce03faa62ae17624b61ee1434ce49d",
+    "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },
   "upstream": {
@@ -21,7 +21,8 @@
     "run_dir": "20260907T205640Z_deepseek-v4-pro_full",
     "run_id": "20260907T205640Z",
     "run_at": "2026-09-07T21:28:02.974645+00:00",
-    "task_split": "holdout",
+    "agent_under_test": "upstream",
+    "task_split": "full",
     "task_count": 114,
     "num_trials": 1,
     "expected_simulations": 114,

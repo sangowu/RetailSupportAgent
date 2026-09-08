@@ -192,6 +192,14 @@ def main() -> int:
             "会在启动时报错并提示改用旧模拟用户"
         ),
     )
+    parser.add_argument(
+        "--guarded",
+        action="store_true",
+        help=(
+            "被测对象换成套了本项目护栏的 Agent（默认是上游自带的 agent）。"
+            "两者是不同的被测对象，各有各的基线，成绩不可直接比"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -260,7 +268,9 @@ def main() -> int:
         print(f"[警告] {warning}", flush=True)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = OUTPUT_ROOT / f"{run_id}_{args.model.replace('/', '_')}_{args.split}"
+    subject = "guarded" if args.guarded else "upstream"
+    # 被测对象写进目录名：两种对象的成绩不可比，目录名混在一起早晚会被搞混
+    run_dir = OUTPUT_ROOT / f"{run_id}_{args.model.replace('/', '_')}_{args.split}_{subject}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # 让面板上的 trace 能对回运行目录：会话号就取目录名，两边不用再维护对照表。
@@ -305,6 +315,7 @@ def main() -> int:
             max_concurrency=args.concurrency,
             seed=args.seed,
             save_to=str(run_dir / save_name),
+            guarded=args.guarded,
         )
         if len(phases) > 1:
             print(f"\n第 {index}/{len(phases)} 段：{len(phase_ids)} 题", flush=True)
@@ -344,6 +355,10 @@ def main() -> int:
         "completed_task_ids": completed_ids,
         "stopped_early": stopped_early,
         "num_trials": args.trials,
+        # 被测对象必须留痕：上游 agent 与带护栏的 agent 是**两个不同的被测对象**，
+        # 成绩不可比。不记的话，补跑会拿另一个对象去补，两者混进同一个目录——
+        # 而合并后的平均分看不出任何异常。
+        "agent_under_test": subject,
         "stack": stack.describe(),
         "observability": langfuse_status,
         "judge_usage": judge_usage.describe(),

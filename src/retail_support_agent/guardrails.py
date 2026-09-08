@@ -46,14 +46,18 @@ class ProposedCall:
         return hashlib.sha256(f"{self.name}|{canonical}".encode()).hexdigest()
 
     def describe(self) -> str:
-        """给用户看的确认文案，必须逐项列出真实参数，不能只说"确认吗"。"""
+        """给用户看的确认文案，必须逐项列出真实参数，不能只说"确认吗"。
+
+        文案用英文：τ²-bench 的对话全程是英文，中文提示会让用户先去猜
+        "这是什么语言"再回答——任务 80 就是这样丢的分。
+        """
         if not self.arguments:
-            return f"执行 {self.name}（无参数）"
+            return f"Run {self.name} (no arguments)."
         items = "\n".join(
             f"  - {key}: {json.dumps(value, ensure_ascii=False, default=str)}"
             for key, value in sorted(self.arguments.items())
         )
-        return f"执行 {self.name}，参数如下：\n{items}"
+        return f"Run {self.name} with these arguments:\n{items}"
 
 
 @dataclass
@@ -122,7 +126,7 @@ class WriteGuard:
         if call.name not in self._known_tools:
             return GuardVerdict(
                 Decision.DENIED_UNKNOWN_TOOL,
-                f"{call.name} 不在本领域的工具清单中，拒绝执行。",
+                f"{call.name} is not in this domain's tool list. Refusing to run it.",
                 call,
             )
         if call.name not in WRITE_TOOLS:
@@ -137,7 +141,8 @@ class WriteGuard:
 
         return GuardVerdict(
             Decision.NEEDS_CONFIRMATION,
-            f"这是一次会改变订单状态的操作，需要你明确确认：\n{call.describe()}",
+            "This action changes order state and needs your explicit confirmation:\n"
+            f"{call.describe()}",
             call,
         )
 
@@ -148,7 +153,8 @@ class WriteGuard:
             if target is not None and str(target) != state.user_id:
                 return GuardVerdict(
                     Decision.DENIED_OWNERSHIP,
-                    f"该操作指向用户 {target}，与当前会话身份 {state.user_id} 不符，拒绝执行。",
+                    f"This action targets user {target}, which does not match the "
+                    f"authenticated user {state.user_id}. Refusing to run it.",
                     call,
                 )
 
@@ -160,7 +166,8 @@ class WriteGuard:
             if owner is None:
                 return GuardVerdict(
                     Decision.DENIED_OWNERSHIP,
-                    f"订单 {order_id} 不存在或无法确认归属，拒绝执行写操作。",
+                    f"Order {order_id} does not exist or its owner cannot be "
+                    "confirmed. Refusing to run a write action.",
                     call,
                 )
             if owner != state.user_id:

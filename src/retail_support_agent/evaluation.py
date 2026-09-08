@@ -843,6 +843,7 @@ def build_run_config(
     max_concurrency: int,
     seed: int,
     save_to: str | None,
+    guarded: bool = False,
 ) -> Any:
     """构造上游的运行配置。任务集与划分一律取自 M0.1 冻结的清单。"""
     # 价格必须在任何调用发生前注册，否则上游 `get_response_cost()` 会一路
@@ -852,13 +853,22 @@ def build_run_config(
     # 思考模式下 DeepSeek 要求把历史 reasoning_content 回传，上游不会做，我们补上。
     if stack.echo_reasoning:
         echo_reasoning_content()
+    # 被测对象：默认是上游自带的 agent（衡量"模型 + 评测栈"），
+    # guarded=True 时换成套了本项目护栏的 agent（衡量"本项目的实现"）。
+    # 两者不可比——它们是两个被测对象，各自有自己的基线。
+    agent_name = "llm_agent"
+    if guarded:
+        from retail_support_agent.bench_agent import register
+
+        agent_name = register()
+
     from tau2.data_model.simulation import TextRunConfig
 
     return TextRunConfig(
         domain="retail",
         task_ids=task_ids,
         task_split_name=None,  # 任务由 task_ids 精确指定，不再二次筛选
-        agent="llm_agent",
+        agent=agent_name,
         llm_agent=litellm_model(stack.agent_model),
         llm_args_agent=stack.agent_args(),
         user="user_simulator",
