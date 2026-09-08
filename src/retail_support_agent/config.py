@@ -68,6 +68,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # 应用侧状态库（M1）。默认 None：不配就退回 M0 的内存会话，
+    # 服务照常起得来——数据库是能力，不是启动的前提条件。
+    # 连接串里含口令，所以用 SecretStr 承载：打印或进异常栈时不会泄出去。
+    database_url: SecretStr | None = Field(default=None, validation_alias="RSA_DATABASE_URL")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",

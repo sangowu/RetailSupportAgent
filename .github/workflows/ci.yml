@@ -18,6 +18,29 @@ jobs:
   static-and-unit:
     name: 静态检查与单元测试
     runs-on: ubuntu-latest
+
+    # M1 的持久化用例需要真的 PostgreSQL：部分唯一索引、唯一冲突与事务回滚
+    # 都是方言相关的行为，用 SQLite 顶替测出来的绿色说明不了问题。
+    # 不起这个 service 的话那些用例会静默跳过——而"跳过"和"通过"在汇总行里
+    # 长得一模一样。
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rsa
+          POSTGRES_PASSWORD: rsa_ci
+          POSTGRES_DB: rsa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rsa -d rsa_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RSA_TEST_DATABASE_URL: postgresql+psycopg://rsa:rsa_ci@localhost:5432/rsa_test
+
     steps:
       - uses: actions/checkout@v4
 

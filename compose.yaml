@@ -1,0 +1,27 @@
+# 本地开发用的 PostgreSQL。只监听回环地址：这台机器之外连不上。
+#
+# 口令写在这里是**有意的**——它是本地开发库的口令，不是任何真实环境的凭据，
+# 而把它挪进 .env 会让"到底连的哪个库"变得不明显。真实环境的连接串走
+# RSA_DATABASE_URL 环境变量，从不进 Git。
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: rsa-postgres
+    environment:
+      POSTGRES_USER: rsa
+      POSTGRES_PASSWORD: rsa_local_dev
+      POSTGRES_DB: rsa
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - rsa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # 没有 healthcheck 的话，服务"起来了"和"能连了"是两件事，
+      # 迁移会在容器刚启动的那几秒里随机失败。
+      test: ["CMD-SHELL", "pg_isready -U rsa -d rsa"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  rsa_pgdata:
