@@ -1,4 +1,4 @@
-# tracked：入库文件，任何 clone 都能校验（CI 校验这一段）
+# tracked: committed files, verifiable from any clone (CI checks this section)
 5ec59c07ce3e5c394392495d7e121e4b7ab52722e92af46a58f83212779f04ef  evaluation/results/20260907T080504Z_deepseek-v4-pro_holdout/resume_summary.json
 1f405b0c498bdcddc62540691f1bc7fdac8ac3ea64bcf9f08634d76e264594cc  evaluation/results/20260907T080504Z_deepseek-v4-pro_holdout/summary.json
 b7871f4f6aae60efb3fa660c2abe25a822913fff55006243521ac9b638580d5f  evaluation/schemas/run_manifest.schema.json
@@ -9,6 +9,6 @@ a70eb20b119100a302ce2087f9b17862ea8b6c8000076e46980a8f64d64d97ab  evaluation/tas
 079f04b375d281fd308ce280104030ef04d99e151045f90e7812b5f508d262cc  evaluation/task_sets/regression.json
 27dd703ed29943c1a6ecd0b08885c4967a37aa80dfa3c96e2dca089c4972c6a8  evaluation/task_sets/scope_labels.json
 8c09aa5639151efaa3d59b176905fe232efd4b4c124633d4974b53b737fcad31  evaluation/tau2_manifest.json
-# local_only：原始逐题轨迹，按 .gitignore 不入库；缺失不算失败
+# local_only: raw per-task traces, gitignored; a missing file is not a failure
 764c45baca8ab695df429b4a27991d202db0abde36860f5b9361970e30438730  evaluation/results/20260907T080504Z_deepseek-v4-pro_holdout/resume1.json/results.json
 69970bafa58ce20be9481dad76d93c0160d0a2bfea874d55ecab41c05544e96b  evaluation/results/20260907T080504Z_deepseek-v4-pro_holdout/simulations.json/results.json
