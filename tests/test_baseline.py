@@ -31,6 +31,7 @@ BASELINE_FACTS: dict[str, dict[str, Any]] = {
         "run": "20260907T080504Z_deepseek-v4-pro_holdout",
         "split": "holdout",
         "status": "archived",
+        "subject": "upstream",
         "tasks": 40,
         "pass_count": 35,
         "avg_reward": 0.875,
@@ -38,10 +39,20 @@ BASELINE_FACTS: dict[str, dict[str, Any]] = {
     "baseline-v2": {
         "run": "20260907T205640Z_deepseek-v4-pro_full",
         "split": "full",
-        "status": "current",
+        "status": "reference",
+        "subject": "upstream",
         "tasks": 114,
         "pass_count": 97,
         "avg_reward": 97 / 114,
+    },
+    "baseline-v3": {
+        "run": "20260908T121800Z_deepseek-v4-pro_full_guarded",
+        "split": "full",
+        "status": "current",
+        "subject": "guarded",
+        "tasks": 114,
+        "pass_count": 102,
+        "avg_reward": 102 / 114,
     },
 }
 ALL_IDS = sorted(BASELINE_FACTS)
@@ -170,12 +181,23 @@ class TestEachBaseline:
         """子集分与全集分都是真数字，但不能互相冒充——口径必须写在基线里。"""
         assert _load(baseline_id)["scope_note"].strip(), "没写口径说明，两个基线迟早被混着引用"
 
+    def test_it_records_which_agent_was_under_test(self, baseline_id: str) -> None:
+        """被测对象必须留痕。
+
+        上游 `llm_agent` 与本项目带护栏的 Agent 是**两个不同的被测对象**，
+        成绩不可比。不记这一条，两个基线的分数迟早被当成"同一个东西的前后变化"
+        引用——而合并后的平均分看不出任何异常。M0 全部分数就是这样被
+        误当成本项目 Agent 的成绩（见 docs/M0_REPORT.md §1.1）。
+        """
+        facts = BASELINE_FACTS[baseline_id]
+        assert _load(baseline_id)["run"]["agent_under_test"] == facts["subject"]
+
 
 class TestTheTwoBaselinesCoexist:
     def test_exactly_one_is_current(self) -> None:
         """当前基线只能有一个，否则「和基线比」这句话没有唯一含义。"""
         current = [bid for bid in ALL_IDS if _load(bid)["status"] == "current"]
-        assert current == ["baseline-v2"]
+        assert current == ["baseline-v3"]
 
     def test_the_archived_one_is_kept_not_deleted(self) -> None:
         """留档基线不删：删了它，历史报告里引用的数字就再也无从校验。"""

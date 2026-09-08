@@ -3,10 +3,10 @@
   "status": "archived",
   "task_split": "holdout",
   "scope_note": "保留验证集 40 题。**不是标准 τ²-bench Retail 分数**，是子集分；它的价值在于「未用于调参的独立验证」这一性质，故留档不删。",
-  "frozen_at": "2026-09-07T21:33:06.894277+00:00",
+  "frozen_at": "2026-09-08T15:16:08.846082+00:00",
   "code": {
-    "commit": "4eed95c8c26a33702d4bd06b46078583f26b9785",
-    "dirty": false,
+    "commit": "d136a76c59ce03faa62ae17624b61ee1434ce49d",
+    "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },
   "upstream": {
@@ -21,6 +21,7 @@
     "run_dir": "20260907T080504Z_deepseek-v4-pro_holdout",
     "run_id": "20260907T080504Z",
     "run_at": "2026-09-07T08:42:59.875562+00:00",
+    "agent_under_test": "upstream",
     "task_split": "holdout",
     "task_count": 40,
     "num_trials": 1,

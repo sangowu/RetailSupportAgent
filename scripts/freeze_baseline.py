@@ -60,15 +60,29 @@ BASELINES: dict[str, dict[str, str]] = {
     "baseline-v2": {
         "run": "20260907T205640Z_deepseek-v4-pro_full",
         "split": "full",
-        "status": "current",
+        "status": "reference",
+        "subject": "upstream",
         "scope_note": (
             "全集 114 题，可称标准 τ²-bench Retail 分数。"
             "包含 dev 74 题，其中部分曾用于调参——因此它是标准口径分，"
             "而不是「独立验证分」，两个口径不互相冒充。"
+            "**被测对象是上游 llm_agent**，不是本项目的 Agent；它现在的角色是"
+            "baseline-v3 的对照组，故保留并继续校验。"
+        ),
+    },
+    "baseline-v3": {
+        "run": "20260908T121800Z_deepseek-v4-pro_full_guarded",
+        "split": "full",
+        "status": "current",
+        "subject": "guarded",
+        "scope_note": (
+            "全集 114 题，被测对象是**本项目带写操作护栏的 Agent**。"
+            "与 baseline-v2 同栈同模型同种子，逐题可配对比较；"
+            "两者是两个不同的被测对象，成绩并列呈现，不合并平均。"
         ),
     },
 }
-CURRENT_BASELINE = "baseline-v2"
+CURRENT_BASELINE = "baseline-v3"
 
 
 def baseline_dir(baseline_id: str) -> Path:
@@ -136,7 +150,7 @@ def raw_trace_files(run_dir: Path) -> list[Path]:
     return sorted(found)
 
 
-def build_record(run_dir: Path) -> dict[str, Any]:
+def build_record(run_dir: Path, split: str) -> dict[str, Any]:
     """从原始结果现算基线记录。**任何数字都不从文档里抄。**"""
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     simulations = load_simulations(run_dir)
@@ -159,7 +173,10 @@ def build_record(run_dir: Path) -> dict[str, Any]:
         "run_dir": run_dir.name,
         "run_id": summary.get("run_id"),
         "run_at": summary.get("run_at"),
-        "task_split": "holdout",
+        # 被测对象必须留痕：上游 llm_agent 与带护栏的 Agent 是两个不同的对象，
+        # 成绩不可比。M0.6 之前的运行没有这个字段，按 upstream 处理。
+        "agent_under_test": summary.get("agent_under_test", "upstream"),
+        "task_split": split,
         "task_count": len(task_ids),
         "num_trials": int(summary.get("num_trials", 1) or 1),
         "expected_simulations": expected,
@@ -331,7 +348,7 @@ def main() -> int:
     if not run_dir.is_dir():
         raise SystemExit(f"找不到基线运行目录：{run_dir}")
 
-    record = build_record(run_dir)
+    record = build_record(run_dir, entry["split"])
     if not record["complete"]:
         raise SystemExit(
             f"这一轮不完整（{record['scored_simulations']}/{record['expected_simulations']}"

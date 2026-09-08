@@ -70,6 +70,37 @@ def unscored_task_ids(run_dir: Path) -> list[str]:
     return [str(sim.get("task_id")) for sim in load_simulations(run_dir) if not is_scored(sim)]
 
 
+def resolve_subject(run_dir: Path, summary: dict[str, Any]) -> bool:
+    """本轮的被测对象是不是带护栏的那个。认不出就中止。
+
+    上游 agent 与带护栏的 agent 是**两个不同的被测对象**，成绩不可比。
+    用另一个对象去补跑，等于把两者混进同一个目录，而合并后的平均分
+    看不出任何异常——这正是本脚本存在的理由（见模块开头）。
+
+    M0.6 之前的运行没有这个字段，那时只有上游 agent 一个对象，按 upstream 处理；
+    但如果目录名说它是 guarded 而字段却缺失，两个信号打架，一律拒绝。
+    """
+    recorded = summary.get("agent_under_test")
+    looks_guarded = run_dir.name.endswith("_guarded")
+    if recorded is None:
+        if looks_guarded:
+            raise SystemExit(
+                f"{run_dir.name} 的目录名说它跑的是带护栏的 Agent，"
+                "但 summary.json 没有 agent_under_test 字段，无法确认被测对象。"
+                "拒绝补跑——补错对象会把两个不可比的成绩混进同一轮。"
+            )
+        return False
+    if recorded not in {"upstream", "guarded"}:
+        raise SystemExit(f"无法识别的被测对象：{recorded!r}")
+    if looks_guarded != (recorded == "guarded"):
+        raise SystemExit(
+            f"目录名与 summary.json 记录的被测对象不一致："
+            f"目录名={run_dir.name}，记录={recorded}。拒绝补跑。"
+        )
+    is_guarded: bool = recorded == "guarded"
+    return is_guarded
+
+
 def rebuild_stack(settings: Settings, described: dict[str, Any]) -> EvalStack:
     """按原轮重建评测栈，并核对那些**不由我们指定**的部分。
 
@@ -133,7 +164,9 @@ def main() -> int:
     prepare_environment(str(DATA_DIR))
     settings = Settings()  # type: ignore[call-arg]
     stack = rebuild_stack(settings, summary.get("stack", {}))
-    print("评测栈与原轮逐项一致，开始补跑。")
+    guarded = resolve_subject(run_dir, summary)
+    subject = "带护栏的 Agent" if guarded else "上游 Agent"
+    print(f"评测栈与原轮逐项一致，被测对象：{subject}。开始补跑。")
 
     judge_usage = patch_nl_judge(stack)
     # 补跑的 trace 要落进**原轮**那条会话，否则面板上会多出一条只有几题的孤儿会话。
@@ -150,6 +183,7 @@ def main() -> int:
         max_concurrency=args.concurrency,
         seed=int(summary.get("seed", 300) or 300),
         save_to=str(run_dir / f"resume_{stamp}.json"),
+        guarded=guarded,
     )
     from tau2.run import run_domain
 
