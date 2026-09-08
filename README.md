@@ -1,93 +1,126 @@
 # RetailSupportAgent
 
-零售客服 Agent 面试展示项目：处理订单查询、取消订单、退货申请，以可复现评测证明业务正确性、可靠性和成本表现。
+A retail customer-support agent: order lookup, order cancellation and return requests,
+with business correctness, reliability and cost demonstrated through reproducible
+evaluation.
 
-**当前状态：M0 已冻结（M0.1–M0.5 全部完成），M0 报告已交付。**
+**Status: M0 frozen (M0.1-M0.6), M1 implemented.**
 
-选定 `deepseek-v4-pro`（思考 effort=high）。在 **τ²-bench Retail 全集 114 题**上
-取得 **0.8509**（97/114，标准口径）；本项目声明的三类业务所覆盖的 42 题子集上
-**0.9286**（39/42）。每题 0.0855 元。基线 `baseline-v2` 已冻结并带校验和，
-`baseline-v1`（holdout 40 题，0.8750）留档。
+The model is `deepseek-v4-pro` with thinking at effort=high.
 
-**尚未做**：持久化、认证、跨进程恢复、人工接管、AWS 与在线演示地址。
-详见 [M0 交付报告 §9](docs/M0_REPORT.md)。
+| Subject under test | Full set (114 tasks) | Unconfirmed writes | Cost per task |
+|---|---|---|---|
+| upstream `llm_agent` (`baseline-v2`) | 97/114 = 0.8509 | 168 | 0.0855 CNY |
+| this project's guarded agent (`baseline-v3`) | 102/114 = 0.8947 | **0** | 0.0954 CNY |
 
-选型是**成本决策**，不是质量比较：其余候选没有在同一评测栈下测量过
-（同一批 holdout 上成本差 4.8 倍，不在一个量级，已决定不补测）。此前 A 轮的跨模型数字因判官
-不一致而作废，详见 [§9.9.1](docs/M0.4_EXPERIMENT_PLAN.md)。
+Paired McNemar exact test p = 0.3018, not significant: enforced confirmation did not
+lower the score. The measurable gain is that 168 unconfirmed writes became 0.
 
-## 阅读顺序
+M0's scores measured upstream's agent, not this project's; see
+[M0 report §1.1](docs/M0_REPORT.md). `baseline-v1` (holdout 40 tasks, 0.8750) is
+archived.
 
-1. **[M0 交付报告](docs/M0_REPORT.md)** —— 先看这份，一页读完结论与局限
-2. [项目目标与已确定选择](PROJECT_CONTEXT.md)
-3. [M0.1 协议与环境固定报告](docs/M0.1_PROTOCOL_FREEZE.md)
-4. [M0.2 模型能力核验报告](docs/M0.2_MODEL_CAPABILITY.md)
-5. [M0.3 最小业务闭环报告](docs/M0.3_BUSINESS_LOOP.md)
-6. [M0.4 选型实验方案与成本估算](docs/M0.4_EXPERIMENT_PLAN.md)
-7. [M0.5（一）成本记账与可观测接入](docs/M0.5_OBSERVABILITY.md)
-8. [M0.5（二）本地一键启停与演示流程](docs/M0.5_LOCAL_DEMO.md)
-9. [M0.5（三）冻结基线](docs/M0.5_BASELINE.md)
-10. [MVP 与分阶段开发计划](docs/DEVELOPMENT_PLAN.md)
-7. [模型能力核验与选型实验](docs/MODEL_EXPERIMENTS.md)
-8. [基线、指标与 CI/CD 门禁](docs/EVALUATION_AND_GATES.md)
-9. [架构、数据与权限](docs/ARCHITECTURE_AND_ACCESS.md)
-10. [本地和 AWS 一键启停设计](docs/OPERATIONS.md)
-11. [每步开发报告模板](docs/CHANGE_REPORT_TEMPLATE.md)
+**Not built yet**: authentication, cross-process conversation recovery, human handoff,
+AWS deployment and a hosted demo. See [M0 report §9](docs/M0_REPORT.md).
 
-开发人员或编码 Agent 先阅读 [AGENTS.md](AGENTS.md)。
+Model selection was a cost decision, not a quality comparison: the other candidates
+were never measured on the same evaluation stack, and on the same holdout the cost
+differed by 4.8x. Cross-model numbers from an earlier round were discarded because the
+judge was not held constant; see
+[M0.4 §9.9.1](docs/M0.4_EXPERIMENT_PLAN.md).
 
-## 当前允许推进的范围
+## Reading order
 
-先完成 M0 的评测协议、最小业务流程、模型与思考参数实验，再冻结 MVP 基线。后续按单一改动主题推进，每一步报告相对 MVP 和上一通过版本的变化。完整路线图不是一次性实现全部功能的指令。
+1. **[M0 report](docs/M0_REPORT.md)** - start here; conclusions and limits in one page
+2. [Project goals and settled decisions](PROJECT_CONTEXT.md)
+3. [M0.1 protocol and environment freeze](docs/M0.1_PROTOCOL_FREEZE.md)
+4. [M0.2 model capability verification](docs/M0.2_MODEL_CAPABILITY.md)
+5. [M0.3 minimal business loop](docs/M0.3_BUSINESS_LOOP.md)
+6. [M0.4 selection experiment and cost estimate](docs/M0.4_EXPERIMENT_PLAN.md)
+7. [M0.5 part one: cost accounting and observability](docs/M0.5_OBSERVABILITY.md)
+8. [M0.5 part two: local start/stop and demo flows](docs/M0.5_LOCAL_DEMO.md)
+9. [M0.5 part three: frozen baselines](docs/M0.5_BASELINE.md)
+10. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
+11. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
+12. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+13. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+14. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+15. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+16. [Local and AWS start/stop design](docs/OPERATIONS.md)
+17. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
-M0.1–M0.4 已实现并验证。下一步是 M0.5 冻结 MVP：建立 `baseline-v1` 归档与校验和。
+Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
-可引用的成绩只有一个：`deepseek-v4-pro` 在 holdout 40 题上 0.875，
-评测栈为「模拟用户 `glm-5.3-flash` + 判官 `qwen3.7-flash` (JSON Schema)」。
-**换掉评测栈里任何一个角色，这个数字就不再可比**——2026-09-07 的实测是
-同一批题从 0.600 变成 0.875，差别全在评测栈。
+## Scope currently in progress
 
-## 本地开发（M0.1 可用）
+M0 established the evaluation protocol, the minimal business loop, and the model and
+thinking-parameter experiments, and froze the baselines. M1 added application-state
+persistence. Each step changes one theme and reports its effect against the current
+baseline and the previous passing version. The roadmap is not an instruction to build
+everything at once.
+
+A quotable score requires naming its evaluation stack: simulated user `glm-5.3-flash`
+plus judge `qwen3.7-flash` with JSON Schema. Replacing any role in that stack makes the
+number incomparable: on 2026-09-07 the same tasks went from 0.600 to 0.875 with the
+stack as the only difference.
+
+## Local development
 
 ```bash
-uv sync --group bench                        # 含上游 τ²-bench 包（跑领域环境需要）
-uv run python scripts/fetch_tau2.py          # 按固定 commit 拉取数据并校验 SHA256
+uv sync --group bench                        # includes the upstream τ²-bench package
+uv run python scripts/fetch_tau2.py          # fetch the pinned commit and verify SHA256
 uv run ruff check . && uv run mypy && uv run pytest
-uv run python scripts/freeze_baseline.py --verify   # 校验 baseline-v1 未被改动
+uv run python scripts/freeze_baseline.py --verify   # verify the baselines are unaltered
 ```
 
-需要 `DASHSCOPE_API_KEY` 且**会产生真实费用**的命令：
+Commands that need `DASHSCOPE_API_KEY` and spend real money:
 
 ```bash
-uv run python scripts/probe_models.py --dry-run   # 模型能力探针（先看将发多少请求）
-uv run python scripts/demo_flows.py               # 三类业务 + 越权拒绝的演示流程
-uv run python scripts/run_eval.py --pilot         # τ²-bench 评测冒烟（2 题）
-uv run python scripts/analyze_eval.py --project 74  # 用量与成本推算
+uv run python scripts/probe_models.py --dry-run   # capability probes: see the request count first
+uv run python scripts/demo_flows.py               # the three flows plus an ownership refusal
+uv run python scripts/run_eval.py --pilot         # 2-task evaluation smoke run
+uv run python scripts/analyze_eval.py --project 74  # usage and cost projection
 ```
 
-本地服务（仅绑定 127.0.0.1，固定模拟身份，无公开注册）：
+Local services (bound to 127.0.0.1, fixed simulated identity, no public registration):
 
 ```powershell
-pwsh scripts/start-local.ps1     # 检查前提，起接口 :8000 与界面 :7860，等健康后打印网址
-pwsh scripts/reset-demo.ps1      # 重置演示会话（不删任何文件）
-pwsh scripts/stop-local.ps1      # 只停本项目登记过的进程
+pwsh scripts/start-local.ps1     # check prerequisites, start :8000 and :7860, print URLs
+pwsh scripts/reset-demo.ps1      # reset demo sessions (deletes no files)
+pwsh scripts/stop-local.ps1      # stop only the processes this project recorded
 ```
 
-起服务本身不花钱，只有真的发消息才计费。脚本做了什么、为什么这么做，
-见 [M0.5（二）](docs/M0.5_LOCAL_DEMO.md)。
+Starting costs nothing; only sending a message is billed. What the scripts do and why
+is in [M0.5 part two](docs/M0.5_LOCAL_DEMO.md).
 
-密钥从 `.env` 读取（见 `.env.example`），`.env` 已被 gitignore，禁止提交。
+Application state (M1) needs PostgreSQL:
 
-## 一键启动入口
+```bash
+docker compose up -d db                      # local instance, loopback only
+uv run alembic upgrade head                  # RSA_DATABASE_URL must be set
+```
 
-| 环境 | 启动 | 关闭 | 状态 |
+Without `RSA_DATABASE_URL` the service still runs with M0's in-memory sessions.
+
+Keys are read from `.env` (see `.env.example`). `.env` is gitignored and must not be
+committed.
+
+## Start and stop
+
+| Environment | Start | Stop | Status |
 |---|---|---|---|
-| 本地 | `scripts/start-local.ps1` | `scripts/stop-local.ps1` | 已实现并实跑验证 |
-| AWS | GitHub Actions：`Start Demo` | GitHub Actions：`Stop Demo` | 规划中，M6 |
+| local | `scripts/start-local.ps1` | `scripts/stop-local.ps1` | implemented and verified by running it |
+| AWS | GitHub Actions: `Start Demo` | GitHub Actions: `Stop Demo` | planned, M6 |
 
-本地脚本只控制**本项目登记过**的进程（按 PID 加启动时刻双重核对），不会去猜哪个
-python 属于本项目。没有在线演示地址。设计契约见 [启停设计](docs/OPERATIONS.md)。
+The local scripts control only processes this project recorded, verified by PID and
+start time, and never guess which python belongs to the project. There is no hosted
+demo. The contract is in [operations](docs/OPERATIONS.md).
 
-## 基准归属
+## Benchmark attribution
 
-使用 [Sierra τ²-bench Retail](https://github.com/sierra-research/tau2-bench)，已固定到 `v1.0.1` / commit `fc0055dc4e0a316c3f83133267fbd6faaa770992`（MIT，Copyright (c) 2025 Sierra Research）；逐文件 SHA256 记录在 `evaluation/tau2_manifest.json`。保留上游归属；不得把上游数据、工具或评分器当作原创实现。标准基准成绩与自建应用权限、审批、恢复测试分开报告。
+Uses [Sierra τ²-bench Retail](https://github.com/sierra-research/tau2-bench), pinned to
+`v1.0.1` / commit `fc0055dc4e0a316c3f83133267fbd6faaa770992` (MIT, Copyright (c) 2025
+Sierra Research), with per-file SHA256 in `evaluation/tau2_manifest.json`. Upstream
+attribution is preserved, and upstream data, tools and evaluators must not be presented
+as original work. Standard benchmark scores and this project's own permission, approval
+and recovery tests are reported separately.

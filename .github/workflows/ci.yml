@@ -1,8 +1,11 @@
 name: CI
 
-# CI 做静态检查、单元测试、上游固定校验，以及基线完整性校验。
-# **CI 不跑评测**：跑一轮要真实计费。门禁只校验基线没被改过，不产生任何新数值。
-# 需要真实模型调用的探针不进 CI（标记 live_model），避免 CI 产生计费。
+# CI runs static checks, unit tests, the upstream pin verification, and the baseline
+# integrity check.
+# CI does not run evaluations: one run costs real money. The gate only verifies that the
+# baselines are unaltered and produces no new numbers.
+# Probes that need real model calls stay out of CI (marked live_model) so CI is never
+# billed.
 
 on:
   push:
@@ -16,13 +19,13 @@ concurrency:
 
 jobs:
   static-and-unit:
-    name: 静态检查与单元测试
+    name: static checks and unit tests
     runs-on: ubuntu-latest
 
-    # M1 的持久化用例需要真的 PostgreSQL：部分唯一索引、唯一冲突与事务回滚
-    # 都是方言相关的行为，用 SQLite 顶替测出来的绿色说明不了问题。
-    # 不起这个 service 的话那些用例会静默跳过——而"跳过"和"通过"在汇总行里
-    # 长得一模一样。
+    # The M1 persistence tests need a real PostgreSQL: partial unique indexes, unique
+    # conflicts and transaction rollback are dialect-specific, and a green run on SQLite
+    # would show nothing. Without this service those tests skip silently, and a skip
+    # looks identical to a pass in the summary line.
     services:
       postgres:
         image: postgres:17
@@ -44,64 +47,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 uv
+      - name: install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: 同步依赖（项目 + dev；bench 组含上游重依赖，仅评测作业需要）
+      - name: sync dependencies (project and dev; the bench group is only for evaluation jobs)
         run: uv sync --locked
 
-      - name: Ruff 格式
+      - name: ruff format
         run: uv run ruff format --check .
 
-      - name: Ruff 静态检查
+      - name: ruff check
         run: uv run ruff check .
 
-      - name: mypy 类型检查
+      - name: mypy
         run: uv run mypy
 
-      - name: pytest（不含需要真实模型计费的用例）
+      - name: pytest (excluding tests that need billed model calls)
         run: uv run pytest -m "not live_model"
 
   upstream-pin:
-    name: 上游基准固定校验
+    name: upstream benchmark pin
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 uv
+      - name: install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - run: uv sync --locked
 
-      - name: 按固定 commit 拉取 τ²-bench 并逐文件校验 SHA256
+      - name: fetch the pinned commit and verify every file's SHA256
         run: uv run python scripts/fetch_tau2.py
 
   evaluation-gate:
-    name: 评测门禁（基线完整性）
+    name: evaluation gate (baseline integrity)
     runs-on: ubuntu-latest
     needs: [static-and-unit, upstream-pin]
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 uv
+      - name: install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - run: uv sync --locked
 
-      # 本作业**不跑评测**：跑一轮要真实计费，CI 里跑不起也不该跑。
-      # 它守的是基线本身没被悄悄改过——任务集、上游 manifest、那一轮的 summary
-      # 任何一个变了，基线就不再代表它自称的那次运行，后续对比也就失去意义。
-      - name: 校验 baseline-v1 的校验和
+      # This job does not run an evaluation: one run costs real money, and CI neither
+      # can nor should. It guards that the baselines themselves were not altered. If the
+      # task sets, the upstream manifest or a run's summary change, a baseline no longer
+      # represents the run it claims and every later comparison loses its meaning.
+      - name: verify the baseline checksums
         run: uv run python scripts/freeze_baseline.py --verify
 
-      - name: 说明本作业不产生成绩数值
+      - name: state that this job produces no scores
         run: |
-          echo "::notice title=评测门禁::已校验 baseline-v1 完整性。"
-          echo "本作业不运行评测、不产生任何成功率或延迟数值——出现新数字即为造假。"
-          echo "基线成绩见 evaluation/baselines/baseline-v1/baseline.json，规范见 docs/EVALUATION_AND_GATES.md。"
+          echo "::notice title=evaluation gate::baseline integrity verified."
+          echo "This job runs no evaluation and produces no success-rate or latency numbers; a new number here would be fabricated."
+          echo "Baseline records are in evaluation/baselines/, and the rules are in docs/EVALUATION_AND_GATES.md."

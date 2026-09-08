@@ -1,32 +1,48 @@
-# 工作规则
+# Working rules
 
-## 范围
+## Scope
 
-- 默认中文。先读 `PROJECT_CONTEXT.md` 和当前阶段文档。
-- 当前只有文档；不把路线图当作一次性实现全部阶段的授权。
-- 下一实现阶段是 M0。冻结 MVP 并交付报告后结束该阶段，不自动继续 M1–M7。
-- 每个开发步骤只改变一个可解释主题；代码、模型、提示词、思考配置避免混改。
-- 在已有代码上修改前运行相关基线检查；修改后验证并更新开发报告和修复记录。
+- Everything in this repository is written in English: comments, docstrings, documents,
+  commit messages, user-facing strings. Read `PROJECT_CONTEXT.md` and the current
+  stage's document first.
+- The roadmap is not authorization to implement every stage at once.
+- Each development step changes one explainable theme. Do not mix changes to code,
+  model, prompt and thinking configuration.
+- Before modifying existing code, run the relevant baseline checks; afterwards verify
+  and update the change report and the record of fixes.
 
-## 实验纪律
+## Experiment discipline
 
-- 模型与思考预算必须通过实验选择，不能默认最高档。
-- 原始模型配置、固定模拟用户、逐题结果、失败、重试及用量全部保存。
-- 每一步都对比冻结 MVP 与上一通过版本。MVP 尚未存在时对比已建立的 M0 实验参照，明确标注尚未冻结。
-- 不支持、服务错误、统计证据不足分别记录；不能悄悄改模型、丢失败样本、刷跑到通过。
-- 评测任务与参考答案不可泄露给被测 Agent；评估器不得因候选实现而放宽。
-- 新能力用新增场景验收，同时检查原能力和性能；硬性安全失败不能靠其他指标抵消。
+- The model and thinking budget are chosen by experiment, never defaulted to the
+  highest tier.
+- Keep the raw model configuration, the frozen simulated user, per-task results,
+  failures, retries and usage.
+- Compare every step against the frozen MVP and the previous passing version. Where no
+  MVP exists yet, compare against the established M0 reference and state that it is not
+  frozen.
+- Record unsupported parameters, service errors and insufficient statistical evidence
+  separately. Do not quietly change the model, drop failing samples, or re-run until it
+  passes.
+- Evaluation tasks and reference answers must not leak to the agent under test, and the
+  evaluator must not be relaxed for a candidate implementation.
+- Accept a new capability with new scenarios while checking the existing capabilities
+  and performance. A hard safety failure cannot be offset by other metrics.
 
-## 发布与数据
+## Release and data
 
-- 未明确要求不 commit、push、创建或合并 PR、部署云资源。
-- Key 只从环境或密钥管理读取，不写入 Git、日志或报告。
-- 仅使用模拟业务数据。标准 τ²-bench 环境与自建应用行为分开验证。
-- 不自动删除初版基线、当前与回滚镜像、评测原始结果或必要归档。
-- 免费检查与真实模型评测分开；无必要报告不得发布。
+- Do not commit, push, create or merge a PR, or deploy cloud resources unless asked.
+- Keys come from the environment or a secret manager only, and never enter Git, logs or
+  reports.
+- Use simulated business data only. Verify the standard τ²-bench environment and this
+  project's own behaviour separately.
+- Do not delete the first baseline, the current and rollback images, raw evaluation
+  results, or any archive that is still needed.
+- Keep free checks separate from billed model evaluations, and do not publish a report
+  that is not needed.
 
-## 文档状态
+## Document status
 
-- 明确区分设计、已实现、已测试、已部署。
-- `docs/CHANGE_REPORT_TEMPLATE.md` 是每步交付模板。
-- `docs/EVALUATION_AND_GATES.md` 是评测与门禁的规范来源；阈值变更须版本化并重新验证。
+- Distinguish designed, implemented, tested and deployed.
+- `docs/CHANGE_REPORT_TEMPLATE.md` is the per-step delivery template.
+- `docs/EVALUATION_AND_GATES.md` is the source of truth for evaluation and gates; a
+  threshold change must be versioned and re-verified.
