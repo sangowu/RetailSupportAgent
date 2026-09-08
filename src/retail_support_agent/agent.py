@@ -1,14 +1,16 @@
-"""LangGraph 单 Agent：最小业务闭环。
+"""Single LangGraph agent: the minimal business loop.
 
-流程与 DEVELOPMENT_PLAN.md M0.3 一致：
-    查询订单 → 必要补问 → 判断政策 → 明确确认 → 校验 → 执行 → 解释实际结果
+The flow matches DEVELOPMENT_PLAN.md M0.3:
+    look up order -> ask for missing details -> apply policy -> explicit confirmation
+    -> validate -> execute -> report the actual result
 
-关键设计：**确认与归属校验不由模型决定**。模型只能"提议"工具调用，
-是否放行由 `guardrails.WriteGuard` 判定；写操作必须先拿到针对该组具体参数的确认。
-模型即使自称"已确认"也过不了这一关。
+The model can only propose a tool call. `guardrails.WriteGuard` decides whether it
+runs, and a write needs a confirmation bound to that exact argument set. A model
+claiming "the user already confirmed" does not pass.
 
-回答必须基于工具真实返回的状态——退货申请成功不等于钱已到账，
-这一点写进系统提示词，并由评测的 DB 分量兜底。
+Answers must reflect what the tools actually returned: an accepted return request is
+not a refund that has landed. This is stated in the system prompt and backed by the
+DB component of the benchmark reward.
 """
 
 from __future__ import annotations
@@ -30,36 +32,41 @@ from retail_support_agent.guardrails import (
 )
 from retail_support_agent.store import Store
 
-# 注意：这份提示词只用于**应用演示**。
-# 标准 τ²-bench 评测走上游自己的身份识别协议与 Agent 提示词，两者分别记录，
-# 不能把这里的固定身份用于改变标准评分条件（AGENTS.md 与 DEVELOPMENT_PLAN.md 的要求）。
-SYSTEM_PROMPT_TEMPLATE = """你是零售客服 Agent。
+# This prompt is for the application demo only.
+# The standard τ²-bench run uses upstream's own identification protocol and agent
+# prompt. The two are recorded separately, and the fixed identity below must never
+# be used to change standard scoring conditions (AGENTS.md, DEVELOPMENT_PLAN.md).
+SYSTEM_PROMPT_TEMPLATE = """You are a retail customer-support agent.
 
-**身份已由应用层在登录环节完成验证，当前用户 ID 就是 {user_id}。**
-因此不要再向用户索要邮箱或姓名邮编做身份验证，也不要调用 find_user_id_* 来"确认身份"；
-需要用户资料时直接用 {user_id} 调用 get_user_details。
+The application layer already authenticated the user at login. The current user id
+is {user_id}. Do not ask for an email or a name and zip code to verify identity, and
+do not call find_user_id_* to "confirm" it. When you need the user's profile, call
+get_user_details with {user_id}.
 
-除身份识别环节外，必须遵守下面这份领域政策（原文，不得自行放宽）：
+Apart from identification, follow this domain policy exactly as written. Do not relax it:
 
 {policy}
 
-额外的硬性要求：
+Additional hard requirements:
 
-1. 只能处理当前用户 {user_id} 名下的订单。涉及其他用户的请求一律拒绝并说明原因。
-2. 信息不足时先向用户补问，不要猜测订单号、商品或数量。
-3. 确认分两段，两段都必须走完：
-   先按上述政策向用户解释操作细节并取得口头同意（这是政策要求，不能跳过）；
-   用户同意后，直接发起参数完整的工具调用。系统会再拦一次，把完整参数
-   展示给用户做最终确认，通过后才真正执行。
-   你不能代替用户确认，也不要声称"已为你确认"或"已完成"。
-4. 回答必须与工具返回的真实状态一致。退货或换货**申请成功不等于款项已经退回**，
-   要如实说明当前所处的状态。
-5. 无法处理时，说明原因或转人工，不要编造已完成。
+1. Only act on orders belonging to {user_id}. Refuse anything touching another user
+   and say why.
+2. Ask for missing details instead of guessing an order id, item, or quantity.
+3. Confirmation has two stages and both must happen. First explain the operation to
+   the user as the policy requires and get their agreement; this stage is required by
+   the policy and cannot be skipped. Once they agree, issue the tool call with
+   complete arguments. The system then holds the call and shows the full arguments to
+   the user for a final confirmation before anything runs. You may not confirm on the
+   user's behalf, and you must not claim an action is done before it is.
+4. Answers must match the state the tools returned. An accepted return or exchange is
+   not a completed refund. State where the request actually stands.
+5. When you cannot handle something, say why or hand off to a human. Never invent a
+   completed action.
 """
 
 
 class AgentState(TypedDict, total=False):
-    """LangGraph 状态。messages 用 add_messages 累积。"""
+    """LangGraph state. `messages` accumulates through add_messages."""
 
     messages: Annotated[list[dict[str, Any]], add_messages]
     status: str
@@ -68,7 +75,7 @@ class AgentState(TypedDict, total=False):
 
 @dataclass
 class TurnResult:
-    """一轮对话的结果，供 API 与界面使用。"""
+    """Result of one turn, consumed by the API and the UI."""
 
     reply: str
     status: Literal["answered", "needs_confirmation", "denied", "stopped"]
@@ -78,7 +85,7 @@ class TurnResult:
 
 
 ChatFn = Callable[[list[dict[str, Any]], list[dict[str, Any]]], Any]
-"""(messages, tools) -> 形如 OpenAI ChatCompletion 的响应。便于用假模型做测试。"""
+"""(messages, tools) -> an OpenAI-shaped ChatCompletion response. Lets tests use a fake model."""
 
 
 def _tool_calls_of(message: Any) -> list[Any]:
@@ -86,7 +93,7 @@ def _tool_calls_of(message: Any) -> list[Any]:
 
 
 def _parse_arguments(raw: str | None) -> dict[str, Any] | None:
-    """模型给的参数可能不是合法 JSON——这属于业务失败，要如实回传。"""
+    """Model arguments may not be valid JSON. That is a business failure, reported as one."""
     if not raw:
         return {}
     try:
@@ -97,7 +104,7 @@ def _parse_arguments(raw: str | None) -> dict[str, Any] | None:
 
 
 class RetailAgent:
-    """一个会话一个实例：独立的领域环境、独立的状态。"""
+    """One instance per session, with its own domain environment and state."""
 
     def __init__(
         self,
@@ -110,18 +117,21 @@ class RetailAgent:
         self._chat = chat_fn
         self._domain = domain
         self._session = session
-        # store 为 None 时全部退化成无操作：数据库是能力，不是运行的前提。
-        # 没配库也要能起服务、能跑评测——评测回路里没有 PostgreSQL。
+        # With store=None every persistence call is a no-op. The database is a
+        # capability, not a precondition: the service and the evaluation loop must
+        # run without it, and the evaluation loop has no PostgreSQL.
         self._store = store
         self._session_id = session_id
         self._confirmation_id: int | None = None
         if self._store is not None and self._session_id is not None:
             self._store.ensure_session(self._session_id, session.user_id)
         self._guard = WriteGuard(domain.tool_names(), domain.order_owner)
-        # 本轮已真正执行的工具。**必须按轮累计，不能只记最后一步**：
-        # 一轮通常是 think(要调工具) -> act(执行) -> think(给出答复)，
-        # 最后那步没有工具调用，若在那里现造一个空列表，就把前面执行过的工具
-        # 全丢了——读类查询于是永远报「未调用任何工具」，而它明明查了数据库。
+        # Tools actually executed during this turn. This must accumulate across the
+        # whole turn, not just the last step: a turn is usually think (request tool)
+        # -> act (execute) -> think (answer), and the last step has no tool calls.
+        # Building a fresh empty list there discarded everything executed earlier, so
+        # read-only queries always reported "no tools called" while they had in fact
+        # queried the database.
         self._turn_tools: list[str] = []
         self._tools = domain.tool_schemas()
         self._graph = self._build_graph()
@@ -135,7 +145,7 @@ class RetailAgent:
         ]
         self._last: TurnResult | None = None
 
-    # ---- LangGraph 装配 -------------------------------------------------
+    # ---- graph wiring ---------------------------------------------------
 
     def _build_graph(self) -> Any:
         graph: StateGraph[AgentState] = StateGraph(AgentState)
@@ -147,8 +157,9 @@ class RetailAgent:
             self._route_after_think,
             {"act": "act", "done": END},
         )
-        # 只有真正执行了工具才回到模型解释结果；待确认/被停止必须当场结束本轮，
-        # 否则模型会被再调一次，把"等你确认"这个状态覆盖掉。
+        # Only a real execution returns to the model to explain the result. A pending
+        # confirmation or a stop must end the turn immediately, otherwise the model is
+        # called again and overwrites the "waiting for your confirmation" state.
         graph.add_conditional_edges(
             "act",
             self._route_after_act,
@@ -162,14 +173,15 @@ class RetailAgent:
     def _route_after_act(self, state: AgentState) -> str:
         return "think" if state.get("status") == "tool_executed" else "done"
 
-    # ---- 节点 -----------------------------------------------------------
+    # ---- nodes ----------------------------------------------------------
 
     def _node_think(self, state: AgentState) -> AgentState:
-        """调模型。先检查停止条件——超限时不再发请求，避免无谓计费。"""
+        """Call the model. Stop conditions are checked first, so no request is billed
+        once a limit is reached."""
         stop = self._session.stop_reason()
         if stop is not None:
             self._last = TurnResult(
-                reply=f"本次会话已停止：{stop}。请重新发起或转人工处理。",
+                reply=f"This session has stopped: {stop} Start a new one or ask for a human agent.",
                 status="stopped",
                 tool_calls=list(self._turn_tools),
                 stop_reason=stop,
@@ -192,7 +204,7 @@ class RetailAgent:
         return {"status": "tool_requested"}
 
     def _node_act(self, state: AgentState) -> AgentState:
-        """逐个裁决并执行模型提议的工具调用。"""
+        """Judge and run each tool call the model proposed."""
         pending_calls = _tool_calls_of_last_assistant(self._messages)
 
         for call in pending_calls:
@@ -202,7 +214,8 @@ class RetailAgent:
                     {
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": "参数不是合法的 JSON 对象，未执行。请修正后重试。",
+                        "content": "Arguments are not a valid JSON object. Nothing ran. "
+                        "Fix them and retry.",
                     }
                 )
                 continue
@@ -217,7 +230,8 @@ class RetailAgent:
                     {
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": "未执行：该写操作需要用户针对具体参数明确确认。",
+                        "content": "Not executed: this write action needs the user to confirm "
+                        "these specific arguments.",
                     }
                 )
                 self._last = TurnResult(
@@ -244,7 +258,7 @@ class RetailAgent:
 
             if proposed.name in HANDOFF_TOOLS:
                 self._last = TurnResult(
-                    reply="已转交人工客服处理。",
+                    reply="Handed off to a human agent.",
                     status="answered",
                     tool_calls=list(self._turn_tools),
                 )
@@ -252,10 +266,10 @@ class RetailAgent:
 
         return {"status": "tool_executed"}
 
-    # ---- 对外接口 -------------------------------------------------------
+    # ---- public interface -----------------------------------------------
 
     def send(self, user_message: str) -> TurnResult:
-        """处理一条用户消息。同一会话必须串行调用。"""
+        """Handle one user message. Calls for one session must be serialized."""
         self._maybe_consume_confirmation(user_message)
         self._messages.append({"role": "user", "content": user_message})
         self._journal("user", user_message, [])
@@ -263,19 +277,22 @@ class RetailAgent:
         self._turn_tools = []
         self._graph.invoke({"messages": []})
         result = self._last or TurnResult(
-            reply="（模型未给出回答）", status="answered", tool_calls=list(self._turn_tools)
+            reply="(the model returned no answer)",
+            status="answered",
+            tool_calls=list(self._turn_tools),
         )
         self._journal("assistant", result.reply, result.tool_calls)
         return result
 
-    # ---- 落库（store 为 None 时全是无操作） -------------------------------
+    # ---- persistence (no-ops when store is None) ------------------------
 
     def _journal(self, role: str, content: str, tool_calls: list[str]) -> None:
-        """把一轮消息写进 messages 表。
+        """Write one turn into the messages table.
 
-        序号由库里的最大值 +1 得来，`(session_id, seq)` 唯一——同一轮重发不会
-        插出第二条。落库失败不该让一次已经成功的对话失败，所以只在这里吞掉
-        重复，其他异常照常抛出（静默吞掉写库失败等于假装记了审计）。
+        The sequence number is the stored maximum plus one, and (session_id, seq) is
+        unique, so a resent turn does not insert a second row. Only that duplicate is
+        swallowed; any other exception propagates, because silently dropping a failed
+        write would mean pretending an audit record exists.
         """
         if self._store is None or self._session_id is None:
             return
@@ -288,10 +305,10 @@ class RetailAgent:
         self._store.open_confirmation(self._session_id, proposed)
 
     def _execute(self, proposed: ProposedCall) -> ToolResult:
-        """执行一次工具调用；写操作走幂等路径。
+        """Run one tool call. Writes go through the idempotent path.
 
-        读操作不记 operations：它没有副作用，重复执行也不会造成第二次改动，
-        为它写一行操作记录只会让审计表被读噪声淹没。
+        Reads are not recorded in operations: they have no side effect, repeating one
+        changes nothing, and a row per read would bury the audit table in noise.
         """
         if self._store is None or self._session_id is None or proposed.name not in WRITE_TOOLS:
             return self._domain.execute(proposed.name, proposed.arguments)
@@ -302,42 +319,49 @@ class RetailAgent:
             self._confirmation_id,
             lambda: self._domain.execute(proposed.name, proposed.arguments).content,
         )
-        # 重放时不再碰领域环境：那正是幂等要挡住的第二次改动。
+        # A replay does not touch the domain environment. That second change is
+        # exactly what idempotency exists to prevent.
         return ToolResult(name=proposed.name, content=outcome.result, ok=True)
 
     def _maybe_consume_confirmation(self, user_message: str) -> None:
-        """把用户的肯定答复登记为对**当前挂起那组参数**的确认。"""
+        """Record an affirmative reply as a confirmation of the pending argument set."""
         pending = self._session.pending
         if pending is None:
             return
         if _is_affirmative(user_message):
             self._session.confirm(pending)
             if self._store is not None and self._session_id is not None:
-                # 指纹对不上时 confirm 返回 None——用户同意的是当时列给他看的
-                # 那组参数，模型换了参数就得重新问。
+                # confirm returns None when the fingerprint does not match: the user
+                # agreed to the arguments they were shown, so a changed argument set
+                # has to be asked again.
                 self._confirmation_id = self._store.confirm(self._session_id, pending.fingerprint)
         else:
             self._session.pending = None
 
 
-AFFIRMATIVE = ("确认", "确定", "同意", "可以", "是的", "好的", "yes", "y", "ok", "确认执行")
+AFFIRMATIVE = ("yes", "yep", "confirm", "confirmed", "go ahead", "please do", "ok", "okay", "sure")
+
+NEGATIVE = ("no", "don't", "do not", "cancel that", "stop", "not yet", "hold off")
 
 
 def _is_affirmative(text: str) -> bool:
-    """判定是否为明确肯定。含否定词时一律不算确认。"""
+    """Whether the reply is an explicit yes. Any negative word means it is not."""
     lowered = text.strip().lower()
-    if any(word in lowered for word in ("不", "别", "取消确认", "no", "cancel")):
+    if any(word in lowered for word in NEGATIVE):
         return False
     return any(word in lowered for word in AFFIRMATIVE)
 
 
 def _assistant_message(message: Any, calls: list[Any]) -> dict[str, Any]:
-    """把模型响应转成可回传的消息体，保留 tool_calls 与 reasoning_content。
+    """Convert a model response into a message we can send back, keeping tool_calls
+    and reasoning_content.
 
-    `reasoning_content` 必须回传：DeepSeek 文档明确规定，**请求携带 `tools` 参数时**
-    「历史轮次的 reasoning_content 均应回传给 API，并会被拼接进上下文」。
-    我们每一轮都带 tools，所以丢掉它等于让模型每轮都忘记自己刚才的推理——
-    不报错，只是变笨。未带 tools 的请求则相反：回传也会被忽略，所以只在有它时附上。
+    reasoning_content must be sent back. DeepSeek documents that when a request
+    carries `tools`, "reasoning_content from previous turns should be returned to the
+    API and will be concatenated into the context". Every turn here carries tools, so
+    dropping it makes the model forget its own reasoning each turn. Nothing errors; it
+    just gets worse. Requests without tools ignore the field, so it is attached only
+    when present.
     """
     payload: dict[str, Any] = {"role": "assistant", "content": message.content}
     reasoning = getattr(message, "reasoning_content", None)

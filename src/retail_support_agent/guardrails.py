@@ -1,10 +1,11 @@
-"""写操作的硬性底线：归属校验、参数绑定确认、停止条件。
+"""Hard limits on write actions: ownership checks, argument-bound confirmation, stop conditions.
 
-这三条是 DEVELOPMENT_PLAN.md M0.3 的"必需底线"，做成不依赖模型的纯逻辑：
-模型可以胡说，但它改不了这里的判定。任何写操作都必须先过这一关。
+These are the M0.3 baseline requirements from DEVELOPMENT_PLAN.md, implemented as
+pure logic. The model cannot change these verdicts. Every write action passes through here.
 
-确认必须**绑定到具体参数**。用户确认的是"取消订单 #W123"，不是"确认吗"；
-模型若在确认后改了参数，指纹就对不上，必须重新确认。
+Confirmation is bound to specific arguments. The user confirms "cancel order #W123",
+not "are you sure". If the model changes an argument afterwards the fingerprint no
+longer matches and the call needs a new confirmation.
 """
 
 from __future__ import annotations
@@ -18,38 +19,43 @@ from typing import Any
 
 from retail_support_agent.domain import WRITE_TOOLS
 
-# 参数里可能出现订单号的字段名。用于归属校验。
+# Argument names that may carry an order or user id. Used by the ownership check.
 ORDER_ID_FIELDS = ("order_id",)
 USER_ID_FIELDS = ("user_id",)
 
 
 class Decision(StrEnum):
-    """守卫对一次工具调用的裁决。"""
+    """Verdict on one proposed tool call."""
 
-    ALLOW = "allow"  # 读操作，或已确认且指纹匹配的写操作
-    NEEDS_CONFIRMATION = "needs_confirmation"  # 写操作，尚未获得针对该参数的确认
-    DENIED_OWNERSHIP = "denied_ownership"  # 订单不属于当前会话身份
-    DENIED_UNKNOWN_TOOL = "denied_unknown_tool"  # 不在上游工具清单里
+    ALLOW = "allow"  # read action, or a write whose fingerprint is already confirmed
+    NEEDS_CONFIRMATION = "needs_confirmation"  # write action, not confirmed for these arguments
+    DENIED_OWNERSHIP = "denied_ownership"  # order does not belong to the session identity
+    DENIED_UNKNOWN_TOOL = "denied_unknown_tool"  # not in the upstream tool list
 
 
 @dataclass(frozen=True)
 class ProposedCall:
-    """模型提议的一次工具调用。"""
+    """One tool call proposed by the model."""
 
     name: str
     arguments: dict[str, Any]
 
     @property
     def fingerprint(self) -> str:
-        """工具名 + 规范化参数的摘要。参数变了指纹就变，旧确认自动失效。"""
+        """Digest of tool name plus canonical arguments.
+
+        Changing an argument changes the fingerprint, which expires any earlier
+        confirmation.
+        """
         canonical = json.dumps(self.arguments, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(f"{self.name}|{canonical}".encode()).hexdigest()
 
     def describe(self) -> str:
-        """给用户看的确认文案，必须逐项列出真实参数，不能只说"确认吗"。
+        """Confirmation text shown to the user, listing every real argument.
 
-        文案用英文：τ²-bench 的对话全程是英文，中文提示会让用户先去猜
-        "这是什么语言"再回答——任务 80 就是这样丢的分。
+        English, because the τ²-bench conversation is English throughout. A Chinese
+        prompt made the simulated user spend a turn guessing what language it was;
+        that cost task 80 its score.
         """
         if not self.arguments:
             return f"Run {self.name} (no arguments)."
@@ -62,7 +68,7 @@ class ProposedCall:
 
 @dataclass
 class GuardVerdict:
-    """裁决结果。被拒时 reason 会原样进入给用户的解释。"""
+    """A verdict. On denial, `reason` is shown to the user verbatim."""
 
     decision: Decision
     reason: str = ""
@@ -75,7 +81,7 @@ class GuardVerdict:
 
 @dataclass
 class SessionLimits:
-    """停止条件。防止模型在一次会话里无限调工具。"""
+    """Stop conditions, so one session cannot call tools indefinitely."""
 
     max_steps: int = 20
     max_tool_calls: int = 15
@@ -84,14 +90,14 @@ class SessionLimits:
 
 @dataclass
 class SessionState:
-    """单会话状态。同一会话串行处理，M0 不宣称跨进程幂等或恢复能力。"""
+    """Per-session state. One session is processed serially."""
 
     user_id: str
     limits: SessionLimits = field(default_factory=SessionLimits)
     started_at: float = field(default_factory=time.monotonic)
     steps: int = 0
     tool_calls: int = 0
-    # 已获用户确认的指纹集合。确认一次只对一组具体参数有效。
+    # Fingerprints the user has confirmed. One confirmation covers one argument set.
     confirmed_fingerprints: set[str] = field(default_factory=set)
     pending: ProposedCall | None = None
 
@@ -99,26 +105,26 @@ class SessionState:
         return time.monotonic() - self.started_at
 
     def stop_reason(self) -> str | None:
-        """返回应当停止的原因；None 表示可以继续。"""
+        """Why the session must stop, or None if it may continue."""
         if self.steps >= self.limits.max_steps:
-            return f"已达最大步骤数 {self.limits.max_steps}"
+            return f"Reached the step limit of {self.limits.max_steps}."
         if self.tool_calls >= self.limits.max_tool_calls:
-            return f"已达最大工具调用数 {self.limits.max_tool_calls}"
+            return f"Reached the tool-call limit of {self.limits.max_tool_calls}."
         if self.elapsed() >= self.limits.timeout_seconds:
-            return f"已超过会话时限 {self.limits.timeout_seconds:.0f} 秒"
+            return f"Exceeded the session time limit of {self.limits.timeout_seconds:.0f}s."
         return None
 
     def confirm(self, call: ProposedCall) -> None:
-        """记录用户对某一组具体参数的确认。"""
+        """Record the user's confirmation of one specific argument set."""
         self.confirmed_fingerprints.add(call.fingerprint)
         self.pending = None
 
 
 class WriteGuard:
-    """对每一次工具调用做裁决。不依赖模型自觉。"""
+    """Rules on every tool call. Does not rely on the model policing itself."""
 
     def __init__(self, known_tools: set[str], owner_lookup: Any) -> None:
-        """owner_lookup(order_id) -> user_id | None，由 RetailDomain 提供。"""
+        """`owner_lookup(order_id) -> user_id | None`, supplied by RetailDomain."""
         self._known_tools = known_tools
         self._owner_lookup = owner_lookup
 
@@ -147,7 +153,10 @@ class WriteGuard:
         )
 
     def _check_ownership(self, call: ProposedCall, state: SessionState) -> GuardVerdict | None:
-        """写操作只能作用于当前会话身份名下的资源。返回 None 表示通过。"""
+        """A write may only touch resources owned by the session identity.
+
+        Returns None when the call passes.
+        """
         for field_name in USER_ID_FIELDS:
             target = call.arguments.get(field_name)
             if target is not None and str(target) != state.user_id:
@@ -173,7 +182,8 @@ class WriteGuard:
             if owner != state.user_id:
                 return GuardVerdict(
                     Decision.DENIED_OWNERSHIP,
-                    f"订单 {order_id} 属于其他用户，当前会话身份 {state.user_id} 无权修改。",
+                    f"Order {order_id} belongs to another user. The authenticated user "
+                    f"{state.user_id} may not modify it.",
                     call,
                 )
         return None

@@ -1,7 +1,8 @@
-"""τ²-bench 上游固定信息的读取与校验。
+"""Read and verify the pinned τ²-bench upstream.
 
-M0.1 的作用是让"我们评测的到底是哪一版基准"成为可机器验证的事实：
-manifest 记录上游 commit 与逐文件 SHA256，任何本地改动或上游漂移都会在校验时暴露。
+M0.1 makes "which version of the benchmark was evaluated" a machine-checkable fact:
+the manifest records the upstream commit and a SHA256 per file, so any local edit or
+upstream drift shows up during verification.
 """
 
 from __future__ import annotations
@@ -19,35 +20,36 @@ DEFAULT_CHECKOUT = REPO_ROOT / "third_party" / "tau2-bench"
 
 
 class ManifestError(RuntimeError):
-    """manifest 缺失、损坏或与实际检出不一致。"""
+    """The manifest is missing, corrupt, or disagrees with the checkout."""
 
 
 @dataclass(frozen=True)
 class FileMismatch:
-    """单个文件的校验差异。"""
+    """One file that does not match the manifest."""
 
     path: str
     expected: str
-    actual: str | None  # None 表示文件不存在
+    actual: str | None  # None means the file is missing
 
     def describe(self) -> str:
-        actual = "<缺失>" if self.actual is None else self.actual
-        return f"{self.path}\n  期望 {self.expected}\n  实际 {actual}"
+        actual = "<missing>" if self.actual is None else self.actual
+        return f"{self.path}\n  expected {self.expected}\n  actual   {actual}"
 
 
 def load_manifest(manifest_path: Path = MANIFEST_PATH) -> dict[str, Any]:
-    """读取 manifest；文件缺失或非法 JSON 时抛 ManifestError。"""
+    """Read the manifest. Raises ManifestError when missing or not valid JSON."""
     if not manifest_path.is_file():
-        raise ManifestError(f"manifest 不存在：{manifest_path}")
+        raise ManifestError(f"manifest not found: {manifest_path}")
     try:
         data: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:  # pragma: no cover - 损坏文件属异常路径
-        raise ManifestError(f"manifest 不是合法 JSON：{manifest_path}") from exc
+    except json.JSONDecodeError as exc:  # pragma: no cover - corrupt file is an error path
+        raise ManifestError(f"manifest is not valid JSON: {manifest_path}") from exc
     return data
 
 
 def sha256_of(path: Path) -> str:
-    """按块计算文件 SHA256，避免把 db.json 这类大文件整体读入内存。"""
+    """SHA256 of a file, read in chunks so large files such as db.json are not
+    loaded into memory whole."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
@@ -59,11 +61,13 @@ def verify_checkout(
     checkout: Path = DEFAULT_CHECKOUT,
     manifest_path: Path = MANIFEST_PATH,
 ) -> list[FileMismatch]:
-    """校验本地检出与 manifest 是否一致，返回全部差异（空列表表示通过）。"""
+    """Verify the local checkout against the manifest. An empty list means it passes."""
     manifest = load_manifest(manifest_path)
     expected: dict[str, str] = manifest["files_sha256"]
     if not checkout.is_dir():
-        raise ManifestError(f"上游检出不存在：{checkout}（先运行 scripts/fetch_tau2.py）")
+        raise ManifestError(
+            f"upstream checkout not found: {checkout} (run scripts/fetch_tau2.py first)"
+        )
 
     mismatches: list[FileMismatch] = []
     for rel, expected_hash in sorted(expected.items()):
@@ -75,9 +79,9 @@ def verify_checkout(
 
 
 def load_task_set(name: str) -> dict[str, Any]:
-    """读取冻结的任务集清单（dev / holdout / regression / scope_labels）。"""
+    """Read a frozen task set (dev / holdout / regression / scope_labels)."""
     path = TASK_SETS_DIR / f"{name}.json"
     if not path.is_file():
-        raise ManifestError(f"任务集不存在：{path}")
+        raise ManifestError(f"task set not found: {path}")
     data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data

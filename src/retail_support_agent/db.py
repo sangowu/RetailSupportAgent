@@ -1,11 +1,13 @@
-"""应用侧状态的表定义与连接。
+"""Table definitions and connection for application state.
 
-**只放应用侧状态**：会话、消息、确认、写操作、审计。
-τ²-bench 的模拟订单数据**不进这里**——那是基准的业务数据，搬进来等于自己
-重写官方评测预期，成绩立刻不可比（见 docs/M1_PERSISTENCE.md §1）。
+Application state only: sessions, messages, confirmations, write operations, audit
+events. The τ²-bench simulated order data stays out of this database. It is the
+benchmark's business data, and moving it here would amount to rewriting the official
+evaluation expectations, making scores incomparable (docs/M1_PERSISTENCE.md §1).
 
-不变量交给数据库，不交给应用代码：唯一约束、外键、条件更新。
-应用层"先查一下有没有"在并发下必然漏，唯一索引不会。
+Invariants belong to the database, not to application code: unique constraints,
+foreign keys, conditional updates. An application-level "check whether it exists"
+misses under concurrency; a unique index does not.
 """
 
 from __future__ import annotations
@@ -31,8 +33,9 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import JSON, TypeEngine
 
-# JSONB 只有 PostgreSQL 有。生产就是 PostgreSQL；留一个 JSON 回退是为了让
-# 表定义在别的方言下也能建起来（例如离线看结构），不是为了支持第二种数据库。
+# JSONB is PostgreSQL-only, and PostgreSQL is what production uses. The JSON fallback
+# exists so the tables can still be created under another dialect for inspection, not
+# to support a second database.
 JSON_TYPE: TypeEngine[Any] = JSONB().with_variant(JSON(), "sqlite")
 
 
@@ -45,7 +48,7 @@ def _now() -> Mapped[dt.datetime]:
 
 
 class SessionRow(Base):
-    """一次会话。user_id 是 τ²-bench 的模拟身份，不是真实用户。"""
+    """One session. `user_id` is a τ²-bench simulated identity, not a real user."""
 
     __tablename__ = "sessions"
 
@@ -58,10 +61,11 @@ class SessionRow(Base):
 
 
 class MessageRow(Base):
-    """逐轮对话。
+    """One conversation turn.
 
-    `(session_id, seq)` 唯一：客户端重发同一轮不会插出第二条，
-    而不是靠应用层"先查有没有"——并发下那个检查必然漏。
+    `(session_id, seq)` is unique, so a resent turn cannot insert a second row. The
+    constraint does this, not an application-level existence check, which misses under
+    concurrency.
     """
 
     __tablename__ = "messages"
@@ -79,12 +83,13 @@ class MessageRow(Base):
 
 
 class ConfirmationRow(Base):
-    """一次待确认 / 已确认的写操作。
+    """A pending or resolved confirmation for one write action.
 
-    `fingerprint` 与 M0.6 护栏用的是**同一套口径**（工具名 + 规范化参数的摘要）：
-    参数变了指纹就变，旧确认自动失效。
+    `fingerprint` uses the same definition as the guard (tool name plus canonical
+    arguments), so changing an argument expires the confirmation.
 
-    一个会话同时最多一条 pending——由部分唯一索引保证，不是应用层判断。
+    A session has at most one pending confirmation, enforced by a partial unique
+    index rather than by application logic.
     """
 
     __tablename__ = "confirmations"
@@ -92,8 +97,8 @@ class ConfirmationRow(Base):
         CheckConstraint(
             "state in ('pending', 'confirmed', 'cancelled')", name="ck_confirmations_state"
         ),
-        # 部分唯一索引：只对 pending 生效。写成普通唯一索引会变成
-        # "一个会话一辈子只能有一条确认"，那显然不对。
+        # Partial unique index, pending only. A plain unique index would mean one
+        # confirmation per session for the lifetime of the session.
         Index(
             "uq_confirmations_one_pending_per_session",
             "session_id",
@@ -116,10 +121,11 @@ class ConfirmationRow(Base):
 
 
 class OperationRow(Base):
-    """一次真正执行的写操作。
+    """One executed write action.
 
-    幂等**靠 `idempotency_key` 的唯一索引**，不靠应用层"先查再插"：
-    同一个键第二次到达时插入直接冲突，那就是"已经执行过"，取回原结果即可。
+    Idempotency comes from the unique index on `idempotency_key`, not from a
+    check-then-insert: a second insert of the same key conflicts, and that conflict is
+    the signal that the operation already ran.
     """
 
     __tablename__ = "operations"
@@ -144,7 +150,7 @@ class OperationRow(Base):
 
 
 class AuditEventRow(Base):
-    """授权依据与结果。回答"谁在什么时候授权了哪一次写操作"。"""
+    """Authorization basis and outcome: who authorized which write action, and when."""
 
     __tablename__ = "audit_events"
 
@@ -161,10 +167,11 @@ class AuditEventRow(Base):
 
 
 def make_engine(url: str, echo: bool = False) -> Engine:
-    """建连接池。
+    """Build the connection pool.
 
-    `pool_pre_ping`：连接可能被数据库端或中间件悄悄断掉，不 ping 的话
-    第一个用到它的请求会拿到一个已死的连接，报一个与业务无关的错。
+    `pool_pre_ping` is on because a connection can be dropped by the server or an
+    intermediary. Without it, the next request to use that connection fails with an
+    error unrelated to what it was doing.
     """
     return create_engine(url, echo=echo, pool_pre_ping=True, future=True)
 

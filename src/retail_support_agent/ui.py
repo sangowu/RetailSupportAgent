@@ -1,10 +1,11 @@
-"""最小 Gradio 演示界面。
+"""Minimal Gradio demo UI.
 
-M0.3 只做"能把三类业务走通"的最小界面：固定模拟身份、仅绑定 127.0.0.1、
-不开公开分享链接。界面完善是 M7 的独立主题。
+M0.3 needs only enough interface to run the three flows: fixed simulated identity,
+bound to 127.0.0.1, no public share link. A real interface is M7.
 
-界面上显式区分三种状态——已回答 / 待确认 / 被拒绝——因为"写操作必须明确确认"
-是本项目的核心卖点，不能藏在对话文本里看不出来。
+The UI shows three states explicitly - answered, awaiting confirmation, denied -
+because "writes require explicit confirmation" is this project's central claim and
+must not be buried in conversation text.
 """
 
 from __future__ import annotations
@@ -21,18 +22,19 @@ from retail_support_agent.guardrails import SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
 
 STATUS_LABELS = {
-    "answered": "已回答",
-    "needs_confirmation": "⚠ 待你确认",
-    "denied": "✗ 已拒绝",
-    "stopped": "■ 会话已停止",
+    "answered": "answered",
+    "needs_confirmation": "⚠ awaiting your confirmation",
+    "denied": "✗ denied",
+    "stopped": "■ session stopped",
 }
 
-INTRO = f"""### RetailSupportAgent · M0.3 最小业务闭环
+INTRO = f"""### RetailSupportAgent · M0.3 minimal business loop
 
-固定模拟身份：`{DEMO_USER_ID}`（τ²-bench 模拟数据，非真实用户）。
-支持订单查询、取消订单、退货申请。
+Fixed simulated identity: `{DEMO_USER_ID}` (τ²-bench simulated data, not a real user).
+Supports order lookup, order cancellation and return requests.
 
-**写操作会先被拦下来要你确认具体参数**——这是设计如此，不是卡住了。
+Write actions are held for confirmation of their exact arguments. That is by design,
+not a hang.
 """
 
 
@@ -46,14 +48,14 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
     with gr.Blocks(title="RetailSupportAgent") as demo:
         gr.Markdown(INTRO)
         agent_state = gr.State(None)
-        # 不传 type：gradio 6 起 messages 是唯一格式，参数本身被删掉了，
-        # 传了会 TypeError。我们本来产出的就是 {"role", "content"} 这种格式。
-        chatbot = gr.Chatbot(height=460, label="对话")
+        # No `type` argument: gradio 6 removed it because messages is the only format,
+        # and passing it raises TypeError. This code already emits {"role", "content"}.
+        chatbot = gr.Chatbot(height=460, label="Conversation")
         status = gr.Markdown("")
         with gr.Row():
-            box = gr.Textbox(placeholder="例如：帮我查一下我的订单", scale=5, show_label=False)
-            send = gr.Button("发送", variant="primary", scale=1)
-        reset = gr.Button("重开会话")
+            box = gr.Textbox(placeholder="e.g. show me my orders", scale=5, show_label=False)
+            send = gr.Button("Send", variant="primary", scale=1)
+        reset = gr.Button("New session")
 
         def respond(
             message: str, history: list[dict[str, Any]], agent: RetailAgent | None
@@ -63,9 +65,9 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
             active = agent or _new_agent(user_id)
             result = active.send(message)
             label = STATUS_LABELS.get(result.status, result.status)
-            note = f"**状态：{label}**"
+            note = f"**Status: {label}**"
             if result.tool_calls:
-                note += f" · 已调用工具：{', '.join(result.tool_calls)}"
+                note += f" · tools called: {', '.join(result.tool_calls)}"
             if result.stop_reason:
                 note += f" · {result.stop_reason}"
             updated = [
@@ -76,7 +78,7 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
             return updated, active, "", note
 
         def start_over() -> tuple[list[dict[str, Any]], None, str]:
-            return [], None, "已重开会话。"
+            return [], None, "Started a new session."
 
         send.click(respond, [box, chatbot, agent_state], [chatbot, agent_state, box, status])
         box.submit(respond, [box, chatbot, agent_state], [chatbot, agent_state, box, status])
@@ -87,7 +89,7 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
 
 
 def main() -> None:
-    """仅绑定本地地址；不开 share 链接，不提供公开注册。"""
+    """Binds to localhost only; no share link, no public registration."""
     build_demo().launch(server_name="127.0.0.1", server_port=7860, share=False)
 
 

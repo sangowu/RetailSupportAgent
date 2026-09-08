@@ -1,10 +1,12 @@
-"""τ²-bench Retail 领域适配层。
+"""Adapter for the τ²-bench Retail domain.
 
-只做"接线"，不重写上游的工具、政策或数据：工具实现与政策文本全部来自
-按固定 commit 安装的 `tau2` 包，业务数据来自 `third_party/` 下经 SHA256 校验的检出。
+Wiring only. Tool implementations and the policy text come from the `tau2` package
+installed at a pinned commit; the business data comes from the SHA256-verified
+checkout under `third_party/`. Nothing here is rewritten or summarized.
 
-每个会话持有独立的 Environment 实例（各自一份 DB 副本），避免会话之间互相污染——
-这是 DEVELOPMENT_PLAN.md M0.2 明确要求的隔离条件。
+Each session holds its own Environment instance, and therefore its own database
+copy, so sessions cannot affect each other. DEVELOPMENT_PLAN.md M0.2 requires this
+isolation.
 """
 
 from __future__ import annotations
@@ -19,7 +21,8 @@ from retail_support_agent.tau2_pin import REPO_ROOT
 
 DEFAULT_DATA_DIR = REPO_ROOT / "third_party" / "tau2-bench" / "data"
 
-# 会改变数据库状态的工具。确认与归属校验只针对这些工具，读操作不拦。
+# Tools that change database state. Confirmation and ownership checks apply to these
+# only; reads pass through.
 WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "cancel_pending_order",
@@ -32,23 +35,25 @@ WRITE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# 需要人工介入的终止型工具：调用后不应再继续自动执行。
+# Terminal tools that hand off to a human. Nothing should run automatically after one.
 HANDOFF_TOOLS: frozenset[str] = frozenset({"transfer_to_human_agents"})
 
 
 class DomainError(RuntimeError):
-    """领域环境无法加载或工具调用失败。"""
+    """The domain environment could not be loaded, or a tool call failed."""
 
 
 def ensure_data_dir(data_dir: Path | None = None) -> Path:
-    """设置 TAU2_DATA_DIR，让上游包读到我们校验过的那份数据。
+    """Point TAU2_DATA_DIR at the verified data checkout.
 
-    必须在 import tau2 之前调用——上游在模块导入时就解析了数据目录。
+    Must run before `import tau2`: upstream resolves the data directory at module
+    import time.
     """
     resolved = data_dir or Path(os.getenv("TAU2_DATA_DIR") or DEFAULT_DATA_DIR)
     if not resolved.is_dir():
         raise DomainError(
-            f"τ²-bench 数据目录不存在：{resolved}\n先运行 uv run python scripts/fetch_tau2.py"
+            f"τ²-bench data directory not found: {resolved}\n"
+            "Run uv run python scripts/fetch_tau2.py first."
         )
     os.environ["TAU2_DATA_DIR"] = str(resolved)
     return resolved
@@ -56,7 +61,7 @@ def ensure_data_dir(data_dir: Path | None = None) -> Path:
 
 @dataclass
 class ToolResult:
-    """一次工具调用的结果。失败也要如实返回给模型，不能悄悄吞掉。"""
+    """Result of one tool call. Failures are returned to the model as they are."""
 
     name: str
     ok: bool
@@ -67,11 +72,12 @@ class ToolResult:
 
 
 def _serialize(raw: Any) -> str:
-    """把上游工具的返回值转成模型能读的文本。
+    """Turn an upstream tool return value into text the model can read.
 
-    上游工具返回三种东西：已经是字符串的、pydantic 模型、以及普通容器。
-    pydantic 模型必须走 model_dump_json——用 json.dumps(default=str) 会把整个对象
-    压成一个字符串字面量，后续再解析就拿不到字段了（这个坑在真实数据上才暴露）。
+    Upstream returns strings, pydantic models, or plain containers. Pydantic models
+    must go through model_dump_json: json.dumps(default=str) collapses the object
+    into a single string literal, and the fields are then unrecoverable. This only
+    shows up on real data.
     """
     if isinstance(raw, str):
         return raw
@@ -82,42 +88,46 @@ def _serialize(raw: Any) -> str:
 
 
 class RetailDomain:
-    """一个会话一个实例，持有独立的 Environment 与数据库副本。"""
+    """One instance per session, holding its own Environment and database copy."""
 
     def __init__(self, data_dir: Path | None = None) -> None:
         ensure_data_dir(data_dir)
-        # 延迟导入：上游包在导入时读取 TAU2_DATA_DIR，必须先设好环境变量
+        # Imported late: upstream reads TAU2_DATA_DIR at import time.
         from tau2.domains.retail.environment import get_environment
 
         self._env = get_environment()
 
     @property
     def policy(self) -> str:
-        """上游原始政策文本。不改写、不摘要——摘要会悄悄改变评测条件。"""
+        """The upstream policy text, unmodified. Summarizing it changes the test."""
         policy: str = self._env.get_policy()
         return policy
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        """上游工具的 OpenAI 格式定义，直接透传。"""
+        """Upstream tool definitions in OpenAI format, passed through."""
         return [tool.openai_schema for tool in self._env.get_tools()]
 
     def tool_names(self) -> set[str]:
         return {tool.name for tool in self._env.get_tools()}
 
     def db_hash(self) -> str:
-        """数据库状态指纹，用于确认写操作是否真的改变了状态。"""
+        """Database state fingerprint, used to check whether a write changed anything."""
         return str(self._env.get_db_hash())
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """执行一次工具调用。上游抛错时把错误原文回传给模型，让它据实解释。"""
+        """Run one tool call. Upstream errors are passed back to the model verbatim."""
         try:
             raw = self._env.use_tool(name, **arguments)
         except Exception as exc:
-            return ToolResult(name=name, ok=False, content=f"工具执行失败：{exc}")
+            return ToolResult(name=name, ok=False, content=f"Tool call failed: {exc}")
         return ToolResult(name=name, ok=True, content=_serialize(raw))
 
     def order_owner(self, order_id: str) -> str | None:
-        """查订单归属的 user_id；订单不存在或结构异常时返回 None（按拒绝处理）。"""
+        """The user_id owning an order.
+
+        Returns None when the order does not exist or the payload is malformed;
+        callers treat None as a denial.
+        """
         result = self.execute("get_order_details", {"order_id": order_id})
         if not result.ok:
             return None

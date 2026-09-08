@@ -1,12 +1,15 @@
-"""应用侧状态的读写。事务边界与幂等都在这里，不在调用方。
+"""Reads and writes for application state. Transaction boundaries and idempotency
+live here, not in the caller.
 
-三条规则，其余都是细节：
+Three rules; everything else is detail:
 
-1. **一次写操作 = 一个事务。** 操作记录、业务效果、审计事件要么一起成立，
-   要么一起不存在。中途失败留下"记了操作但没执行"的痕迹，比不记还糟。
-2. **幂等靠唯一索引，不靠先查再插。** `SELECT ... 没有就 INSERT` 在并发下
-   必然漏：两个请求可以同时查到"没有"。
-3. **确认的指纹与护栏同源。** 参数变了指纹就变，旧确认自动失效。
+1. One write action is one transaction. The operation row, the business effect and
+   the audit event either all exist or none do. A partial record saying "logged but
+   not executed" is worse than no record.
+2. Idempotency comes from a unique index, not from check-then-insert. `SELECT, and
+   INSERT if absent` misses under concurrency: two requests can both see nothing.
+3. Confirmation fingerprints use the same definition as the guard. Changing an
+   argument expires the confirmation.
 """
 
 from __future__ import annotations
@@ -32,11 +35,12 @@ from retail_support_agent.guardrails import ProposedCall
 
 
 def idempotency_key(session_id: str, call: ProposedCall, confirmation_id: int | None) -> str:
-    """幂等键 = 会话 + 工具名 + 规范化参数 + 那一次确认。
+    """Key = session + tool name + canonical arguments + the confirmation that authorized it.
 
-    带上 confirmation_id 是有意的：同一组参数**再次获得确认**是一次新的授权，
-    应当允许再执行一次（用户可能真的想再退一件同样的商品）。
-    不带的话，第二次合法请求会被当成重试而被静默吞掉。
+    Including confirmation_id is deliberate: a second confirmation of the same
+    arguments is a new authorization and should run again, because the user may
+    genuinely want to return another identical item. Without it, the second legitimate
+    request would be treated as a retry and silently dropped.
     """
     canonical = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)
     raw = f"{session_id}|{call.name}|{canonical}|{confirmation_id or ''}"
@@ -45,7 +49,7 @@ def idempotency_key(session_id: str, call: ProposedCall, confirmation_id: int | 
 
 @dataclass(frozen=True)
 class OperationOutcome:
-    """一次写操作的结果。`replayed=True` 表示这次没有真正执行，是取回的旧结果。"""
+    """Result of a write. `replayed=True` means nothing ran and this is the stored result."""
 
     operation_id: int
     result: str
@@ -53,14 +57,15 @@ class OperationOutcome:
 
 
 class Store:
-    """应用侧状态的仓储。每个方法自己开一个事务。"""
+    """Repository for application state. Each method opens its own transaction."""
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._sessions = session_factory
 
-    # ── 会话 ────────────────────────────────────────────────
+    # ---- sessions -------------------------------------------------------
     def ensure_session(self, session_id: str, user_id: str) -> None:
-        """会话不存在就建。已存在时**不覆盖 user_id**——那会悄悄换掉一次会话的身份。"""
+        """Create the session if absent. An existing `user_id` is never overwritten,
+        which would silently change the identity of a session."""
         with self._sessions.begin() as db:
             if db.get(SessionRow, session_id) is None:
                 db.add(SessionRow(id=session_id, user_id=user_id))
@@ -70,7 +75,7 @@ class Store:
             row = db.get(SessionRow, session_id)
             return row.user_id if row else None
 
-    # ── 消息 ────────────────────────────────────────────────
+    # ---- messages -------------------------------------------------------
     def append_message(
         self,
         session_id: str,
@@ -79,7 +84,7 @@ class Store:
         content: str,
         tool_calls: list[str] | None = None,
     ) -> bool:
-        """追加一轮消息。返回 False 表示这一轮已经存在（重发），没有插入第二条。"""
+        """Append one turn. False means the turn already existed and nothing was inserted."""
         try:
             with self._sessions.begin() as db:
                 db.add(
@@ -115,12 +120,12 @@ class Store:
             last = db.scalar(stmt)
             return (last or 0) + 1
 
-    # ── 确认 ────────────────────────────────────────────────
+    # ---- confirmations --------------------------------------------------
     def open_confirmation(self, session_id: str, call: ProposedCall) -> int:
-        """登记一条待确认的写操作，返回它的 id。
+        """Record a pending write action and return its id.
 
-        同一会话已有 pending 时，**新的取代旧的**：模型改了参数就等于重新提议，
-        让两条 pending 并存会让"用户确认的是哪一条"变成猜谜。
+        An existing pending row is cancelled: changed arguments are a new proposal,
+        and two pending rows would make "which one did the user confirm" a guess.
         """
         with self._sessions.begin() as db:
             stmt = select(ConfirmationRow).where(
@@ -143,10 +148,10 @@ class Store:
             return int(row.id)
 
     def confirm(self, session_id: str, fingerprint: str) -> int | None:
-        """把 pending 的确认标成 confirmed，返回它的 id。
+        """Mark the pending confirmation as confirmed and return its id.
 
-        指纹对不上就**不确认**并返回 None：用户同意的是当时列给他看的那组参数，
-        模型换了参数就必须重新问一次。
+        A mismatched fingerprint confirms nothing and returns None: the user agreed to
+        the arguments they were shown, so a changed set has to be asked again.
         """
         with self._sessions.begin() as db:
             stmt = select(ConfirmationRow).where(
@@ -168,7 +173,7 @@ class Store:
             )
             return db.scalars(stmt).one_or_none()
 
-    # ── 写操作（幂等 + 事务） ─────────────────────────────────
+    # ---- write actions (idempotent, transactional) ----------------------
     def execute_once(
         self,
         session_id: str,
@@ -176,19 +181,22 @@ class Store:
         confirmation_id: int | None,
         apply: Callable[[], str],
     ) -> OperationOutcome:
-        """执行一次写操作，同一幂等键只会真正执行一次。
+        """Run a write action; one idempotency key executes at most once.
 
-        顺序是**先占键、再执行、后提交**：
+        Order is claim the key, execute, then commit:
 
-        1. 插入 operations 行占住幂等键。冲突 → 已经执行过，取回旧结果返回。
-        2. 在同一个事务里调用 `apply()` 做真正的业务改动。
-        3. 记审计事件，一起提交。
+        1. Insert the operations row to claim the key. A conflict means it already
+           ran, so the stored result is returned.
+        2. Call `apply()` inside the same transaction to make the business change.
+        3. Record the audit event and commit together.
 
-        `apply()` 抛异常时整个事务回滚——操作记录与业务效果同时不存在，
-        不会留下"记了但没做"或"做了但没记"的中间态。
+        If `apply()` raises, the whole transaction rolls back: the operation row and
+        the business effect are both absent, with no "logged but not done" or "done
+        but not logged" middle state.
 
-        这里刻意**不**用 `INSERT ... ON CONFLICT DO NOTHING`：那样拿不到
-        "是不是我插进去的"这个信息，还得再查一次；捕获 IntegrityError 更直白。
+        `INSERT ... ON CONFLICT DO NOTHING` is deliberately not used: it does not say
+        whether this caller inserted the row, so a second query would be needed
+        anyway. Catching IntegrityError states the intent directly.
         """
         key = idempotency_key(session_id, call, confirmation_id)
 
@@ -208,7 +216,7 @@ class Store:
                     status="succeeded",
                 )
                 db.add(op)
-                db.flush()  # 这一步就会撞唯一索引，早于真正执行业务改动
+                db.flush()  # hits the unique index here, before any business change
 
                 result = apply()
                 op.result = result
@@ -226,9 +234,10 @@ class Store:
                 )
                 return OperationOutcome(int(op.id), result, replayed=False)
         except IntegrityError:
-            # 并发下另一个请求抢先占住了同一个键：它执行，我们取它的结果。
+            # Another concurrent request claimed the key first. It executes; this one
+            # returns its result.
             found = self._find_operation(key)
-            if found is None:  # pragma: no cover - 唯一索引冲突后必然能查到
+            if found is None:  # pragma: no cover - a conflict implies the row exists
                 raise
             return OperationOutcome(found[0], found[1], replayed=True)
 
@@ -258,10 +267,10 @@ class Store:
 
 
 def _utcnow(db: Session) -> Any:
-    """取数据库的当前时间，而不是应用进程的。
+    """The database's current time, not the application process's.
 
-    应用机器的时钟和数据库的时钟可以差出几秒；审计时间线以数据库为准，
-    否则同一串事件的先后顺序可能自相矛盾。
+    Application and database clocks can differ by seconds. The audit timeline uses the
+    database, otherwise the ordering of one sequence of events can contradict itself.
     """
     from sqlalchemy import func
 

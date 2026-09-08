@@ -1,22 +1,26 @@
-"""价格快照与成本折算。
+"""Price snapshot and cost computation.
 
-上游用 litellm 记账，而它算出来的 `agent_cost` 一律是 0。成本必须自己按 token
-用量折算，并**注明取价日期**。
+Upstream accounts through litellm, and its `agent_cost` came out as 0 for every call.
+Cost is therefore computed here from token usage, with the date the prices were read.
 
-（2026-09-07 更正：此前这里写的是"litellm 不认识这些价格"，只对了一半。
-真正的原因见下方 `register_with_litellm` 的注释——主要是我们下发的 `openai/`
-前缀让它查不到，其次才是三个模型确实未收录。注册之后这两类原因都消掉了，
-`agent_cost` 与本模块的折算结果严格相等。）
+(Corrected 2026-09-07: this file used to say "litellm does not know these prices",
+which was half right. The real reason is in the `register_with_litellm` notes below:
+mainly the `openai/` prefix we send makes the lookup fail, and only secondarily are
+three models genuinely absent. After registration both causes are gone and
+`agent_cost` equals this module's computation exactly.)
 
-三件此前被忽略、而实测证明会显著改变结论的事：
+Three things that were initially ignored and measurably change the conclusion:
 
-1. **缓存命中**。DashScope 隐式缓存默认开启且已在生效——冒烟里被测侧
-   129262 个输入 token 有 93312 命中缓存（72%）。按全价折算会**高估成本**。
-2. **推理 token**。模拟用户实测 4980 个输出 token 里 4451 是 reasoning，
-   它们按输出价计费，此前完全没算进去。
-3. **判官在另一个服务商**，且 DeepSeek 有峰谷价：同样的调用在高峰时段贵一倍。
+1. Cache hits. DashScope implicit caching is on by default and was already active: in
+   the smoke run 93312 of 129262 agent-side input tokens were cache hits (72%).
+   Charging full price overstates cost.
+2. Reasoning tokens. The simulated user produced 4451 reasoning tokens out of 4980
+   output tokens, billed at the output rate and previously not counted at all.
+3. The judge runs on a different provider, and DeepSeek has peak/off-peak pricing:
+   the same call costs twice as much during peak hours.
 
-价格会变。所有数字都带取价日期，过期就该重新核。
+Prices change. Every number carries the date it was read and should be re-checked
+once stale.
 """
 
 from __future__ import annotations
@@ -27,19 +31,22 @@ from enum import StrEnum
 
 PRICE_SNAPSHOT_DATE = "2026-09-06"
 
-# 隐式缓存命中按输入价的 20% 计费（阿里云 Context Cache 文档）。
-# 文档之间有分歧：价目页写"缓存命中 10%"，Context Cache 文档写
-# "显式缓存 10% / 隐式缓存 20%"。我们用的是隐式缓存，故按 20% 计——**取贵的那个**，
-# 宁可高估成本也不要在报告里低报。
+# Implicit cache hits are billed at 20% of the input rate (Alibaba Cloud Context Cache
+# documentation). The docs disagree with each other: the pricing page says "cache hit
+# 10%", the Context Cache page says "explicit 10% / implicit 20%". This project uses
+# implicit caching, so 20% applies, which is also the more expensive reading. Better to
+# overstate cost than to understate it in a report.
 DASHSCOPE_IMPLICIT_CACHE_RATIO = 0.20
 
-# 曾被列为"折扣未公开"的三个模型，2026-09-06 查到了明确单价，
-# 于是成本区间从三倍宽收敛成确定值。留空集是为了保留这个机制：
-# 将来再遇到查不到价的模型，加进来就会自动改为输出区间而不是假装精确。
+# Three models were once listed here as "cache discount unpublished". On 2026-09-06
+# their rates were found, and the cost range collapsed to an exact number. The empty
+# set is kept so the mechanism survives: adding a model here switches its cost back to
+# a range rather than a falsely precise figure.
 DASHSCOPE_CACHE_RATIO_UNKNOWN: frozenset[str] = frozenset()
 
-# 实测查得的缓存命中单价（元/百万 tok），优先于按比例推算。
-# 来源：千问 AI 平台模型页与阿里云百炼价目页，核验 2026-09-06。
+# Cache-hit rates read from the provider (CNY per million tokens); these take
+# precedence over the ratio. Source: Qwen model pages and the Alibaba Cloud Bailian
+# pricing page, verified 2026-09-06.
 DASHSCOPE_CACHE_PRICE_OVERRIDES: dict[str, float] = {
     "qwen3.8-max": 1.5,
     "qwen3.8-flash": 0.1,
@@ -48,7 +55,7 @@ DASHSCOPE_CACHE_PRICE_OVERRIDES: dict[str, float] = {
 
 
 class Tier(StrEnum):
-    """DeepSeek 的峰谷时段。谷时价格是峰时的一半。"""
+    """DeepSeek pricing tiers. Off-peak is half the peak rate."""
 
     PEAK = "peak"
     OFF_PEAK = "off_peak"
@@ -56,17 +63,17 @@ class Tier(StrEnum):
 
 @dataclass(frozen=True)
 class Price:
-    """元 / 百万 token。
+    """CNY per million tokens.
 
-    **`completion_tokens` 已经包含 `reasoning_tokens`**，不要再加一遍。
-    2026-09-06 实测 qwen3.6-plus：prompt 32 + completion 2865 = total 2897，
-    而 completion_tokens_details.reasoning_tokens = 2709，
-    2865 − 2709 = 156 正好是可见回复的长度。DeepSeek 侧同理。
-    （注意 `completion_tokens_details.text_tokens` 在实测里等于 completion_tokens 本身，
-    并不是"可见部分"，不能拿它做差——用它会把成本算错。）
+    `completion_tokens` already includes `reasoning_tokens`; do not add them twice.
+    Measured on qwen3.6-plus 2026-09-06: prompt 32 + completion 2865 = total 2897,
+    with completion_tokens_details.reasoning_tokens = 2709, and 2865 - 2709 = 156,
+    exactly the length of the visible reply. DeepSeek behaves the same.
+    (Note `completion_tokens_details.text_tokens` measured equal to completion_tokens
+    itself, not to the visible part, so it cannot be used for that subtraction.)
 
-    `cached_input` 为 None 表示"该模型缓存命中的单价未取得"——
-    这时成本只能给出区间，不能给一个假装精确的数字。
+    `cached_input = None` means the cache-hit rate for that model is unknown, and cost
+    can then only be given as a range rather than a falsely precise number.
     """
 
     input: float
@@ -74,7 +81,7 @@ class Price:
     cached_input: float | None = None
 
     def cost(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> float:
-        """缓存单价未知时，按全价计——宁可高估，不可低估。"""
+        """With an unknown cache rate, charge full price: overstate rather than understate."""
         cached = min(cached_tokens, prompt_tokens)
         uncached = prompt_tokens - cached
         cached_rate = self.input if self.cached_input is None else self.cached_input
@@ -85,7 +92,10 @@ class Price:
         )
 
     def cost_floor(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int) -> float:
-        """缓存单价未知时的下界：假定命中部分按 20% 计。仅用于给出区间。"""
+        """Lower bound when the cache rate is unknown, assuming hits cost 20%.
+
+        Used only to present a range.
+        """
         if self.cached_input is not None:
             return self.cost(prompt_tokens, completion_tokens, cached_tokens)
         cached = min(cached_tokens, prompt_tokens)
@@ -106,35 +116,43 @@ def _dashscope(input_price: float, output_price: float, model: str) -> Price:
     return Price(input=input_price, output=output_price, cached_input=cached)
 
 
-# 来源 https://help.aliyun.com/zh/model-studio/model-pricing 北京地域，核验 2026-09-06。
-# qwen3.x-max 标注为**非思考模式**单价，思考模式单价未取得。
+# Source https://help.aliyun.com/zh/model-studio/model-pricing, Beijing region,
+# verified 2026-09-06. qwen3.x-max rates are for non-thinking mode; thinking-mode
+# rates were not available.
 DASHSCOPE_PRICES: dict[str, Price] = {
     "qwen3.7-max-2026-06-08": _dashscope(12.0, 36.0, "qwen3.7-max-2026-06-08"),
     "qwen3.8-max": _dashscope(12.0, 36.0, "qwen3.8-max"),
     "qwen3.8-flash": _dashscope(0.8, 2.7, "qwen3.8-flash"),
     "deepseek-v4-pro-0813": _dashscope(12.0, 24.0, "deepseek-v4-pro-0813"),
     "glm-5.2": _dashscope(8.0, 28.0, "glm-5.2"),
-    # 模拟用户（冻结评测栈）。此前不在快照里，导致它是唯一算不出钱的角色——
-    # 而它每 24 题产出约 85k 输出 token、其中 94% 是推理，按输出价计费，不是小钱。
+    # The simulated user, part of the frozen evaluation stack. It was missing from the
+    # snapshot, which made it the one role with no computable cost, while it produces
+    # about 85k output tokens per 24 tasks, 94% of them reasoning, billed at the
+    # output rate.
     #
-    # 2/12 是**输入 ≤256K 档**的单价。百炼对部分模型按单次请求的输入长度阶梯计价，
-    # 但我们的模拟用户输入最大只有 2096 tok，永远落在最低档，所以扁平单价成立。
-    # 若将来把它用在长上下文场景，这个价必须重新分档。
+    # 2/12 are the rates for the <=256K input tier. Bailian prices some models by
+    # request input length, but this role's input peaks at 2096 tokens and always falls
+    # in the lowest tier, so a flat rate holds. Using it for long-context work would
+    # require re-tiering.
     #
-    # 缓存：显式创建 2.5（输入价 125%）、显式命中 0.2（10%）；我们用的是隐式缓存，
-    # 按 20% 计 = 0.4。但隐式缓存最小长度是 1024 tok，而该角色输入中位数只有 848，
-    # 实测 120 次调用仅 43 次够到门槛、且服务端一次都没报命中，
-    # 所以这个单价目前从不被触发（全按 input 计，偏保守）。
+    # Cache: explicit create 2.5 (125% of input), explicit hit 0.2 (10%); this project
+    # uses implicit caching, so 20% = 0.4. Implicit caching has a 1024-token minimum
+    # while this role's median input is 848: of 120 measured calls only 43 reached the
+    # threshold and the server never reported a hit, so this rate is currently never
+    # applied and everything is charged at the input rate, which is conservative.
     "qwen3.6-plus-2026-04-02": Price(input=2.0, output=12.0, cached_input=0.4),
-    # 判官模型。**来源可信度低于上面几行**：官方定价页是 JS 动态加载，抓不到，
-    # 这三个数字来自二手报道（输入 0.1 / 输出 0.4 / 缓存 0.01 元每百万 token）。
-    # 判官成本占比极小（一次全量复判约 0.07 元），即使有偏差也不影响任何选型结论；
-    # 但凡要把它写进对外报告，必须先从控制台账单核对一次。
+    # The judge model. Lower source confidence than the rows above: the official
+    # pricing page loads via JavaScript and could not be scraped, so these three
+    # numbers come from secondary reporting (input 0.1 / output 0.4 / cache 0.01 CNY
+    # per million tokens). Judge cost is negligible (a full re-judge is about 0.07
+    # CNY) and cannot change any model-selection conclusion, but any external report
+    # quoting it must first reconcile against the console bill.
     "qwen3.7-flash-2026-07-15": Price(input=0.1, output=0.4, cached_input=0.01),
 }
 
-# 来源 https://api-docs.deepseek.com/zh-cn/quick_start/pricing 核验 2026-09-06。
-# 判官走 DeepSeek 官方端点，与 DashScope 上同名模型**不是一套价格**。
+# Source https://api-docs.deepseek.com/zh-cn/quick_start/pricing, verified 2026-09-06.
+# These are DeepSeek's own endpoint rates and differ from the same-named model on
+# DashScope.
 DEEPSEEK_PRICES: dict[tuple[str, Tier], Price] = {
     ("deepseek-v4-flash", Tier.PEAK): Price(input=3.0, output=9.0, cached_input=0.10),
     ("deepseek-v4-flash", Tier.OFF_PEAK): Price(input=1.5, output=4.5, cached_input=0.05),
@@ -142,27 +160,28 @@ DEEPSEEK_PRICES: dict[tuple[str, Tier], Price] = {
     ("deepseek-v4-pro", Tier.OFF_PEAK): Price(input=4.5, output=13.5, cached_input=0.15),
 }
 
-# 智谱开放平台 bigmodel.cn（**国内版**）。核验 2026-09-06。
-# 注意与境外的 z.ai 区分：那边按美元计价（GLM-5.3-Flash $0.075/$0.25），
-# 端点也不同（api.z.ai vs open.bigmodel.cn），两边不能混用价目表。
-# GLM-5.3-Flash 当前有限时五折，下面记的是**原价**——宁可高估，
-# 也不要把促销价写进快照后忘了它会到期。
+# Zhipu open platform, bigmodel.cn (the mainland China service). Verified 2026-09-06.
+# Distinct from z.ai, which prices in USD (GLM-5.3-Flash $0.075/$0.25) and uses a
+# different endpoint (api.z.ai vs open.bigmodel.cn); the two price tables must not be
+# mixed. GLM-5.3-Flash currently has a limited-time 50% discount; the list price is
+# recorded here, because a promotional price in a snapshot expires silently.
 ZHIPU_PRICES: dict[str, Price] = {
     "glm-5.3-flash": Price(input=0.8, output=2.8, cached_input=0.23),
 }
 
-# 高峰：北京时间周一至周五 9:00-12:00 与 14:00-18:00（= UTC 01:00-04:00 / 06:00-10:00）。
+# Peak: Beijing time Monday to Friday 09:00-12:00 and 14:00-18:00
+# (= UTC 01:00-04:00 and 06:00-10:00).
 _PEAK_WINDOWS_BEIJING = ((9, 12), (14, 18))
 _BEIJING_OFFSET = timedelta(hours=8)
 
 
 def deepseek_tier(moment: datetime | None = None) -> Tier:
-    """判定某一时刻属于 DeepSeek 的高峰还是空闲时段。"""
+    """Whether a moment falls in DeepSeek's peak or off-peak window."""
     moment = moment or datetime.now(UTC)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     beijing = moment.astimezone(UTC) + _BEIJING_OFFSET
-    if beijing.weekday() >= 5:  # 周末全天空闲
+    if beijing.weekday() >= 5:  # weekends are off-peak all day
         return Tier.OFF_PEAK
     return (
         Tier.PEAK
@@ -172,7 +191,7 @@ def deepseek_tier(moment: datetime | None = None) -> Tier:
 
 
 def price_for(model: str, moment: datetime | None = None) -> Price | None:
-    """按模型名取价。DeepSeek 官方端点的价格随时段变化。"""
+    """Look up a price by model name. DeepSeek's own endpoint varies by time of day."""
     if model in DASHSCOPE_PRICES:
         return DASHSCOPE_PRICES[model]
     if model in ZHIPU_PRICES:
@@ -188,49 +207,54 @@ def cache_ratio_is_known(model: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# litellm 价格注册
+# litellm price registration
 # ---------------------------------------------------------------------------
 #
-# 上游用 `completion_cost()` 记账，实测它对我们的每一次调用都抛异常，
-# `get_response_cost()` 捕获后 `return 0.0`——这就是 summary.json 里
-# `agent_cost_reported_by_upstream` 恒为 0 的原因。
+# Upstream accounts through `completion_cost()`. It raised on every call here, and
+# `get_response_cost()` caught the exception and returned 0.0, which is why
+# `agent_cost_reported_by_upstream` in summary.json was always 0.
 #
-# 2026-09-07 核实了真正的原因，与此前文档记载的**不同**：
+# The real cause, established 2026-09-07, differs from what was documented before:
 #
-#   litellm 1.82.6 其实收录了 `deepseek/deepseek-v4-pro`（1.32/3.96 美元每百万 tok），
-#   但我们下发的模型名带 `openai/` 前缀（走 OpenAI 兼容端点），
-#   litellm 按 custom_llm_provider=openai 去查，于是
-#   "This model isn't mapped yet. model=deepseek-v4-pro, custom_llm_provider=openai"。
+#   litellm 1.82.6 does know `deepseek/deepseek-v4-pro` (1.32/3.96 USD per million
+#   tokens), but the model name sent here carries an `openai/` prefix (an
+#   OpenAI-compatible endpoint), so litellm looks it up with
+#   custom_llm_provider=openai and reports "This model isn't mapped yet.
+#   model=deepseek-v4-pro, custom_llm_provider=openai".
 #
-#   另外三个（qwen3.7-flash / qwen3.6-plus / glm-5.3-flash）确实完全未收录。
+#   The other three (qwen3.7-flash / qwen3.6-plus / glm-5.3-flash) are genuinely absent.
 #
-# 所以两类原因都要治：按**我们实际下发的键**注册，且四个模型全注册。
+# Both causes need fixing: register under the key actually sent, and register all four
+# models.
 #
-# ## 货币：注册的是**人民币**，不是美元
+# ## Currency: CNY is registered, not USD
 #
-# litellm 内置价格是美元，Langfuse 面板也会给数字加美元符号。我们仍然注册人民币，
-# 理由是**可核对性优先于符号正确**：
+# litellm's built-in prices are USD and the Langfuse UI renders a dollar sign. CNY is
+# registered anyway, because verifiability matters more than the symbol:
 #
-#   - 人民币是本项目所有成本报告的口径（analyze_eval.py、docs、PR）。注册人民币后，
-#     litellm 算出的数与我们自己算的数**严格相等**，可以用测试钉死
-#     （见 tests/test_litellm_pricing.py）。
-#   - 换算成美元需要引入一个汇率假设。汇率每天都在变，而快照不会自动更新——
-#     那是一个会**静默过期**的错误，比一个显式标注过的符号错误危险。
+#   - CNY is the unit of every cost report in this project (analyze_eval.py, docs,
+#     PRs). Registering CNY makes litellm's number equal this module's number exactly,
+#     which a test pins down (tests/test_litellm_pricing.py).
+#   - Converting to USD would introduce an exchange-rate assumption. Rates change
+#     daily and a snapshot does not update itself, which is an error that expires
+#     silently, worse than a clearly labelled wrong symbol.
 #
-# 因此：凡是来自 litellm / Langfuse 的成本数字，单位一律是**元**。
-# 字段名与文档必须写明这一点，不能让读的人以为是美元。
+# So: any cost number coming from litellm or Langfuse is in CNY. Field names and
+# documentation must say so, so nobody reads it as USD.
 LITELLM_COST_CURRENCY = "CNY"
 
-# 我们下发给 litellm 的模型名前缀（OpenAI 兼容端点）。与 evaluation.litellm_model 一致。
+# The model-name prefix sent to litellm (OpenAI-compatible endpoint). Matches
+# evaluation.litellm_model.
 LITELLM_PREFIX = "openai/"
 
-# 一条 litellm 成本条目。值要么是单价（float），要么是 provider/mode（str）。
-# 不用 object：那会让所有算术都得先 cast，反而掩盖类型错误。
+# One litellm cost entry. Values are either a rate (float) or a provider/mode (str).
+# Not `object`: that would force a cast before every arithmetic operation and hide
+# type errors instead of exposing them.
 CostEntry = dict[str, float | str]
 
 
 def _cost_entry(price: Price, model: str) -> CostEntry:
-    """把一条价格快照翻成 litellm 的成本条目。**单位是元/token。**"""
+    """Translate one price into a litellm cost entry. Units are CNY per token."""
     entry: CostEntry = {
         "litellm_provider": "openai",
         "mode": "chat",
@@ -238,18 +262,20 @@ def _cost_entry(price: Price, model: str) -> CostEntry:
         "output_cost_per_token": price.output / 1e6,
     }
     if price.cached_input is not None:
-        # 两个字段名都要给：litellm 在不同代码路径上读的不是同一个。
+        # Both field names are needed: different litellm code paths read different ones.
         entry["cache_read_input_token_cost"] = price.cached_input / 1e6
         entry["input_cost_per_token_cache_hit"] = price.cached_input / 1e6
     return entry
 
 
 def litellm_model_cost(moment: datetime | None = None) -> dict[str, CostEntry]:
-    """本快照对应的 litellm 成本表。键是**实际下发的模型名**（带 openai/ 前缀）。
+    """The litellm cost table for this snapshot, keyed by the model name actually sent
+    (with the openai/ prefix).
 
-    DeepSeek 的价格随峰谷时段变化，所以这张表是**某一时刻**的快照；
-    跨时段的长跑会按注册时的档位记账，与 analyze_eval 按运行时刻折算的结果
-    可能有出入——那是 DeepSeek 计价规则本身的粒度，不是这里的缺陷。
+    DeepSeek prices vary by tier, so this table is a snapshot of one moment. A long run
+    crossing a tier boundary is accounted at the tier registered at start, which can
+    differ from analyze_eval's per-run-time computation. That is the granularity of
+    DeepSeek's pricing rule, not a defect here.
     """
     table: dict[str, CostEntry] = {}
     for model, price in DASHSCOPE_PRICES.items():
@@ -264,10 +290,11 @@ def litellm_model_cost(moment: datetime | None = None) -> dict[str, CostEntry]:
 
 
 def register_with_litellm(moment: datetime | None = None) -> dict[str, CostEntry]:
-    """把价格快照注册进 litellm，返回注册了什么（供 manifest 留痕）。
+    """Register the price snapshot with litellm and return what was registered, for
+    the run manifest.
 
-    只在真正要跑评测时调用——litellm 是 bench 组的重依赖，
-    不该因为导入 pricing 就被拖进来。
+    Called only when actually running an evaluation: litellm is a heavy bench-group
+    dependency and importing `pricing` must not pull it in.
     """
     import litellm
 
