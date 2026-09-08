@@ -215,6 +215,22 @@ module is imported, and only when it is unset, so an explicit value still wins. 
 real defect fixed rather than a workaround: any future test needing the real domain would
 have hit the same thing, and whether it failed would have depended on file order.
 
+### 3.7 Where each threshold is checked in CI
+
+The two replay tests need the real τ²-bench data and the `tau2` package. CI's static job
+installs neither: it syncs without the bench group, and the checkout is fetched by a
+different job. Left alone they would skip there, and a skip reads exactly like a pass in
+the summary line - the failure mode this project has already been caught by twice.
+
+So they run in the `upstream-pin` job, which already fetches and verifies the data; that
+job now also installs the bench group and runs those two tests. The remaining 17 need
+PostgreSQL and run in the static job, which has the service.
+
+That split forced one change to how the requirement is expressed. A module-level skip on
+a missing `RSA_TEST_DATABASE_URL` would have taken the replay tests down with it in the
+one job able to run them, so the requirement lives on the `store` fixture instead: tests
+that need a database demand one, and CI without a URL fails there rather than skipping.
+
 ## 4. Conclusion
 
 **PASS.** Seven of the eight thresholds are met and measured; the eighth, no regression in

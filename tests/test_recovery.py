@@ -21,29 +21,31 @@ import pytest
 
 from retail_support_agent.agent import RetailAgent
 from retail_support_agent.db import Base, make_engine, make_session_factory
-from retail_support_agent.domain import ToolResult, ensure_data_dir
+from retail_support_agent.domain import DomainError, ToolResult, ensure_data_dir
 from retail_support_agent.guardrails import ProposedCall, SessionLimits, SessionState
 from retail_support_agent.store import Store
 
 TEST_URL = os.getenv("RSA_TEST_DATABASE_URL")
-
-if not TEST_URL and os.getenv("CI"):
-    raise RuntimeError(
-        "CI must provide RSA_TEST_DATABASE_URL. Skipping these means none of the M2 "
-        "acceptance checks ran while CI still reports green."
-    )
-
-pytestmark = pytest.mark.skipif(
-    not TEST_URL,
-    reason="needs a real PostgreSQL: set RSA_TEST_DATABASE_URL (locally: docker compose up -d db)",
-)
 
 CANCEL = ProposedCall("cancel_pending_order", {"order_id": "#W001", "reason": "no longer needed"})
 
 
 @pytest.fixture(scope="module")
 def store() -> Iterator[Store]:
-    assert TEST_URL
+    """A clean set of tables per module, on a real PostgreSQL.
+
+    The requirement lives on the fixture rather than on the module, because the replay
+    tests need the domain and not the database, and a module-level skip would take them
+    down with it - including in the CI job that is the only one able to run them.
+    """
+    if not TEST_URL:
+        if os.getenv("CI"):
+            raise RuntimeError(
+                "CI must provide RSA_TEST_DATABASE_URL for the job running these tests. "
+                "Skipping them means none of the M2 database thresholds ran while CI "
+                "still reports green."
+            )
+        pytest.skip("needs a real PostgreSQL: set RSA_TEST_DATABASE_URL (docker compose up -d db)")
     engine = make_engine(TEST_URL)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
@@ -118,11 +120,19 @@ def build_agent(store: Store, session_id: str, domain: StatefulDomain) -> Retail
 def real_domain() -> None:
     """Skip unless the real domain is usable.
 
-    `ensure_data_dir()` has to run before tau2 is imported: upstream resolves its data
-    directory at import time, so importorskip on its own would import tau2 pointing at
-    the packaged (absent) data and every later use in this process would fail.
+    Two conditions, and the order matters. The data checkout has to exist, so an
+    environment that has not fetched upstream skips instead of failing. And
+    `ensure_data_dir()` has to run before tau2 is imported, because upstream resolves its
+    data directory at import time: importorskip on its own would import tau2 pointing at
+    the packaged data, which holds none, and every later use in the process would fail.
+
+    CI runs these in the `upstream-pin` job, which has both the checkout and the bench
+    group. The static job has neither, and would skip them silently.
     """
-    ensure_data_dir()
+    try:
+        ensure_data_dir()
+    except DomainError as exc:
+        pytest.skip(str(exc))
     pytest.importorskip("tau2", reason="the domain needs the bench group")
 
 
