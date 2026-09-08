@@ -1,7 +1,9 @@
-"""业务闭环的端到端测试：假模型 + 假领域，不联网、不计费。
+"""End-to-end tests of the business loop with a fake model and fake domain: no
+network, no billing.
 
-重点验证"模型说了不算"——即使模型直接提议写操作、或声称已获确认，
-仍必须先拿到用户针对具体参数的确认才会真正执行。
+The point is that the model's word does not count. Even when it proposes a write
+directly or claims the user already confirmed, nothing runs until the user has
+confirmed those specific arguments.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from retail_support_agent.agent import RetailAgent, _is_affirmative
 from retail_support_agent.domain import ToolResult
 from retail_support_agent.guardrails import SessionLimits, SessionState
 
-# ---- 测试替身 -----------------------------------------------------------
+# ---- test doubles -------------------------------------------------------
 
 
 @dataclass
@@ -65,7 +67,8 @@ def tool_call(name: str, arguments: dict[str, Any], call_id: str = "c1") -> Fake
 
 
 class ScriptedModel:
-    """按剧本依次返回预设响应，并记录收到的消息，便于断言工具结果确实回传了。"""
+    """Return scripted responses in order and record the messages received, so tests
+    can assert that tool results were sent back."""
 
     def __init__(self, script: list[FakeCompletion]) -> None:
         self.script = list(script)
@@ -73,11 +76,11 @@ class ScriptedModel:
 
     def __call__(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
         self.seen_messages.append([dict(m) for m in messages])
-        return self.script.pop(0) if self.script else reply("（剧本已用尽）")
+        return self.script.pop(0) if self.script else reply("(script exhausted)")
 
 
 class FakeDomain:
-    """替代 RetailDomain，避免测试依赖上游数据。接口保持一致。"""
+    """Stands in for RetailDomain so tests do not depend on upstream data. Same interface."""
 
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict[str, Any]]] = []
@@ -85,7 +88,7 @@ class FakeDomain:
 
     @property
     def policy(self) -> str:
-        return "（测试用政策）"
+        return "(test policy)"
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return []
@@ -108,7 +111,7 @@ def build(script: list[FakeCompletion], **limits: Any) -> tuple[RetailAgent, Fak
     return agent, domain
 
 
-# ---- 测试 ---------------------------------------------------------------
+# ---- tests --------------------------------------------------------------
 
 
 class TestReadPath:
@@ -116,10 +119,10 @@ class TestReadPath:
         agent, domain = build(
             [
                 tool_call("get_order_details", {"order_id": "#W001"}),
-                reply("你的订单 #W001 状态是 pending。"),
+                reply("Order #W001 is pending."),
             ]
         )
-        result = agent.send("查一下 #W001")
+        result = agent.send("look up #W001")
         assert result.status == "answered"
         assert domain.executed == [("get_order_details", {"order_id": "#W001"})]
         assert "pending" in result.reply
@@ -128,10 +131,10 @@ class TestReadPath:
 class TestWriteRequiresConfirmation:
     def test_write_is_held_until_user_confirms(self) -> None:
         agent, domain = build([tool_call("cancel_pending_order", {"order_id": "#W001"})])
-        result = agent.send("帮我取消 #W001")
+        result = agent.send("cancel #W001")
 
         assert result.status == "needs_confirmation"
-        assert domain.executed == [], "未确认前绝不能执行写操作"
+        assert domain.executed == [], "a write must not run before confirmation"
         assert result.pending_confirmation is not None
         assert "#W001" in result.pending_confirmation
 
@@ -140,11 +143,11 @@ class TestWriteRequiresConfirmation:
             [
                 tool_call("cancel_pending_order", {"order_id": "#W001"}),
                 tool_call("cancel_pending_order", {"order_id": "#W001"}, call_id="c2"),
-                reply("订单 #W001 已取消。"),
+                reply("Order #W001 has been cancelled."),
             ]
         )
-        agent.send("帮我取消 #W001")
-        result = agent.send("确认")
+        agent.send("cancel #W001")
+        result = agent.send("confirm")
 
         assert result.status == "answered"
         assert domain.executed == [("cancel_pending_order", {"order_id": "#W001"})]
@@ -153,25 +156,26 @@ class TestWriteRequiresConfirmation:
         agent, domain = build(
             [
                 tool_call("cancel_pending_order", {"order_id": "#W001"}),
-                reply("好的，已取消该操作。"),
+                reply("Understood, nothing was changed."),
             ]
         )
-        agent.send("帮我取消 #W001")
-        agent.send("不用了")
+        agent.send("cancel #W001")
+        agent.send("no, don't")
         assert domain.executed == []
 
     def test_confirmation_does_not_transfer_to_different_arguments(self) -> None:
-        """确认的是 #W001；模型改成 #W002 后必须重新确认（且会被归属拦下）。"""
+        """The user confirmed #W001; switching to #W002 needs a new confirmation, and
+        is blocked by the ownership check as well."""
         agent, domain = build(
             [
                 tool_call("cancel_pending_order", {"order_id": "#W001"}),
                 tool_call("cancel_pending_order", {"order_id": "#W002"}, call_id="c2"),
-                reply("已按你的要求处理。"),
+                reply("Done as requested."),
             ]
         )
-        agent.send("帮我取消 #W001")
-        agent.send("确认")
-        assert domain.executed == [], "确认只对被确认的那组参数有效"
+        agent.send("cancel #W001")
+        agent.send("confirm")
+        assert domain.executed == [], "a confirmation covers only the arguments confirmed"
 
 
 class TestOwnershipInFlow:
@@ -179,10 +183,10 @@ class TestOwnershipInFlow:
         agent, domain = build(
             [
                 tool_call("cancel_pending_order", {"order_id": "#W002"}),
-                reply("抱歉，该订单不属于你。"),
+                reply("That order does not belong to you."),
             ]
         )
-        result = agent.send("取消 #W002")
+        result = agent.send("cancel #W002")
         assert domain.executed == []
         assert result.status in {"denied", "answered"}
 
@@ -192,8 +196,8 @@ class TestMalformedToolCall:
         broken = FakeCompletion(
             [FakeChoice(FakeMessage(None, [FakeToolCall("c1", FakeFunction("x", "{not json"))]))]
         )
-        agent, domain = build([broken, reply("我需要更准确的信息。")])
-        result = agent.send("随便")
+        agent, domain = build([broken, reply("I need more precise information.")])
+        result = agent.send("anything")
         assert domain.executed == []
         assert result.status == "answered"
 
@@ -201,45 +205,47 @@ class TestMalformedToolCall:
 class TestStopConditions:
     def test_step_limit_ends_the_turn(self) -> None:
         agent, _ = build([reply("hi")], max_steps=0)
-        result = agent.send("你好")
+        result = agent.send("hello")
         assert result.status == "stopped"
         assert result.stop_reason is not None
 
 
 class TestAffirmativeDetection:
-    @pytest.mark.parametrize("text", ["确认", "是的", "可以", "OK", "好的，确认执行"])
+    @pytest.mark.parametrize("text", ["confirm", "yes", "OK", "sure, go ahead"])
     def test_affirmative(self, text: str) -> None:
         assert _is_affirmative(text)
 
-    @pytest.mark.parametrize("text", ["不用了", "先别", "no", "cancel", "我不确认"])
+    @pytest.mark.parametrize("text", ["no thanks", "not yet", "no", "cancel that", "don't"])
     def test_negative(self, text: str) -> None:
         assert not _is_affirmative(text)
 
 
 class TestReportedToolCalls:
-    """回给调用方的 `tool_calls` 必须是**本轮真正执行过**的工具。
+    """The `tool_calls` returned to the caller must be the tools actually executed
+    during this turn.
 
-    这是被一次实跑抓出来的 bug：一轮通常是
-    think(要调工具) -> act(执行) -> think(给出答复)，
-    而最后那次 think 没有工具调用，原先在那里现造一个空列表，
-    把前面 act 执行过的工具全丢了。于是**读类查询永远报「未调用任何工具」**，
-    尽管它明明查了数据库——界面和 API 都据此展示，等于对着用户少报。
+    A real run exposed the bug: a turn is usually think (request tool) -> act
+    (execute) -> think (answer), and the final think has no tool calls. Building a
+    fresh empty list there discarded everything act had executed, so read-only queries
+    always reported "no tools called" while they had queried the database. The UI and
+    the API both display that field, so it under-reported to the user.
 
-    原有的读路径测试只断言 `domain.executed`（领域侧确实执行了），
-    没人断言"我们对外怎么说"，所以这个 bug 一直没被发现。
+    The existing read-path test asserted only `domain.executed`, i.e. that the domain
+    really ran it, and nothing asserted what we report, which is why this went
+    unnoticed.
     """
 
     def test_read_query_reports_the_tool_it_used(self) -> None:
         agent, domain = build(
             [
                 tool_call("get_order_details", {"order_id": "#W001"}),
-                reply("你的订单 #W001 状态是 pending。"),
+                reply("Order #W001 is pending."),
             ]
         )
-        result = agent.send("查一下 #W001")
+        result = agent.send("look up #W001")
         assert result.status == "answered"
-        assert result.tool_calls == ["get_order_details"], "执行了却没报出来"
-        # 对外汇报要与领域侧实际执行一致，不能各说各的
+        assert result.tool_calls == ["get_order_details"], "executed but not reported"
+        # What we report must match what the domain executed.
         assert result.tool_calls == [name for name, _ in domain.executed]
 
     def test_multiple_rounds_all_get_reported(self) -> None:
@@ -247,35 +253,36 @@ class TestReportedToolCalls:
             [
                 tool_call("get_order_details", {"order_id": "#W001"}, call_id="c1"),
                 tool_call("get_order_details", {"order_id": "#W002"}, call_id="c2"),
-                reply("两个订单都查到了。"),
+                reply("Found both orders."),
             ]
         )
-        result = agent.send("查一下 #W001 和 #W002")
+        result = agent.send("look up #W001 and #W002")
         assert result.tool_calls == ["get_order_details", "get_order_details"]
 
     def test_each_turn_reports_only_its_own_tools(self) -> None:
-        """累计器必须按轮清空，否则第二轮会把第一轮的工具也算进去。"""
+        """The accumulator resets per turn, or the second turn would include the first
+        turn's tools."""
         agent, _ = build(
             [
                 tool_call("get_order_details", {"order_id": "#W001"}),
-                reply("查到了。"),
-                reply("还有别的事吗？"),
+                reply("Found it."),
+                reply("Anything else?"),
             ]
         )
-        first = agent.send("查一下 #W001")
-        second = agent.send("谢谢")
+        first = agent.send("look up #W001")
+        second = agent.send("thanks")
         assert first.tool_calls == ["get_order_details"]
-        assert second.tool_calls == [], "第二轮没调工具，不该继承第一轮的"
+        assert second.tool_calls == [], "the second turn called no tools"
 
     def test_confirmed_write_is_reported(self) -> None:
         agent, domain = build(
             [
                 tool_call("cancel_pending_order", {"order_id": "#W001"}),
                 tool_call("cancel_pending_order", {"order_id": "#W001"}, call_id="c2"),
-                reply("已为你取消。"),
+                reply("Cancelled."),
             ]
         )
-        agent.send("帮我取消 #W001")
-        result = agent.send("确认执行")
+        agent.send("cancel #W001")
+        result = agent.send("yes, confirm")
         assert result.tool_calls == ["cancel_pending_order"]
         assert domain.executed == [("cancel_pending_order", {"order_id": "#W001"})]

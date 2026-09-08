@@ -1,13 +1,13 @@
-"""Langfuse 接入：选错回调名不会报错，只会静默不上报。
+"""Langfuse wiring: the wrong callback name does not error, it silently reports nothing.
 
-2026-09-07 在 langfuse 4.15.1 + litellm 1.82.6 上实测：
+Measured 2026-09-07 on langfuse 4.15.1 + litellm 1.82.6:
 
-    "langfuse"      -> 初始化抛 AttributeError（找 v2 SDK 的 langfuse.version），
-                       litellm 捕获后返回 None
-    "langfuse_otel" -> 正常返回 LangfuseOtelLogger
+    "langfuse"      -> initialization raises AttributeError (looking for the v2 SDK's
+                       langfuse.version); litellm catches it and returns None
+    "langfuse_otel" -> returns LangfuseOtelLogger normally
 
-上游 tau2 用的正是前者。所以**把 tau2.config.USE_LANGFUSE 翻成 True 是错的**：
-跑完一轮面板上一条 trace 都没有，而运行本身完全正常，没有任何迹象。
+Upstream tau2 uses the former, so flipping tau2.config.USE_LANGFUSE to True is wrong: a
+run completes with no trace in the dashboard and no sign anything went wrong.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from retail_support_agent.evaluation import (
 )
 from retail_support_agent.pricing import LITELLM_COST_CURRENCY
 
-pytest.importorskip("litellm", reason="litellm 属 bench 组，未装则跳过")
+pytest.importorskip("litellm", reason="litellm is in the bench group; skip if absent")
 
 PUBLIC = "pk-lf-test-0000000000"
 SECRET = "sk-lf-test-1111111111"
@@ -57,10 +57,10 @@ class TestAllOrNothing:
     def test_missing_config_does_not_enable(self, unconfigured: Settings) -> None:
         status = enable_langfuse(unconfigured)
         assert status["langfuse_enabled"] is False
-        assert "未配置" in status["langfuse_reason"]
+        assert "not fully configured" in status["langfuse_reason"]
 
     def test_half_configured_does_not_enable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """半套配置连不上，却要等到跑批中途才暴露——宁可不启用。"""
+        """A partial configuration cannot connect and would surface mid-run, so it stays off."""
         monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-eval-test-key-000000000000")
         monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", PUBLIC)
         for name in ("LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
@@ -75,15 +75,16 @@ class TestCallbackChoice:
         assert LANGFUSE_CALLBACK == "langfuse_otel"
 
     def test_the_upstream_callback_name_is_recorded_as_broken(self) -> None:
-        """上游用的名字单独留一个常量，让人能顺着它搜到"为什么不能用"。"""
+        """Upstream's name gets its own constant so a search leads to why it is unusable."""
         assert LANGFUSE_BROKEN_CALLBACK == "langfuse"
         assert LANGFUSE_CALLBACK != LANGFUSE_BROKEN_CALLBACK
 
     def test_broken_callback_really_is_broken(self) -> None:
-        """不是听说，是实测：旧回调在当前 SDK 上初始化返回 None。
+        """Measured, not assumed: the old callback initializes to None on the current SDK.
 
-        这条会随依赖升级而变化——它变绿的那天，说明 litellm 修好了对 v4 的支持，
-        那时可以重新评估用哪个。**变化本身就是信号**，所以不 skip。
+        This will change as dependencies are upgraded. The day it turns green, litellm
+        has fixed v4 support and the choice can be re-evaluated. The change itself is
+        the signal, so this is not skipped.
         """
         pytest.importorskip("langfuse")
         from litellm.litellm_core_utils.litellm_logging import (
@@ -100,7 +101,7 @@ class TestCallbackChoice:
             internal_usage_cache=None,
             llm_router=None,
         )
-        assert broken is None, "旧回调居然能用了——重新评估 LANGFUSE_CALLBACK 的选择"
+        assert broken is None, "the old callback works now; re-evaluate LANGFUSE_CALLBACK"
         assert working is not None
 
 
@@ -112,21 +113,23 @@ class TestSecretsAndCurrency:
         assert status["langfuse_host"] == HOST
 
     def test_manifest_says_langfuse_cost_is_not_reported(self, configured: Settings) -> None:
-        """面板成本恒为 0 是**上游缺口**，不是本轮免费——必须在 manifest 里说清。
+        """A dashboard cost of 0 is an upstream gap, not a free run, and the manifest
+        must say so.
 
-        2026-09-07 实测：litellm 1.82.6 的 langfuse_otel 从不发送
-        `langfuse.observation.cost_details.*`，observation 里 costDetails 是空的。
-        让 Langfuse 自己按用量折算也不行：它收到的用量没有缓存明细，
-        而被测侧 95% 输入命中缓存，按全价算会高估约 5 倍。
+        Measured 2026-09-07: litellm 1.82.6's langfuse_otel never sends
+        `langfuse.observation.cost_details.*` and observations carry an empty
+        costDetails. Letting Langfuse compute from usage fails too: the usage it
+        receives has no cache breakdown, and with 95% agent-side cache hits, full-price
+        arithmetic overstates cost about 5x.
         """
         status = enable_langfuse(configured)
         assert status["langfuse_cost_reported"] is False
         assert "analyze_eval" in status["langfuse_cost_note"]
 
     def test_litellm_still_does_not_emit_cost_details(self) -> None:
-        """这条盯着上游：哪天 litellm 开始发 cost_details，它会变红。
+        """Watches upstream: this turns red the day litellm starts sending cost_details.
 
-        变红不是坏消息，是提示可以重新评估「Langfuse 要不要显示成本」。
+        Red is not bad news here; it means the Langfuse cost question can be revisited.
         """
         import pathlib
 
@@ -137,10 +140,11 @@ class TestSecretsAndCurrency:
             "cost_details" in f.read_text(encoding="utf-8", errors="ignore")
             for f in root.glob("*.py")
         )
-        assert not emitted, "litellm 开始发 cost_details 了——重新评估 Langfuse 的成本口径"
+        assert not emitted, "litellm now sends cost_details; revisit the Langfuse cost convention"
 
     def test_currency_is_recorded_in_the_manifest(self, configured: Settings) -> None:
-        """面板显示美元符号，数值却是人民币。不写进 manifest，早晚有人拿它当美元汇报。"""
+        """The dashboard shows a dollar sign over a CNY value. Without this in the
+        manifest, someone will eventually report it as USD."""
         status = enable_langfuse(configured)
         assert status["langfuse_cost_currency"] == LITELLM_COST_CURRENCY == "CNY"
 
@@ -154,18 +158,20 @@ class TestSecretsAndCurrency:
 
 
 class TestSessionCorrelation:
-    """面板上的 trace 要能对回是哪一轮跑的——否则观测和结果各说各话。
+    """A dashboard trace must map back to the run that produced it, or observation and
+    results describe different things.
 
-    Langfuse 的分组维度是 session。litellm 的 langfuse_otel 只从
-    `litellm_params["metadata"]` 里读 `session_id` / `tags`，而这只能逐次调用
-    传入：没有全局入口，唯一的环境变量 `LANGFUSE_TRACING_ENVIRONMENT` 是
-    dev/prod 那种环境名，不是会话号。所以只能在共用出口上包一层。
+    Langfuse groups by session. litellm's langfuse_otel reads `session_id` / `tags` only
+    from `litellm_params["metadata"]`, which can only be passed per call: there is no
+    global entry point, and the one environment variable,
+    `LANGFUSE_TRACING_ENVIRONMENT`, is a dev/prod name rather than a session id. Hence
+    the wrapper on the shared exit point.
     """
 
     @pytest.fixture
     def calls(self) -> Iterator[list[dict[str, Any]]]:
-        """把 tau2 的共用出口换成记录器，用例结束后原样放回。"""
-        pytest.importorskip("tau2", reason="tau2 属 bench 组，未装则跳过")
+        """Replace tau2's shared exit point with a recorder and restore it afterwards."""
+        pytest.importorskip("tau2", reason="tau2 is in the bench group; skip if absent")
         from tau2.utils import llm_utils
 
         recorded: list[dict[str, Any]] = []
@@ -193,23 +199,25 @@ class TestSessionCorrelation:
     def test_second_call_swaps_the_id_without_stacking_wrappers(
         self, calls: list[dict[str, Any]]
     ) -> None:
-        """补跑会第二次打标记。那时包装已经装好了，只该换号，不该再套一层。
+        """Resuming tags a second time, when the wrapper is already installed: only the
+        id should change.
 
-        套两层不会立刻出错，但每多跑一轮就多一层调用栈，且外层的 setdefault
-        会让内层的号永远写不进去——错的方向恰好是「看起来没问题」。
+        Stacking would not fail immediately, but each run would add a frame, and the
+        outer setdefault would keep the inner id from ever being written. The failure
+        mode is "looks fine".
         """
         from tau2.utils import llm_utils
 
         tag_langfuse_session("run-a")
         wrapped_once = llm_utils.completion
         tag_langfuse_session("run-b")
-        assert llm_utils.completion is wrapped_once, "重复打标记不该再套一层"
+        assert llm_utils.completion is wrapped_once, "re-tagging must not add another wrapper"
 
         llm_utils.completion(model="openai/x", messages=[])
         assert calls[0]["metadata"]["session_id"] == "run-b"
 
     def test_upstream_metadata_wins(self, calls: list[dict[str, Any]]) -> None:
-        """万一上游哪天自己开始传 metadata，以它的为准——我们只补缺，不覆盖。"""
+        """If upstream ever passes metadata, theirs wins: this fills gaps, never overwrites."""
         from tau2.utils import llm_utils
 
         tag_langfuse_session("run-a")
@@ -217,11 +225,11 @@ class TestSessionCorrelation:
         assert calls[0]["metadata"]["session_id"] == "theirs"
 
     def test_metadata_is_a_litellm_param_and_never_reaches_the_provider(self) -> None:
-        """`metadata` 必须在 litellm 自己的参数名单里。
+        """`metadata` must be in litellm's own parameter list.
 
-        不在名单里的键会被当成模型参数转发出去（`litellm.drop_params=True` 时
-        则被丢掉），两种结局都不是我们要的：前者让服务端报 400，
-        后者让会话号静默消失。
+        A key not on that list is forwarded as a model parameter, or dropped when
+        `litellm.drop_params=True`. Neither is wanted: the first makes the server return
+        400, the second makes the session id disappear silently.
         """
         from litellm.litellm_core_utils.get_litellm_params import get_litellm_params
 
@@ -230,25 +238,24 @@ class TestSessionCorrelation:
 
 
 class TestFlushOnExit:
-    """跑完不显式推一次，末尾几题的 trace 会静默丢掉。
+    """Without an explicit flush after a run, the last tasks' traces are silently lost.
 
-    2026-09-07 实测（真实调用 + Langfuse API 回查）：
+    Measured 2026-09-07 with real calls and a Langfuse API read-back:
 
-        调用后立刻退出        -> 面板上永远没有这条 trace，退出码仍是 0
-        调用后等待再退出      -> trace 到达
-        调用后 flush_langfuse -> trace 到达
+        call then exit immediately -> the trace never appears, exit code still 0
+        call, wait, then exit      -> the trace arrives
+        call then flush_langfuse   -> the trace arrives
 
-    OTEL 的 TracerProvider 本来会在进程退出时自己 shutdown，但 litellm 的
-    langfuse_otel **没有把 provider 设成全局的**，那条退出路径轮不到它。
+    OTEL's TracerProvider would shut down at process exit, but litellm's langfuse_otel
+    never installs the provider globally, so that path never runs.
     """
 
     def test_flush_reports_false_when_nothing_is_wired(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """没接 Langfuse 时推不出去是正常的，只该返回 False，不该抛错。
-
-        观测推不出去不该让整轮评测失败——那一轮的**结果**是好的。
-        """
+        """With Langfuse not wired there is nothing to flush; this returns False rather
+        than raising, because failing to export observability must not fail a run whose
+        results are fine."""
         import litellm.litellm_core_utils.litellm_logging as logging_mod
 
         monkeypatch.setattr(logging_mod, "_in_memory_loggers", [])
@@ -277,7 +284,7 @@ class TestFlushOnExit:
         assert calls == [LANGFUSE_FLUSH_TIMEOUT_MS]
 
     def test_flush_survives_a_broken_processor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """导出失败要报告成 False，不能把异常抛进评测流程。"""
+        """An export failure is reported as False, never raised into the run."""
         import litellm.litellm_core_utils.litellm_logging as logging_mod
 
         class Exploding:
@@ -294,23 +301,27 @@ class TestFlushOnExit:
         assert flush_langfuse(wait_seconds=0) is False
 
     def test_the_upstream_private_name_still_exists(self) -> None:
-        """`_in_memory_loggers` 是上游私有名字，是唯一能拿到 span_processor 的入口。
+        """`_in_memory_loggers` is a private upstream name and the only way to reach the
+        span processor.
 
-        它改名的那天这条会变红——那时 flush 会静默退化成"什么都不推"，
-        而 trace 又开始悄悄丢，只有这条测试拦得住。
+        The day it is renamed this turns red. Otherwise the flush would silently degrade
+        to a no-op and traces would start disappearing again, and only this test catches it.
         """
         from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
 
         assert isinstance(_in_memory_loggers, list)
 
     def test_the_global_tracer_provider_is_not_the_flush_handle(self) -> None:
-        """记下"为什么不用标准做法"：litellm 没把 provider 设成全局的。
+        """Records why the standard approach is not used: litellm does not install the
+        provider globally.
 
-        标准写法是 `opentelemetry.trace.get_tracer_provider().force_flush()`，
-        但那里拿到的是 ProxyTracerProvider，连 force_flush 都没有。
-        哪天 litellm 改成设全局了，这条会变红，届时可以换回标准写法。
+        The standard call is `opentelemetry.trace.get_tracer_provider().force_flush()`,
+        but that returns a ProxyTracerProvider, which has no force_flush. If litellm ever
+        installs it globally this turns red and the standard call can be restored.
         """
-        pytest.importorskip("opentelemetry", reason="随 litellm 的 OTEL 集成安装，未装则跳过")
+        pytest.importorskip(
+            "opentelemetry", reason="installed with litellm's OTEL integration; skip if absent"
+        )
         from opentelemetry import trace
 
         assert not hasattr(trace.get_tracer_provider(), "force_flush")

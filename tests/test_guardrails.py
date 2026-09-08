@@ -1,4 +1,4 @@
-"""写操作底线的测试：这是项目的安全核心，必须离线可测、不依赖模型。"""
+"""Tests for the write-action limits: the safety core, testable offline without a model."""
 
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ class TestReadVsWrite:
         self, guard: WriteGuard, state: SessionState
     ) -> None:
         verdict = guard.review(ProposedCall("get_order_details", {"order_id": "#W002"}), state)
-        # 读别人的订单由领域政策管，守卫只拦写操作，不在这里越权
+        # Reading someone else's order is governed by the domain policy; the guard
+        # covers writes only and does not overreach here.
         assert verdict.decision is Decision.ALLOW
 
     def test_write_tool_requires_confirmation_first(
@@ -45,7 +46,7 @@ class TestReadVsWrite:
     ) -> None:
         verdict = guard.review(ProposedCall("cancel_pending_order", {"order_id": "#W001"}), state)
         assert verdict.decision is Decision.NEEDS_CONFIRMATION
-        # 确认文案必须带上真实参数，不能只说"确认吗"
+        # The confirmation text must carry the real arguments, not just "are you sure".
         assert "#W001" in verdict.reason
         assert "cancel_pending_order" in verdict.reason
 
@@ -58,7 +59,8 @@ class TestOwnership:
         assert verdict.decision is Decision.DENIED_OWNERSHIP
 
     def test_ownership_beats_confirmation(self, guard: WriteGuard, state: SessionState) -> None:
-        """即使用户确认过，也不能操作别人的订单——归属校验优先于确认。"""
+        """A confirmation does not authorize touching someone else's order: the
+        ownership check comes first."""
         call = ProposedCall("cancel_pending_order", {"order_id": "#W002"})
         state.confirm(call)
         assert guard.review(call, state).decision is Decision.DENIED_OWNERSHIP
@@ -77,7 +79,7 @@ class TestOwnership:
 
 
 class TestConfirmationBinding:
-    """确认必须绑定到具体参数——这是"写操作确认绑定具体参数"的实现。"""
+    """Confirmation is bound to specific arguments."""
 
     def test_confirmed_call_is_allowed(self, guard: WriteGuard, state: SessionState) -> None:
         call = ProposedCall("cancel_pending_order", {"order_id": "#W001"})
@@ -88,7 +90,7 @@ class TestConfirmationBinding:
         self, guard: WriteGuard, state: SessionState
     ) -> None:
         state.confirm(ProposedCall("cancel_pending_order", {"order_id": "#W001"}))
-        # 用户确认的是取消 #W001；换成退货就必须重新确认
+        # The user confirmed cancelling #W001; a return needs its own confirmation.
         swapped = ProposedCall("return_delivered_order_items", {"order_id": "#W001"})
         assert guard.review(swapped, state).decision is Decision.NEEDS_CONFIRMATION
 
@@ -120,11 +122,11 @@ class TestStopConditions:
     def test_tool_call_limit_stops_session(self) -> None:
         state = SessionState(user_id="alice", limits=SessionLimits(max_tool_calls=3))
         state.tool_calls = 3
-        assert "工具调用" in (state.stop_reason() or "")
+        assert "tool-call limit" in (state.stop_reason() or "")
 
     def test_timeout_stops_session(self) -> None:
         state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.0))
-        assert "时限" in (state.stop_reason() or "")
+        assert "time limit" in (state.stop_reason() or "")
 
     def test_fresh_session_can_proceed(self) -> None:
         assert SessionState(user_id="alice").stop_reason() is None

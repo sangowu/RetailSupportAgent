@@ -1,7 +1,9 @@
-"""提前终止分段逻辑的测试。
+"""Tests for the early-stop phase logic.
 
-一轮定模型意味着没有后续档位兜底，但也没必要给明显不合格的配置把题跑完。
-分段本身必须是纯逻辑、可测的——真跑起来要花钱，不能靠跑一遍来验证它对不对。
+Choosing a model in one round means there is no fallback tier, but there is
+also no reason to run every task for a configuration that is clearly failing.
+The phase split itself must be pure logic and testable: running it for real
+costs money, so correctness cannot be established by running it.
 """
 
 from __future__ import annotations
@@ -36,11 +38,13 @@ class TestPlanPhases:
     def test_early_stop_splits_into_probe_and_remainder(self) -> None:
         phases = run_eval.plan_phases(TASKS, 4)
         assert phases == [TASKS[:4], TASKS[4:]]
-        assert [t for phase in phases for t in phase] == TASKS, "分段不得丢题或改顺序"
+        assert [t for phase in phases for t in phase] == TASKS, (
+            "splitting must not drop tasks or reorder them"
+        )
 
     @pytest.mark.parametrize("bad", [0, -1, 12, 99])
     def test_degenerate_values_fall_back_to_a_single_phase(self, bad: int) -> None:
-        """N 够不着或不合法时不该切出空段。"""
+        """An unreachable or invalid N must not produce an empty phase."""
         assert run_eval.plan_phases(TASKS, bad) == [TASKS]
 
 
@@ -50,7 +54,8 @@ class TestAverageReward:
         assert run_eval.average_reward([sim(None), sim(None)]) is None
 
     def test_unscored_simulations_are_excluded_not_counted_as_zero(self) -> None:
-        """把未评分当成 0 分会误杀一个其实没跑完的模型。"""
+        """Counting an unscored task as 0 would fail a model that simply did not
+        finish."""
         assert run_eval.average_reward([sim(1.0), sim(None)]) == pytest.approx(1.0)
 
     def test_all_zero_triggers_the_default_threshold(self) -> None:

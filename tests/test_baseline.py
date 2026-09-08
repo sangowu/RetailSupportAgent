@@ -1,13 +1,16 @@
-"""基线的完整性。
+"""Baseline integrity.
 
-基线的用途是**给后续每一次改动一个可比对象**。所以这里守的不是"数字好不好看"，
-而是三件事：它没有被悄悄改过、它记的分母是对的、它自称完整就必须真的完整。
+A baseline exists to give every later change something to compare against. These tests
+do not check whether the numbers look good; they check three things: the baseline has
+not been altered, its denominator is right, and a run claiming to be complete is
+complete.
 
-**留档基线同样要守。** `baseline-v1` 已被 `baseline-v2` 取代，但历史报告里引用的
-那个数字必须仍然可追溯；只校验当前基线，等于默许旧基线被悄悄改动而无人察觉。
+Archived baselines are checked too. `baseline-v1` has been superseded, but the number
+historical reports cite must remain verifiable; checking only the current baseline
+would let an old one be edited unnoticed.
 
-这些断言全部只读入库文件，不需要 bench 依赖，也不需要原始逐题轨迹
-（那些按 .gitignore 不入库，CI 上本来就没有）。
+All assertions read committed files only. No bench dependency, and no raw per-task
+traces, which are gitignored and absent in CI by design.
 """
 
 from __future__ import annotations
@@ -24,8 +27,9 @@ BASELINES_ROOT = REPO / "evaluation" / "baselines"
 
 UPSTREAM_COMMIT = "fc0055dc4e0a316c3f83133267fbd6faaa770992"
 
-# 与 scripts/freeze_baseline.py 的登记表一一对应。写死在测试里是有意的：
-# 两边都改才算换基线，单边改动会在这里变红。
+# Mirrors the registry in scripts/freeze_baseline.py. Duplicating it here is
+# deliberate: changing a baseline requires changing both, and a one-sided edit turns
+# this red.
 BASELINE_FACTS: dict[str, dict[str, Any]] = {
     "baseline-v1": {
         "run": "20260907T080504Z_deepseek-v4-pro_holdout",
@@ -62,7 +66,8 @@ def _load(baseline_id: str) -> dict[str, Any]:
     path = BASELINES_ROOT / baseline_id / "baseline.json"
     if not path.is_file():
         pytest.fail(
-            f"没有基线文件：{path}。运行 scripts/freeze_baseline.py --id {baseline_id} 生成。"
+            f"no baseline file at {path}. "
+            f"Run scripts/freeze_baseline.py --id {baseline_id} to create it."
         )
     loaded: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return loaded
@@ -87,58 +92,62 @@ def _parse_checksums(baseline_id: str) -> tuple[dict[str, str], dict[str, str]]:
 @pytest.mark.parametrize("baseline_id", ALL_IDS)
 class TestEachBaseline:
     def test_tracked_files_match_their_recorded_digests(self, baseline_id: str) -> None:
-        """基线依赖的入库文件一个都不能变。
+        """None of the committed files a baseline depends on may change.
 
-        变了就说明基线的前提被动过——任务集换了、上游 manifest 改了、
-        或者那一轮的 summary 被编辑过。此时基线不再代表它自称的那次运行。
+        A change means one of its premises moved: the task set, the upstream manifest,
+        or the run's summary was edited. The baseline then no longer represents the run
+        it claims.
         """
         tracked, _ = _parse_checksums(baseline_id)
-        assert tracked, "tracked 段是空的，校验和文件形同虚设"
+        assert tracked, "the tracked section is empty, so the checksum file verifies nothing"
         problems = []
         for name, digest in tracked.items():
             path = REPO / name
             if not path.is_file():
-                problems.append(f"缺失：{name}")
+                problems.append(f"missing: {name}")
                 continue
             if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                problems.append(f"内容已变：{name}")
+                problems.append(f"content changed: {name}")
         assert not problems, (
-            f"{baseline_id} 依赖的文件与冻结时不一致：\n  "
+            f"{baseline_id} depends on files that differ from freeze time:\n  "
             + "\n  ".join(problems)
-            + "\n若确属有意换基线，请重新冻结并在 PR 说明原因。"
+            + "\nIf the baseline was replaced deliberately, re-freeze it and say why in the PR."
         )
 
     def test_raw_traces_are_recorded_but_not_required(self, baseline_id: str) -> None:
-        """原始轨迹按 .gitignore 不入库，所以只记摘要、不要求存在。
+        """Raw traces are gitignored, so their digests are recorded but their presence
+        is not required.
 
-        混进 tracked 段会让 CI 因为文件本来就不该在那里而永远红。
+        Putting them in the tracked section would keep CI permanently red over files
+        that are not supposed to be there.
         """
         _, local = _parse_checksums(baseline_id)
-        assert local, "一条原始轨迹的摘要都没记——那这一轮的原始数据无从校验"
+        assert local, "no raw-trace digest was recorded, so the run's raw data is unverifiable"
         for name in local:
-            assert "/results.json" in name, f"local_only 里出现了不像原始轨迹的条目：{name}"
+            assert "/results.json" in name, f"local_only contains a non-trace entry: {name}"
 
     def test_denominator_is_task_count_not_record_count(self, baseline_id: str) -> None:
-        """分母必须是**题数**，不是模拟记录条数。
+        """The denominator is the task count, not the number of simulation records.
 
-        补跑会让同一道题留下两条记录（失败的那条和补跑成功的那条）。
-        本项目已经踩过一次：每题成本按 45 条记录算而实际只有 40 题，
-        于是对外报了一个偏低 11% 的成本。
+        Resuming leaves two records for one task: the failed attempt and the successful
+        retry. This project has already been caught by it once, computing per-task cost
+        over 45 records when there were 40 tasks and reporting a figure 11% too low.
         """
         run = _load(baseline_id)["run"]
         assert run["expected_simulations"] == run["task_count"] * run["num_trials"]
         assert run["scored_simulations"] == run["expected_simulations"]
 
     def test_run_is_complete(self, baseline_id: str) -> None:
-        """自称完整就必须真的完整：缺题会让平均分虚高。"""
+        """A run claiming completeness must be complete: missing tasks inflate the average."""
         run = _load(baseline_id)["run"]
         assert run["complete"] is True
         assert run["scored_simulations"] == BASELINE_FACTS[baseline_id]["tasks"]
 
     def test_reward_matches_pass_count(self, baseline_id: str) -> None:
-        """奖励是全或无，所以平均分必须恰好等于满分题数除以题数。
+        """Reward is all-or-nothing, so the average must equal passes over tasks exactly.
 
-        对不上说明有 0/1 以外的分数混进来了，那时"满分题数"这个说法就不成立。
+        A mismatch means a score other than 0 or 1 got in, and "pass count" would then
+        mean nothing.
         """
         run = _load(baseline_id)["run"]
         assert run["avg_reward"] == pytest.approx(run["pass_count"] / run["scored_simulations"])
@@ -148,7 +157,7 @@ class TestEachBaseline:
             assert run["pass_count"] == facts["pass_count"]
 
     def test_it_pins_the_same_upstream_commit_as_the_manifest(self, baseline_id: str) -> None:
-        """基线与 τ²-bench 的固定 commit 必须一致，否则成绩不可比。"""
+        """The baseline and the τ²-bench pin must agree, or scores are not comparable."""
         manifest = json.loads(
             (REPO / "evaluation" / "tau2_manifest.json").read_text(encoding="utf-8")
         )
@@ -163,50 +172,58 @@ class TestEachBaseline:
         assert baseline["status"] == facts["status"]
 
     def test_it_records_the_stack_that_produced_it(self, baseline_id: str) -> None:
-        """光有分数没有评测栈，这个数字无法解释也无法复现。"""
+        """A score without its evaluation stack can neither be explained nor reproduced."""
         stack = _load(baseline_id)["run"]["stack"]
         for key in ("agent_model", "user_simulator", "nl_judge", "agent_thinking_effort"):
-            assert stack.get(key), f"{baseline_id} 没记 {key}，这个分数就没法复现"
+            assert stack.get(key), f"{baseline_id} does not record {key}, so it is irreproducible"
 
     def test_cost_is_not_frozen_into_the_baseline(self, baseline_id: str) -> None:
-        """成本刻意不冻结：价格快照会新增条目，抄进来会悄悄过期。
+        """Cost is deliberately not frozen: the price snapshot gains entries, and a
+        copied number expires silently.
 
-        成本以 scripts/analyze_eval.py 现算为准（口径见 M0.5（一））。
+        Cost comes from scripts/analyze_eval.py (convention in M0.5, part one).
         """
         baseline = _load(baseline_id)
         assert "cost" not in json.dumps(baseline["run"])
         assert "analyze_eval" in baseline["note"]
 
     def test_scope_is_stated_so_the_two_are_not_confused(self, baseline_id: str) -> None:
-        """子集分与全集分都是真数字，但不能互相冒充——口径必须写在基线里。"""
-        assert _load(baseline_id)["scope_note"].strip(), "没写口径说明，两个基线迟早被混着引用"
+        """Subset and full-set scores are both real numbers but must not stand in for
+        each other, so the scope is written into the baseline."""
+        assert _load(baseline_id)["scope_note"].strip(), (
+            "without a scope note the baselines eventually get cited interchangeably"
+        )
 
     def test_it_records_which_agent_was_under_test(self, baseline_id: str) -> None:
-        """被测对象必须留痕。
+        """The subject under test must be on record.
 
-        上游 `llm_agent` 与本项目带护栏的 Agent 是**两个不同的被测对象**，
-        成绩不可比。不记这一条，两个基线的分数迟早被当成"同一个东西的前后变化"
-        引用——而合并后的平均分看不出任何异常。M0 全部分数就是这样被
-        误当成本项目 Agent 的成绩（见 docs/M0_REPORT.md §1.1）。
+        Upstream `llm_agent` and this project's guarded agent are two different subjects
+        and their scores are not comparable. Without this field the two baselines
+        eventually get cited as "before and after" of one thing, and a merged average
+        shows nothing unusual. Every M0 score was misread as this project's agent that
+        way (see docs/M0_REPORT.md §1.1).
         """
         facts = BASELINE_FACTS[baseline_id]
         assert _load(baseline_id)["run"]["agent_under_test"] == facts["subject"]
 
 
-class TestTheTwoBaselinesCoexist:
+class TestTheBaselinesCoexist:
     def test_exactly_one_is_current(self) -> None:
-        """当前基线只能有一个，否则「和基线比」这句话没有唯一含义。"""
+        """Only one baseline is current, or "compared to the baseline" has no single
+        meaning."""
         current = [bid for bid in ALL_IDS if _load(bid)["status"] == "current"]
         assert current == ["baseline-v3"]
 
     def test_the_archived_one_is_kept_not_deleted(self) -> None:
-        """留档基线不删：删了它，历史报告里引用的数字就再也无从校验。"""
+        """Archived baselines are not deleted: without them the numbers in historical
+        reports become unverifiable."""
         assert (BASELINES_ROOT / "baseline-v1" / "baseline.json").is_file()
         assert _load("baseline-v1")["status"] == "archived"
 
     def test_full_set_is_exactly_dev_plus_holdout(self) -> None:
-        """全集必须真的等于 dev ∪ holdout，否则「全集分」这个说法不成立；
-        而 dev 与 holdout 不得重叠，否则「独立验证」不成立。"""
+        """The full set must equal dev union holdout, or "full-set score" is not true;
+        and dev and holdout must not overlap, or "independent verification" is not
+        true."""
 
         def ids(name: str) -> set[str]:
             path = REPO / "evaluation" / "task_sets" / f"{name}.json"
@@ -215,4 +232,4 @@ class TestTheTwoBaselinesCoexist:
         full, dev, holdout = ids("full"), ids("dev"), ids("holdout")
         assert len(full) == 114
         assert dev | holdout == full
-        assert not (dev & holdout), "dev 与 holdout 重叠，独立验证就不成立"
+        assert not (dev & holdout), "dev and holdout overlap, so the holdout is not independent"

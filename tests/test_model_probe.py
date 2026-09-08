@@ -1,4 +1,4 @@
-"""探针纯逻辑的单元测试：不发网络请求，可在 CI 离线运行。"""
+"""Unit tests for the probes' pure logic: no network calls, runs offline in CI."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def test_describe_error_keeps_type_and_truncates_message() -> None:
     info = describe_error(ValueError("x" * 2000))
     assert info["type"] == "ValueError"
     assert len(info["message"]) == 800
-    assert "http_status" not in info  # 非 API 错误不应伪造状态码
+    assert "http_status" not in info  # a non-API error must not invent a status code
 
 
 def test_probe_outcome_serializes_to_plain_json() -> None:
@@ -53,11 +53,11 @@ def test_probe_outcome_serializes_to_plain_json() -> None:
 def test_candidate_pool_matches_documented_experiment_design() -> None:
     assert REFERENCE_MODEL in CANDIDATE_MODELS
     assert len(CANDIDATE_MODELS) == 5
-    assert len(set(CANDIDATE_MODELS)) == 5, "候选池不能有重复模型"
+    assert len(set(CANDIDATE_MODELS)) == 5, "the candidate pool must not repeat a model"
 
 
 class TestSecretHandling:
-    """密钥绝不能出现在日志、报告或异常里——这是硬性要求，用测试守住。"""
+    """A key must never appear in a log, a report, or an exception."""
 
     @pytest.fixture
     def settings(self, monkeypatch: pytest.MonkeyPatch) -> Settings:
@@ -74,7 +74,7 @@ class TestSecretHandling:
     def test_key_presence_reports_only_presence(self, settings: Settings) -> None:
         presence = settings.key_presence()
         assert DUMMY_KEY not in presence
-        # 连末几位都不暴露：只允许出现长度
+        # Not even the last characters; only the length may appear.
         assert DUMMY_KEY[-4:] not in presence
         assert str(len(DUMMY_KEY)) in presence
 

@@ -1,7 +1,9 @@
-"""harness 接线：应用侧与评测侧必须指向同一个模型和同一个端点。
+"""Harness wiring: the application and the evaluation must point at the same model and
+the same endpoint.
 
-这是最容易日后改岔的地方——评测在 DeepSeek 上跑出 0.600，应用却连着 DashScope，
-那评测成绩对线上就没有任何解释力。用测试钉死，而不是靠记忆。
+This is the easiest thing to let drift. If evaluation scores 0.600 on DeepSeek while
+the application talks to DashScope, the score explains nothing about production. Pinned
+by tests rather than by memory.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ def deepseek_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
 
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """纯 DashScope 端点：用来验证另一套方言。"""
+    """A pure DashScope endpoint, used to exercise the other dialect."""
     monkeypatch.setenv("DASHSCOPE_API_KEY", DASHSCOPE_KEY)
     for name in (
         "RSA_AGENT_BASE_URL",
@@ -45,7 +47,8 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
 
 
 class TestThinkingDialectPerProvider:
-    """两家服务商的思考参数完全不同名，发错方言不会报错，只会被静默忽略。"""
+    """The two providers name thinking parameters differently, and the wrong dialect is
+    silently ignored rather than rejected."""
 
     def test_dashscope_gets_dashscope_dialect(self, settings: Settings) -> None:
         stack = EvalStack(settings=settings, agent_model=CANDIDATE_MODELS[0])
@@ -61,16 +64,18 @@ class TestThinkingDialectPerProvider:
         }
 
     def test_deepseek_thinking_mode_drops_temperature(self, deepseek_settings: Settings) -> None:
-        """DeepSeek 思考模式不支持 temperature，且设了不报错也不生效。
+        """DeepSeek thinking mode does not support temperature and neither errors nor
+        applies it.
 
-        既然服务端会丢弃，就不要发——发了只会让 manifest 记下一个
-        「我们跑在 temperature=0」的假象。
+        Since the server discards it, it is not sent: sending it would only record the
+        false claim that we run at temperature=0.
         """
         stack = EvalStack(settings=deepseek_settings, agent_model="deepseek-v4-pro")
         assert "temperature" not in stack.agent_args()
 
     def test_dashscope_still_gets_temperature(self, settings: Settings) -> None:
-        """DashScope 上的候选模型确实吃温度，不能因为 DeepSeek 的限制一刀切。"""
+        """DashScope candidates do honour temperature; DeepSeek's limitation must not
+        remove it everywhere."""
         stack = EvalStack(settings=settings, agent_model=CANDIDATE_MODELS[0])
         assert stack.agent_args()["temperature"] == 0.0
 
@@ -88,24 +93,26 @@ def test_app_defaults_to_the_selected_model() -> None:
 
 
 def test_app_pins_temperature_for_reproducibility() -> None:
-    """不传温度会落到服务商默认（0.7~1.0），线上表现就不可复现。"""
+    """Omitting temperature falls back to the provider default (0.7-1.0), which makes
+    production behaviour irreproducible."""
     assert ModelConfig().temperature == 0.0
 
 
 def test_app_defaults_to_thinking_high() -> None:
-    """DeepSeek 思考默认就是开的、档位默认 high：不传参数不等于不思考。
+    """DeepSeek defaults to thinking on at level high: sending no parameter is not the
+    same as no thinking.
 
-    此前这里断言的是 `enabled=False`，与真实行为相反——我们从未向 DeepSeek
-    下发过任何思考参数，实测 214 次调用里 190 次产生了推理 token。
-    现在配置写成显式的 thinking+high，与项目统一口径一致。
+    This used to assert `enabled=False`, the opposite of reality: no thinking parameter
+    was ever sent to DeepSeek, and 190 of 214 measured calls produced reasoning tokens.
+    The configuration now states thinking+high explicitly.
     """
     assert ModelConfig().thinking == ThinkingConfig(enabled=True, effort=THINKING_EFFORT)
     assert THINKING_EFFORT == "high"
 
 
 def test_selected_model_is_distinct_from_the_dashscope_twin() -> None:
-    """DashScope 上的同款叫 deepseek-v4-pro-0813，价格是本模型的 3~5 倍。
-    名字必须分开，否则会按错的价目表折算成本。"""
+    """The same model on DashScope is called deepseek-v4-pro-0813 and costs 3-5x more.
+    The names must stay separate or costs get computed from the wrong price table."""
     assert SELECTED_MODEL == "deepseek-v4-pro"
     assert SELECTED_MODEL not in CANDIDATE_MODELS
     assert "deepseek-v4-pro-0813" in CANDIDATE_MODELS
@@ -120,10 +127,11 @@ class TestAppAndEvalShareTheSameEndpoint:
         assert stack.agent_args()["api_key"] == app_key
 
     def test_user_simulator_does_not_follow_the_agent(self, deepseek_settings: Settings) -> None:
-        """模拟用户是冻结评测栈的一部分，绝不能跟着被测搬家。
+        """The simulated user is part of the frozen stack and must not move with the agent.
 
-        2026-09-07 起它自己住在智谱（glm-5.3-flash），所以这里断言的不再是
-        「它留在 DashScope」，而是「它不在被测的端点上」——后者才是要守的不变量。
+        Since 2026-09-07 it lives on Zhipu (glm-5.3-flash), so the assertion is no longer
+        "it stays on DashScope" but "it is not on the agent's endpoint", which is the
+        actual invariant.
         """
         stack = EvalStack(settings=deepseek_settings, agent_model=SELECTED_MODEL)
         assert stack.frozen_args()["api_base"] != DEEPSEEK_URL
@@ -143,10 +151,11 @@ class TestAppAndEvalShareTheSameEndpoint:
 
 class TestProviderSpecificParamsStayWithTheirProvider:
     def test_deepseek_endpoint_is_not_dashscope(self, deepseek_settings: Settings) -> None:
-        """enable_thinking 是 DashScope 扩展，不该发给 DeepSeek。"""
+        """enable_thinking is a DashScope extension and must not reach DeepSeek."""
         assert deepseek_settings.agent_is_dashscope() is False
 
     def test_thinking_config_still_rejects_mutually_exclusive_params(self) -> None:
-        """M0.2 的结论仍然成立：互斥只有部分模型强制，必须由我们保证只传其一。"""
-        with pytest.raises(ValueError, match="不能同时设置"):
+        """The M0.2 finding still holds: only some models enforce the exclusion, so this
+        code must guarantee only one is sent."""
+        with pytest.raises(ValueError, match="cannot both be set"):
             ThinkingConfig(enabled=True, effort="low", budget=8192)
