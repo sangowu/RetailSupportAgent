@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     auth_jwks_url: str | None = Field(default=None, validation_alias="RSA_AUTH_JWKS_URL")
     auth_token_use: str = Field(default="access", validation_alias="RSA_AUTH_TOKEN_USE")
 
+    # How long a supervisor's decision on an escalated action stays usable (M4). The
+    # architecture document fixes the default at 30 minutes and requires it to be
+    # configurable: a deployment where cases sit in a queue for an hour needs a longer
+    # window, and one handling refunds may want a much shorter one.
+    approval_ttl_seconds: float = Field(default=1800.0, validation_alias="RSA_APPROVAL_TTL_SECONDS")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",

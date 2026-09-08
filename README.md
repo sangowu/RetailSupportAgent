@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1, M2 and M3 implemented.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -20,9 +20,10 @@ M0's scores measured upstream's agent, not this project's; see
 [M0 report §1.1](docs/M0_REPORT.md). `baseline-v1` (holdout 40 tasks, 0.8750) is
 archived.
 
-**Not built yet**: human handoff, AWS deployment and a hosted demo. Authentication is
-implemented and verified against a locally generated key pair; it has not yet met a real
-Cognito user pool, which is M6. See [M0 report §9](docs/M0_REPORT.md).
+**Not built yet**: AWS deployment, a hosted demo, and any screen for the people who work
+the handoff queue. Authentication is implemented and verified against a locally generated
+key pair; it has not yet met a real Cognito user pool, which is M6. See
+[M0 report §9](docs/M0_REPORT.md).
 
 Model selection was a cost decision, not a quality comparison: the other candidates
 were never measured on the same evaluation stack, and on the same holdout the cost
@@ -45,12 +46,13 @@ judge was not held constant; see
 11. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
 12. [M2 cross-process recovery](docs/M2_RECOVERY.md)
 13. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
-14. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-15. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-16. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-17. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-18. [Local and AWS start/stop design](docs/OPERATIONS.md)
-19. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+14. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
+15. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+16. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+17. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+18. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+19. [Local and AWS start/stop design](docs/OPERATIONS.md)
+20. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
@@ -58,9 +60,10 @@ Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
 M0 established the evaluation protocol, the minimal business loop, and the model and
 thinking-parameter experiments, and froze the baselines. M1 added application-state
-persistence, M2 made a session survive a restart, and M3 established who is calling and
-what they may do. Each step changes one theme and reports its effect against the current
-baseline and the previous passing version. The roadmap is not an instruction to build
+persistence, M2 made a session survive a restart, M3 established who is calling and what
+they may do, and M4 turned a handoff into a case a human owns and decides. Each step
+changes one theme and reports its effect against the current baseline and the previous
+passing version. The roadmap is not an instruction to build
 everything at once.
 
 A quotable score requires naming its evaluation stack: simulated user `glm-5.3-flash`
@@ -118,6 +121,13 @@ uv run python scripts/provision_identity.py --subject <sub> --show
 
 There is no HTTP route to provisioning: a caller cannot create an account or pick a role.
 `/health` reports which mode is live.
+
+Human handoff (M4): a transfer opens a ticket and suspends the customer's session until a
+person closes it. A supervisor assigns the case and decides the escalations raised against
+it; the assignee works it in a session of their own. A supervisor cannot assign a case to
+themselves, nobody decides their own escalation, and a decision expires after
+`RSA_APPROVAL_TTL_SECONDS` (30 minutes by default). `GET /session/{id}/timing` reports
+system time and human waiting as separate numbers.
 
 Keys are read from `.env` (see `.env.example`). `.env` is gitignored and must not be
 committed.

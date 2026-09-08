@@ -32,6 +32,7 @@ class Decision(StrEnum):
     NEEDS_CONFIRMATION = "needs_confirmation"  # write action, not confirmed for these arguments
     DENIED_OWNERSHIP = "denied_ownership"  # order does not belong to the session identity
     DENIED_PERMISSION = "denied_permission"  # the account's roles do not grant this action
+    NEEDS_APPROVAL = "needs_approval"  # acting for another user: a human has not decided yet
     DENIED_UNKNOWN_TOOL = "denied_unknown_tool"  # not in the upstream tool list
 
 
@@ -100,11 +101,19 @@ class SessionState:
     # what the demo and evaluation paths run as; under authentication it is whatever
     # `role_memberships` grants, never what the token claims.
     permissions: frozenset[Permission] = DEFAULT_PERMISSIONS
+    # True when a support agent is working this session on a customer's behalf under an
+    # assigned ticket (M4). Such a write needs a human decision as well as the customer's
+    # confirmation; a customer acting on their own orders does not.
+    acting_for_other: bool = False
     started_at: float = field(default_factory=time.monotonic)
     steps: int = 0
     tool_calls: int = 0
     # Fingerprints the user has confirmed. One confirmation covers one argument set.
     confirmed_fingerprints: set[str] = field(default_factory=set)
+    # Argument sets a supervisor has approved and that have not expired (M4). Refreshed
+    # from the database each turn rather than accumulated in memory, so a decision that
+    # has run out of time stops authorizing anything.
+    approved_fingerprints: set[str] = field(default_factory=set)
     pending: ProposedCall | None = None
 
     def elapsed(self) -> float:
@@ -129,9 +138,10 @@ class SessionState:
 class WriteGuard:
     """Rules on every tool call. Does not rely on the model policing itself.
 
-    Order of checks: known tool, then permission, then ownership, then confirmation.
-    Each one is stricter than the last, and the reason given to the user is the first
-    that fails, so a refusal never reveals more than the caller was entitled to ask.
+    Order of checks: known tool, then permission, then ownership, then approval (only
+    when acting for another user), then confirmation. Each one is stricter than the last,
+    and the reason given is the first that fails, so a refusal never reveals more than
+    the caller was entitled to ask.
     """
 
     def __init__(self, known_tools: set[str], owner_lookup: Any) -> None:
@@ -171,6 +181,17 @@ class WriteGuard:
         ownership = self._check_ownership(call, state)
         if ownership is not None:
             return ownership
+
+        # Acting for someone else needs a human decision on this exact argument set. It
+        # is checked before the confirmation and never instead of it: an approval is one
+        # more condition, not a way past the others.
+        if state.acting_for_other and call.fingerprint not in state.approved_fingerprints:
+            return GuardVerdict(
+                Decision.NEEDS_APPROVAL,
+                "This account is acting on a customer's behalf, so the action needs a "
+                f"supervisor's approval before it can run:\n{call.describe()}",
+                call,
+            )
 
         if call.fingerprint in state.confirmed_fingerprints:
             return GuardVerdict(Decision.ALLOW, call=call)

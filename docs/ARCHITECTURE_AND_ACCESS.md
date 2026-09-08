@@ -25,10 +25,14 @@ platform in advance:
 - identities / role_memberships: Cognito subject to internal user, roles, organization
   scope. Implemented in M3 without the organization scope, which needs more than one
   simulated organization to mean anything.
-- tickets / assignments: tickets and who they are assigned to.
+- tickets / assignments: tickets and who they are assigned to. Implemented in M4, with
+  assignment kept as history so who could reach a customer's orders, and when, stays
+  readable after a reassignment.
 - conversations / tasks: session and task state, claiming, failure information.
 - confirmations / approvals: the action, an argument digest, who requested and who
-  confirmed, validity, state.
+  confirmed, validity, state. Confirmations in M1, approvals in M4; both bind to the
+  argument fingerprint, and an approval expires (`RSA_APPROVAL_TTL_SECONDS`, 30 minutes
+  by default).
 - operations / audit_events: idempotency key, business outcome, authorization basis,
   trace id.
 - Simulated order tables: M1 states the migration mapping explicitly and keeps the
@@ -43,10 +47,11 @@ organization, with no tenant registration or billing system.
 
 ## Permission rules v0.1 (drafted by the developer)
 
-Implemented in M3, with the limits recorded in [M3 §3.5](M3_AUTH.md): roles are stored in
-`role_memberships` and never read from a token claim, `agent` gains nothing over
-`customer` until ticket assignment exists (M4), and an `auditor` role was added to make
-the intersection rule testable - it can read the audit trail and nothing else.
+Implemented in M3 and completed in M4: roles are stored in `role_memberships` and never
+read from a token claim; an `auditor` role was added to make the intersection rule
+testable; and from [M4](M4_HANDOFF.md) an `agent` may act on the orders of a customer
+whose ticket is currently assigned to them, while a `supervisor` assigns cases and decides
+escalations but cannot work one - an approver who performs the action is not an approver.
 
 | Role | Read | Modify | Manage |
 |---|---|---|---|
@@ -124,5 +129,7 @@ capability not yet implemented is marked as not covered.
 Covered so far: duplicate submission and a database failure mid-transaction in
 [M1](M1_PERSISTENCE.md); a process restart mid-session in [M2](M2_RECOVERY.md);
 cross-user reads, forged roles, and expired, wrong-issuer or wrong-audience credentials
-in [M3](M3_AUTH.md). Approval-related scenarios wait for M4, which is where approval
-exists.
+in [M3](M3_AUTH.md); an approver losing their permission, an expired approval, and a
+refused escalation in [M4](M4_HANDOFF.md). A process restart during approval is covered by
+M2's recovery plus M4's re-read of every decision, and is listed among M4's limits rather
+than claimed.

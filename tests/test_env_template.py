@@ -68,6 +68,9 @@ def test_template_carries_no_secret_values() -> None:
         # credential, and the wrong one refuses every request, so prefilling the common
         # case is worth more than an empty line.
         "access",
+        # The approval validity window in seconds (M4), the default the architecture
+        # document fixes. A number, not a secret.
+        "1800",
     }
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
         if not re.match(r"^[A-Z][A-Z0-9_]*=", line):
