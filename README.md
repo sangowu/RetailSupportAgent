@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 and M2 implemented.**
+**Status: M0 frozen (M0.1-M0.6), M1, M2 and M3 implemented.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -20,8 +20,9 @@ M0's scores measured upstream's agent, not this project's; see
 [M0 report §1.1](docs/M0_REPORT.md). `baseline-v1` (holdout 40 tasks, 0.8750) is
 archived.
 
-**Not built yet**: authentication, cross-process conversation recovery, human handoff,
-AWS deployment and a hosted demo. See [M0 report §9](docs/M0_REPORT.md).
+**Not built yet**: human handoff, AWS deployment and a hosted demo. Authentication is
+implemented and verified against a locally generated key pair; it has not yet met a real
+Cognito user pool, which is M6. See [M0 report §9](docs/M0_REPORT.md).
 
 Model selection was a cost decision, not a quality comparison: the other candidates
 were never measured on the same evaluation stack, and on the same holdout the cost
@@ -43,12 +44,13 @@ judge was not held constant; see
 10. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
 11. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
 12. [M2 cross-process recovery](docs/M2_RECOVERY.md)
-13. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-14. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-15. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-16. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-17. [Local and AWS start/stop design](docs/OPERATIONS.md)
-18. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+13. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
+14. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+15. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+16. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+17. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+18. [Local and AWS start/stop design](docs/OPERATIONS.md)
+19. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
@@ -56,7 +58,8 @@ Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
 M0 established the evaluation protocol, the minimal business loop, and the model and
 thinking-parameter experiments, and froze the baselines. M1 added application-state
-persistence, and M2 made a session survive a restart. Each step changes one theme and reports its effect against the current
+persistence, M2 made a session survive a restart, and M3 established who is calling and
+what they may do. Each step changes one theme and reports its effect against the current
 baseline and the previous passing version. The roadmap is not an instruction to build
 everything at once.
 
@@ -102,6 +105,19 @@ uv run alembic upgrade head                  # RSA_DATABASE_URL must be set
 ```
 
 Without `RSA_DATABASE_URL` the service still runs with M0's in-memory sessions.
+
+Authentication (M3) is off until an issuer and an audience are configured. With
+`RSA_AUTH_ISSUER` and `RSA_AUTH_AUDIENCE` set, every route requires a bearer token, the
+retail identity comes from the token's subject, and roles come from the database - never
+from the token's group claims:
+
+```bash
+uv run python scripts/provision_identity.py --subject <sub> --user-id ava_moore_2033 --role customer
+uv run python scripts/provision_identity.py --subject <sub> --show
+```
+
+There is no HTTP route to provisioning: a caller cannot create an account or pick a role.
+`/health` reports which mode is live.
 
 Keys are read from `.env` (see `.env.example`). `.env` is gitignored and must not be
 committed.

@@ -22,7 +22,9 @@ expectations.
 Create the minimum tables the business actually needs rather than building a general
 platform in advance:
 
-- identities / role_memberships: Cognito subject to internal user, roles, organization scope.
+- identities / role_memberships: Cognito subject to internal user, roles, organization
+  scope. Implemented in M3 without the organization scope, which needs more than one
+  simulated organization to mean anything.
 - tickets / assignments: tickets and who they are assigned to.
 - conversations / tasks: session and task state, claiming, failure information.
 - confirmations / approvals: the action, an argument digest, who requested and who
@@ -40,6 +42,11 @@ cannot select an arbitrary tenant. The first version may have a single simulated
 organization, with no tenant registration or billing system.
 
 ## Permission rules v0.1 (drafted by the developer)
+
+Implemented in M3, with the limits recorded in [M3 §3.5](M3_AUTH.md): roles are stored in
+`role_memberships` and never read from a token claim, `agent` gains nothing over
+`customer` until ticket assignment exists (M4), and an `auditor` role was added to make
+the intersection rule testable - it can read the audit trail and nothing else.
 
 | Role | Read | Modify | Manage |
 |---|---|---|---|
@@ -113,3 +120,9 @@ approver losing their permission; an operation succeeding while the response is 
 database failure mid-transaction; a model timeout; a process restart during approval;
 a data reset affecting another account. Tests are implemented per stage, and any
 capability not yet implemented is marked as not covered.
+
+Covered so far: duplicate submission and a database failure mid-transaction in
+[M1](M1_PERSISTENCE.md); a process restart mid-session in [M2](M2_RECOVERY.md);
+cross-user reads, forged roles, and expired, wrong-issuer or wrong-audience credentials
+in [M3](M3_AUTH.md). Approval-related scenarios wait for M4, which is where approval
+exists.

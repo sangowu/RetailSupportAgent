@@ -24,6 +24,7 @@ from typing import Annotated, Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
+from retail_support_agent.auth import Permission
 from retail_support_agent.domain import HANDOFF_TOOLS, WRITE_TOOLS, RetailDomain, ToolResult
 from retail_support_agent.guardrails import (
     Decision,
@@ -156,6 +157,15 @@ class RetailAgent:
             }
         ]
         self._last: TurnResult | None = None
+
+    def apply_permissions(self, permissions: frozenset[Permission]) -> None:
+        """Set what this session may do, before the turn runs (M3).
+
+        Called on every request rather than only at construction: an agent cached in
+        this process would otherwise keep the permissions it was built with, and a role
+        revoked in the database would keep working until the process restarted.
+        """
+        self._session.permissions = permissions
 
     # ---- graph wiring ---------------------------------------------------
 

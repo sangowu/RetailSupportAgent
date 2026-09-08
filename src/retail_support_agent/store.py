@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,11 +25,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from retail_support_agent.auth import Identity
 from retail_support_agent.db import (
     AuditEventRow,
     ConfirmationRow,
+    IdentityRow,
     MessageRow,
     OperationRow,
+    RoleMembershipRow,
     SessionClaimRow,
     SessionRow,
 )
@@ -73,13 +76,84 @@ class Store:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._sessions = session_factory
 
-    # ---- sessions -------------------------------------------------------
-    def ensure_session(self, session_id: str, user_id: str) -> None:
-        """Create the session if absent. An existing `user_id` is never overwritten,
-        which would silently change the identity of a session."""
+    # ---- identities and roles (M3) --------------------------------------
+    def provision_identity(self, subject: str, user_id: str, roles: Iterable[str] = ()) -> None:
+        """Map an authenticated subject to a retail identity and grant it roles.
+
+        Provisioning is an administrative act, not something a client can do: there is
+        no HTTP route to it. That is what stops "choose your own role at registration",
+        which is the escalation this stage exists to prevent.
+
+        Idempotent in both halves: the identity is updated rather than duplicated, and
+        `(subject, role)` is a primary key, so re-granting a role conflicts and is
+        ignored.
+        """
         with self._sessions.begin() as db:
-            if db.get(SessionRow, session_id) is None:
-                db.add(SessionRow(id=session_id, user_id=user_id))
+            row = db.get(IdentityRow, subject)
+            if row is None:
+                db.add(IdentityRow(subject=subject, user_id=user_id))
+            else:
+                row.user_id = user_id
+            db.flush()
+            for role in roles:
+                stmt = (
+                    pg_insert(RoleMembershipRow)
+                    .values(subject=subject, role=role)
+                    .on_conflict_do_nothing(index_elements=["subject", "role"])
+                )
+                db.execute(stmt)
+
+    def revoke_role(self, subject: str, role: str) -> None:
+        """Remove one role. It takes effect on the next request, which is the reason
+        roles are read from here rather than from the token: a claim inside an already
+        issued token cannot be withdrawn."""
+        with self._sessions.begin() as db:
+            row = db.get(RoleMembershipRow, (subject, role))
+            if row is not None:
+                db.delete(row)
+
+    def identity_for(self, subject: str) -> Identity | None:
+        """The retail identity and roles for a verified subject, or None if it has not
+        been provisioned. A valid token for an unknown subject authenticates someone
+        this system has no account for, which is a refusal, not a new account."""
+        with self._sessions() as db:
+            row = db.get(IdentityRow, subject)
+            if row is None:
+                return None
+            roles = db.scalars(
+                select(RoleMembershipRow.role).where(RoleMembershipRow.subject == subject)
+            )
+            return Identity(subject=subject, user_id=row.user_id, roles=frozenset(roles))
+
+    # ---- sessions -------------------------------------------------------
+    def ensure_session(
+        self, session_id: str, user_id: str, subject: str | None = None
+    ) -> str | None:
+        """Create the session if absent, and return the subject that owns it.
+
+        An existing `user_id` is never overwritten, which would silently change the
+        identity of a session, and neither is an existing `subject`: the owner is
+        whoever opened the session, so the returned value is what the caller compares
+        against. Returning it from the same transaction that may have created the row
+        means the check cannot read a row that a concurrent request has not written yet.
+        """
+        with self._sessions.begin() as db:
+            row = db.get(SessionRow, session_id)
+            if row is None:
+                db.add(SessionRow(id=session_id, user_id=user_id, subject=subject))
+                return subject
+            return row.subject
+
+    def session_subject(self, session_id: str) -> tuple[bool, str | None]:
+        """(whether the session exists, which subject owns it).
+
+        Two facts rather than one: a missing session and a session owned by nobody are
+        different situations. Resetting a session that was never created is harmless,
+        while continuing one that belongs to another subject is not.
+        """
+        with self._sessions() as db:
+            row = db.get(SessionRow, session_id)
+            return (row is not None, row.subject if row else None)
 
     def session_user(self, session_id: str) -> str | None:
         with self._sessions() as db:

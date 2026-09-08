@@ -50,6 +50,10 @@ def _now() -> Mapped[dt.datetime]:
 class SessionRow(Base):
     """One session. `user_id` is a τ²-bench simulated identity, not a real user.
 
+    `subject` records who opened it, so a second caller cannot continue someone else's
+    conversation - a different question from M2's claim, which records which *process*
+    is driving it.
+
     `steps` and `tool_calls` are the session's stop-condition counters (M2). They are
     persisted rather than derived, because a restart that reset them to zero would make
     restarting a way around the limits, and no other table records them: `messages` has
@@ -60,12 +64,63 @@ class SessionRow(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The authenticated subject that opened the session (M3), or NULL when
+    # authentication is not configured. Nullable because the demo and evaluation paths
+    # legitimately have no subject, and rows created before M3 have none either; the
+    # ownership check treats NULL as "unowned" rather than as a match.
+    subject: Mapped[str | None] = mapped_column(
+        String(128),
+        # SET NULL, not CASCADE: deleting an identity must not delete the record of what
+        # it did. The session is left unowned, which the ownership check refuses.
+        ForeignKey("identities.subject", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     steps: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class IdentityRow(Base):
+    """An authenticated subject mapped to the retail identity that owns its orders (M3).
+
+    `subject` is the primary key rather than a surrogate id: it is the token's `sub`,
+    already unique and stable for the life of the account, and a second key would only
+    create a way for two rows to claim one subject.
+
+    The mapping exists so the retail `user_id` is derived on the server. A request body
+    can never say whose orders it is operating on.
+    """
+
+    __tablename__ = "identities"
+
+    subject: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[dt.datetime] = _now()
+
+
+class RoleMembershipRow(Base):
+    """A role granted to a subject (M3).
+
+    Roles live here and not in the token. A group claim is trusted only as far as every
+    path that can write it, and a token minted before a role was revoked keeps asserting
+    the role until it expires; a row that is deleted stops granting anything on the next
+    request.
+
+    `(subject, role)` is the primary key, so granting the same role twice is not an error
+    and cannot produce a duplicate.
+    """
+
+    __tablename__ = "role_memberships"
+
+    subject: Mapped[str] = mapped_column(
+        String(128), ForeignKey("identities.subject", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    granted_at: Mapped[dt.datetime] = _now()
 
 
 class SessionClaimRow(Base):
