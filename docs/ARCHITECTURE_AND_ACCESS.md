@@ -1,70 +1,115 @@
-# 架构、数据流和权限
+# Architecture, data flow and permissions
 
-## 逻辑边界
+## Logical boundaries
 
 ```text
-Gradio / API 客户端
-  → FastAPI：身份、会话、请求校验
-  → LangGraph：理解问题、补问、选工具、确认、停止或转人工
-  → 业务工具：权限、资源归属、政策、状态、参数校验
-  → 业务数据层：查询或事务修改
-  → 工具结果 → Agent 回复实际结果
+Gradio / API client
+  -> FastAPI: identity, session, request validation
+  -> LangGraph: understand the request, ask for missing details, choose tools, confirm,
+     stop or hand off
+  -> business tools: permissions, resource ownership, policy, state, argument validation
+  -> business data layer: query or transactional modification
+  -> tool result -> the agent reports the actual outcome
 ```
 
-M0 接入隔离的 Retail 模拟环境；后续应用持久化与标准基准保持不同执行适配器。共用协议及可复用逻辑，但不要以迁移数据库为由重写官方评测预期。
+M0 connects to an isolated Retail simulation. Application persistence and the standard
+benchmark keep separate execution adapters. They share the protocol and reusable logic,
+but migrating a database is never a reason to rewrite the official evaluation
+expectations.
 
-## 应用状态与存储（M1 起）
+## Application state and storage (from M1)
 
-建议按实际业务最小化建表，不提前构建通用平台：
+Create the minimum tables the business actually needs rather than building a general
+platform in advance:
 
-- identities / role_memberships：Cognito subject 到内部用户的映射、角色和组织范围。
-- tickets / assignments：工单及分配关系。
-- conversations / tasks：会话、任务状态、领取和失败信息。
-- confirmations / approvals：具体动作、参数摘要、发起人、确认人、时效、状态。
-- operations / audit_events：幂等键、业务结果、授权依据与追踪 ID。
-- 模拟订单等业务表：M1 明确迁移映射，保留原始 fixture 及重置入口。
-- LangGraph checkpoint 表：使用验证过的官方持久化实现，独立于业务授权记录。
+- identities / role_memberships: Cognito subject to internal user, roles, organization scope.
+- tickets / assignments: tickets and who they are assigned to.
+- conversations / tasks: session and task state, claiming, failure information.
+- confirmations / approvals: the action, an argument digest, who requested and who
+  confirmed, validity, state.
+- operations / audit_events: idempotency key, business outcome, authorization basis,
+  trace id.
+- Simulated order tables: M1 states the migration mapping explicitly and keeps the
+  original fixture and a reset entry point.
+- LangGraph checkpoint tables: use the verified official persistence implementation,
+  separate from business authorization records.
 
-数据库外键、唯一约束、事务和条件更新落实业务不变量。组织范围由可信后端上下文决定，客户端不能选择任意租户。第一版可仅一个模拟组织，无需开发租户注册或计费系统。
+Foreign keys, unique constraints, transactions and conditional updates carry the
+business invariants. Organization scope is decided by trusted backend context; a client
+cannot select an arbitrary tenant. The first version may have a single simulated
+organization, with no tenant registration or billing system.
 
-## 权限规则 v0.1（开发方拟定）
+## Permission rules v0.1 (drafted by the developer)
 
-| 角色 | 查询 | 修改 | 管理 |
+| Role | Read | Modify | Manage |
 |---|---|---|---|
-| 客户 | 自己的订单和工单 | 对自己符合政策的订单确认取消/退货 | 无 |
-| 客服 | 分配给自己的工单及其相关订单 | 已获得客户确认、符合政策的操作 | 申请升级，不能分配自己新权限 |
-| 主管 | 同一组织的团队工单、相关订单和审计 | 在政策内审批升级请求 | 分配/重新分配工单；不能凭主管身份代替客户确认 |
+| Customer | Their own orders and tickets | Confirmed, policy-compliant cancel or return on their own orders | None |
+| Agent | Tickets assigned to them and the related orders | Operations the customer confirmed that comply with policy | May request escalation; cannot grant themselves permissions |
+| Supervisor | Team tickets, related orders and audit within the same organization | Approve escalation requests within policy | Assign and reassign tickets; cannot confirm on a customer's behalf |
 
-应用角色由管理员通过受控初始化配置授予，禁止客户端注册时自选主管。账户生命周期、IAM 运维权限和客服业务角色分开；业务主管不能管理 AWS 密钥或评测基线。
+Application roles are granted by an administrator through controlled initialization; a
+client cannot choose the supervisor role at registration. Account lifecycle, IAM
+operations permissions and support business roles are separate: a business supervisor
+cannot manage AWS keys or evaluation baselines.
 
-工具集合 = 账户授权能力与当前任务需要能力的交集。LLM 识别任务不能扩大账户授权。工具隐藏只是辅助，真正校验在每次后端调用发生。
+The tool set is the intersection of what the account is authorized to do and what the
+current task requires. The LLM recognizing a task cannot widen that authorization.
+Hiding a tool is only an aid; the real check happens on every backend call.
 
-## 确认与升级规则
+## Confirmation and escalation rules
 
-- 取消/退货等写操作先明确订单、项目及参数，并获得客户确认。修改参数后旧确认失效。
-- 订单状态、数量等操作条件直接遵循固定版本原始 Retail 政策，不新增任意金额例外。
-- 客户要求人工、Agent 不能在允许工具和步骤内解决、业务信息冲突时创建接管记录。
-- 工单改派给其他客服属于主管操作；客服不能自行扩大数据可见范围。
-- 升级审批用于人工核查与决定后续处理方案，不授予突破政策的能力；拒绝后不能继续执行原动作。
-- 执行审批后动作仍须检查最新订单状态、客户确认、资源归属与当前角色。待确认/审批默认 30 分钟有效，可配置并纳入测试；过期重新确认。
-- 暂不设置高额退款自动审批规则，因为 MVP 范围不是实际资金退款。
+- A write such as a cancellation or return first states the order, items and arguments
+  and obtains the customer's confirmation. Changing an argument expires that confirmation.
+- Preconditions such as order status and quantity follow the pinned Retail policy
+  exactly, with no added exceptions by amount.
+- A handoff record is created when the customer asks for a human, when the agent cannot
+  resolve the request within its allowed tools and steps, or when business information
+  conflicts.
+- Reassigning a ticket to another agent is a supervisor action; an agent cannot widen
+  their own data visibility.
+- Escalation approval is for a human to review and decide what happens next. It does not
+  grant the ability to breach policy, and after a refusal the original action does not
+  proceed.
+- Even after approval, the action re-checks the current order state, the customer's
+  confirmation, resource ownership and the current role. A pending confirmation or
+  approval is valid for 30 minutes by default, configurable and covered by tests; once
+  expired it must be confirmed again.
+- No automatic approval rule for large refunds, because the MVP does not move real money.
 
-## 并发、幂等和恢复
+## Concurrency, idempotency and recovery
 
-- 确认后生成具体操作 ID；同一操作的重试复用它，参数变化必须新建确认与操作。
-- 单个会话串行处理；不同会话可受限并发，不能共用可变内存上下文。
-- 业务写入与操作结果在同一事务中提交。响应丢失时按幂等记录返回原结果。
-- 若未来调用外部写 API，需要该 API 的幂等机制或结果对账；不能宣称本地事务保证外部 exactly-once。
-- checkpoint 不能替代业务事务。恢复重复进入节点时必须查幂等状态。
-- M2 用持久化任务表定义 worker 领取、租约或等价机制，避免重启和多实例重复领取。超时可回收但必须再次核实操作结果。
-- 自动重试只针对明确可重试错误；参数/权限/政策错误不反复调用；循环有上限。
+- A confirmation produces a concrete operation id. A retry of the same operation reuses
+  it; changed arguments require a new confirmation and a new operation.
+- One session is processed serially. Different sessions may run concurrently within
+  limits and never share mutable in-memory context.
+- The business write and the operation record commit in the same transaction. If the
+  response is lost, the idempotency record returns the original result.
+- If an external write API is ever called, exactly-once depends on that API's idempotency
+  mechanism or on reconciliation. A local transaction does not provide it.
+- A checkpoint does not replace a business transaction. Re-entering a node during
+  recovery must consult the idempotency state.
+- M2 defines worker claiming with a persistent task table, using leases or an equivalent,
+  so a restart or a second instance does not claim the same work twice. A timeout may
+  reclaim work, but the operation's outcome must be re-verified.
+- Automatic retries apply only to errors known to be retryable. Argument, permission and
+  policy errors are not retried, and every loop has a bound.
 
-## 日志与私密信息
+## Logging and sensitive information
 
-Langfuse 记录 Agent 与工具性能，PostgreSQL 保存持久业务审计，CloudWatch 保存运行错误。用 request_id、task_id、operation_id 与 trace_id 关联。
+Langfuse records agent and tool performance, PostgreSQL holds the durable business
+audit, and CloudWatch holds runtime errors. They are correlated by request_id, task_id,
+operation_id and trace_id.
 
-日志不得包含 API Key、JWT、密码或 session cookie。只使用模拟客户资料，身份字段按最小必要记录。reasoning 内容遵循供应商会话协议，展示和归档策略明确区分协议所需内容与不必要日志。
+Logs must never contain an API key, JWT, password or session cookie. Only simulated
+customer data is used, and identity fields are recorded to the minimum necessary.
+Reasoning content follows the provider's conversation protocol, and the display and
+archival policy distinguishes what the protocol requires from unnecessary logging.
 
-## 必须验证的失败场景
+## Failure scenarios that must be verified
 
-跨用户查询；伪造角色；过期/错误签发方/错误受众凭证；重复提交；并发取消；确认后状态变化；审批人撤权；操作成功但响应丢失；数据库中途异常；模型超时；审批期间进程重启；数据重置误影响其他账户。按阶段实现相应测试，未实现能力标记未覆盖。
+Cross-user reads; forged roles; expired, wrong-issuer or wrong-audience credentials;
+duplicate submissions; concurrent cancellation; state changing after confirmation; an
+approver losing their permission; an operation succeeding while the response is lost; a
+database failure mid-transaction; a model timeout; a process restart during approval;
+a data reset affecting another account. Tests are implemented per stage, and any
+capability not yet implemented is marked as not covered.
