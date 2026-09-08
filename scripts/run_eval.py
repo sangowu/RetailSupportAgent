@@ -1,11 +1,14 @@
-"""在 τ²-bench Retail 上跑评测。**会产生真实费用。**
+"""Run an evaluation on τ²-bench Retail. This spends real money.
 
-先用极小样本试跑并估算成本，确认无误再放大——不要一上来就全量。
+Start with a tiny sample, estimate the cost, and only then scale up.
 
-用法：
-    uv run python scripts/run_eval.py --pilot                     # 2 题冒烟（必含 NL 断言）
-    uv run python scripts/run_eval.py --split dev --sample 6      # 按判官覆盖比例抽 6 题
-    uv run python scripts/run_eval.py --split holdout             # 独立验证（不得用于调参）
+Usage:
+    # 2-task smoke run, both carrying NL assertions
+    uv run python scripts/run_eval.py --pilot
+    # 6 tasks, stratified by judge coverage
+    uv run python scripts/run_eval.py --split dev --sample 6
+    # independent verification, never used for tuning
+    uv run python scripts/run_eval.py --split holdout
 """
 
 from __future__ import annotations
@@ -41,40 +44,46 @@ DATA_DIR = REPO / "third_party" / "tau2-bench" / "data"
 
 
 def select_tasks(split: str, limit: int | None, sample: int | None, pilot: bool) -> list[str]:
-    """任务一律取自 M0.1 冻结的清单，按固定顺序截取，保证可复现。
+    """Tasks always come from the M0.1 frozen lists, sliced in a fixed order for
+    reproducibility.
 
-    `--limit` 的朴素截断有个已被实测证伪的隐患：开发集最前面两题
-    **都没有 NL 断言**，上游对空断言列表直接给 1.0，判官根本不会被调用。
-    第一次冒烟就栽在这里——2/2 满分里那半个 NL_ASSERTION 是空过的。
-    所以冒烟改为只挑真正会调判官的题，抽样则按判官覆盖比例分层。
+    Naive `--limit` truncation has a hazard that was measured, not assumed: the first
+    two dev tasks have no NL assertions, and upstream returns 1.0 for an empty assertion
+    list without calling the judge. The first smoke run hit exactly this, and its 2/2
+    included an NL_ASSERTION component that was never evaluated. Smoke runs therefore
+    pick only tasks that really reach the judge, and sampling is stratified by judge
+    coverage.
     """
     facts = load_task_facts()
     ids: list[str] = load_task_set(split)["task_ids"]
 
     if pilot:
-        # 开发集是唯一允许反复跑的集合；只取会真正走判官的题
+        # dev is the only set that may be run repeatedly; take tasks that reach the judge.
         judge_ids = [t for t in load_task_set("dev")["task_ids"] if facts[t].invokes_judge]
         if len(judge_ids) < 2:
-            raise SystemExit("开发集里带 NL 断言的题不足 2 道，无法冒烟")
+            raise SystemExit("fewer than 2 dev tasks carry NL assertions; cannot run a smoke test")
         return judge_ids[:2]
 
     if sample:
-        # 保持该划分原有的"带断言 / 不带断言"比例，且顺序固定、可复现
+        # Preserve the split's ratio of assertion-bearing to other tasks, in a fixed,
+        # reproducible order.
         judge_ids = [t for t in ids if facts[t].invokes_judge]
         other_ids = [t for t in ids if not facts[t].invokes_judge]
         n_judge = max(1, round(sample * len(judge_ids) / len(ids))) if judge_ids else 0
         n_judge = min(n_judge, len(judge_ids), sample)
         picked = set(judge_ids[:n_judge]) | set(other_ids[: sample - n_judge])
-        return [t for t in ids if t in picked]  # 回到冻结清单的原始顺序
+        return [t for t in ids if t in picked]  # back to the frozen list's order
 
     return ids[:limit] if limit else ids
 
 
 def plan_phases(task_ids: list[str], early_stop: int | None) -> list[list[str]]:
-    """把题目切成"先试探"与"跑完剩下"两段。
+    """Split the tasks into a probe phase and the remainder.
 
-    一轮定模型意味着没有后续档位兜底，但也没必要给一个明显不合格的配置
-    把全部题目跑完——先跑前 N 题，全零就掐掉。N 不合法或够不着就退回单段。
+    Choosing a model in one round means there is no fallback tier, but there is also no
+    reason to run every task for a configuration that is clearly failing. Run the first
+    N and stop if they all score zero. An invalid or unreachable N falls back to a
+    single phase.
     """
     if not early_stop or early_stop <= 0 or early_stop >= len(task_ids):
         return [task_ids]
@@ -82,7 +91,7 @@ def plan_phases(task_ids: list[str], early_stop: int | None) -> list[list[str]]:
 
 
 def average_reward(simulations: list[Any]) -> float | None:
-    """已完成模拟的平均奖励；没有任何可评分的记录时返回 None。"""
+    """Average reward over scored simulations, or None when nothing is scored."""
     rewards = [
         float(info.reward)
         for sim in simulations
@@ -93,12 +102,14 @@ def average_reward(simulations: list[Any]) -> float | None:
 
 
 def summarize(simulations: list[Any], expected: int) -> dict[str, Any]:
-    """从上游结果里抽出报告需要的数字。不自己重算奖励。
+    """Extract the numbers the report needs from upstream results. Rewards are not
+    recomputed here.
 
-    `expected` 是本应跑完的会话数（题数 × 轮数）。传它进来是为了**对账**：
-    上游把服务端故障的题从分母里剔掉，40 题丢 5 题会算出 0.886 而不是 0.875——
-    丢题不报错，还让成绩更好看。所以缺口必须被显式记下来，
-    而不是等着谁去翻日志才发现。
+    `expected` is how many sessions should have run (tasks x trials). It is passed in to
+    reconcile: upstream drops infrastructure failures from the denominator, so losing 5
+    of 40 tasks yields 0.886 instead of 0.875. The loss raises no error and improves the
+    score, so the gap is recorded explicitly rather than left for someone to find in a
+    log.
     """
     rewards: list[float] = []
     terminations: dict[str, int] = {}
@@ -123,8 +134,8 @@ def summarize(simulations: list[Any], expected: int) -> dict[str, Any]:
         "simulation_count": len(simulations),
         "expected_count": expected,
         "scored_count": len(rewards),
-        # 缺口不为零时，avg_reward 只是"跑通那部分的平均分"，不是本轮成绩。
-        # analyze_eval 读到 incomplete=True 会拒绝直接报它。
+        # With a non-zero gap, avg_reward is the average over what ran, not the run's
+        # score. analyze_eval sees incomplete=True and refuses to report it directly.
         "incomplete": incomplete,
         "unscored_task_ids": sorted(set(unscored), key=lambda t: (len(t), t)),
         "avg_reward": (sum(rewards) / len(rewards)) if rewards else None,
@@ -134,23 +145,27 @@ def summarize(simulations: list[Any], expected: int) -> dict[str, Any]:
 
 
 def main() -> int:
-    # 必须在 parse_args 之前：argparse 的 --help 直接往 stdout 写，
-    # Windows 默认 GBK 控制台遇到中文帮助文本会直接抛 UnicodeEncodeError。
+    # Before parse_args: argparse writes --help straight to stdout, and a non-UTF-8
+    # console would raise UnicodeEncodeError on characters such as τ².
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="τ²-bench Retail 评测（会产生真实费用）")
-    parser.add_argument("--model", default=SELECTED_MODEL, help="被测 Agent 模型")
+    parser = argparse.ArgumentParser(description="τ²-bench Retail evaluation (spends real money)")
+    parser.add_argument("--model", default=SELECTED_MODEL, help="model under test")
     parser.add_argument(
         "--split",
         default="dev",
         choices=["dev", "holdout", "regression", "full"],
-        help="full=全部 114 题（标准 τ²-bench Retail 口径）；dev/holdout 是它的子集",
+        help="full = all 114 tasks (the standard τ²-bench Retail figure); dev/holdout are subsets",
     )
-    parser.add_argument("--limit", type=int, default=None, help="朴素截断前 N 题")
-    parser.add_argument("--sample", type=int, default=None, help="按判官覆盖比例分层抽 N 题")
-    parser.add_argument("--pilot", action="store_true", help="只跑 2 题冒烟（必含 NL 断言）")
+    parser.add_argument("--limit", type=int, default=None, help="truncate to the first N tasks")
+    parser.add_argument(
+        "--sample", type=int, default=None, help="sample N tasks stratified by judge coverage"
+    )
+    parser.add_argument(
+        "--pilot", action="store_true", help="2-task smoke run (both carry NL assertions)"
+    )
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--seed", type=int, default=300)
@@ -158,46 +173,49 @@ def main() -> int:
         "--thinking",
         default=THINKING_EFFORT,
         choices=sorted(VALID_EFFORTS),
-        help=f"被测 Agent 的 reasoning_effort 档位，默认 {THINKING_EFFORT}",
+        help=f"reasoning_effort for the agent under test, default {THINKING_EFFORT}",
     )
     parser.add_argument(
         "--no-thinking",
         action="store_true",
-        help="关闭被测 Agent 的思考（DeepSeek 默认开启，必须显式关）",
+        help="disable thinking for the agent under test (DeepSeek has it on by default)",
     )
     parser.add_argument(
         "--early-stop",
         type=int,
         default=None,
         metavar="N",
-        help="先跑前 N 题；平均奖励不超过阈值就掐掉，不跑剩下的",
+        help="run the first N tasks and stop if the average reward is at or below the threshold",
     )
     parser.add_argument(
         "--early-stop-below",
         type=float,
         default=0.001,
-        help="提前终止阈值，默认 0.001（即前 N 题全零才掐）",
+        help="early-stop threshold, default 0.001, i.e. stop only if the first N all score zero",
     )
     parser.add_argument(
         "--no-reasoning-echo",
         action="store_true",
-        help="不回传历史 reasoning_content（消融用；DeepSeek 文档要求带 tools 时回传）",
+        help="do not send historical reasoning_content back (ablation; DeepSeek documents "
+        "that it should be sent when the request carries tools)",
     )
     parser.add_argument(
         "--user-no-thinking",
         action="store_true",
         help=(
-            "关闭模拟用户的思考（对照实验用；会使成绩与既有运行不可比）。"
-            "对当前冻结的 glm-5.3-flash **不可用**：智谱 GLM-5.3 系列强制思考，"
-            "会在启动时报错并提示改用旧模拟用户"
+            "disable thinking for the simulated user (comparison only; makes scores "
+            "incomparable with existing runs). Not available for the frozen "
+            "glm-5.3-flash: the Zhipu GLM-5.3 family forces thinking, and this errors at "
+            "startup with a pointer to the previous simulated user"
         ),
     )
     parser.add_argument(
         "--guarded",
         action="store_true",
         help=(
-            "被测对象换成套了本项目护栏的 Agent（默认是上游自带的 agent）。"
-            "两者是不同的被测对象，各有各的基线，成绩不可直接比"
+            "put this project's guarded agent under test instead of upstream's agent. "
+            "They are different subjects with separate baselines and their scores are "
+            "not directly comparable"
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -206,29 +224,31 @@ def main() -> int:
     task_ids = select_tasks(args.split, args.limit, args.sample, args.pilot)
     if args.dry_run:
         print(
-            f"将运行 {len(task_ids)} 题 × {args.trials} 次 = {len(task_ids) * args.trials} 个会话"
+            f"would run {len(task_ids)} tasks x {args.trials} trials = "
+            f"{len(task_ids) * args.trials} sessions"
         )
         shown = ", ".join(task_ids[:10])
         more = " ..." if len(task_ids) > 10 else ""
-        print(f"被测模型：{args.model}；任务：{shown}{more}")
+        print(f"model under test: {args.model}; tasks: {shown}{more}")
         facts = load_task_facts()
         judged = [t for t in task_ids if facts[t].invokes_judge]
-        print(f"其中会真正调用 NL 判官的：{len(judged)}/{len(task_ids)} 题 -> {judged}")
-        print(f"该划分整体构成：{split_composition(args.split)}")
+        print(f"tasks that actually reach the NL judge: {len(judged)}/{len(task_ids)} -> {judged}")
+        print(f"composition of this split: {split_composition(args.split)}")
         return 0
 
     prepare_environment(str(DATA_DIR))
     try:
         settings = Settings()  # type: ignore[call-arg]
     except Exception as exc:
-        print(f"配置读取失败（检查 .env）：{type(exc).__name__}", file=sys.stderr)
+        print(f"failed to read configuration (check .env): {type(exc).__name__}", file=sys.stderr)
         return 2
-    # 注意：异常信息一律不打印内容，只打印类型——它可能带上环境变量的值。
+    # Only the exception type is printed, never its message: it can contain the value of
+    # an environment variable.
 
-    # 思考配置由 EvalStack 按端点翻译成对应方言：
-    # DeepSeek 是 thinking.{type,reasoning_effort}，
-    # DashScope 是 enable_thinking + reasoning_effort。
-    # 发错方言不会报错，只会被静默忽略——所以绝不在这里手搓 extra_body。
+    # EvalStack translates the thinking configuration into the endpoint's dialect:
+    # DeepSeek uses thinking.{type,reasoning_effort}, DashScope uses enable_thinking plus
+    # reasoning_effort. The wrong dialect is silently ignored, so extra_body is never
+    # assembled by hand here.
     try:
         stack = EvalStack(
             settings=settings,
@@ -239,66 +259,73 @@ def main() -> int:
             user_thinking_disabled=args.user_no_thinking,
         )
     except (ValueError, EvaluationSetupError) as exc:
-        # 这些是配置错误，不是崩溃：栈回溯只会淹没真正有用的那句话。
-        # 消息本身只含端点与型号，不含密钥。
-        print(f"评测栈配置有误：{exc}", file=sys.stderr)
+        # These are configuration errors, not crashes: a traceback would bury the one
+        # useful sentence. The message contains endpoints and model ids, never keys.
+        print(f"evaluation stack misconfigured: {exc}", file=sys.stderr)
         return 2
     if args.user_no_thinking:
         print(
-            "[注意] 模拟用户已关思考：这改变了冻结评测栈，本次成绩与既有运行不可比。",
+            "[note] the simulated user has thinking disabled: this changes the frozen "
+            "stack, and these scores are not comparable with existing runs.",
             flush=True,
         )
-    # Langfuse 按需接入：没配全三项就不启用，并在下面打印原因。
-    # 注意成本口径——面板上的数字是**人民币**，尽管它显示美元符号。
+    # Langfuse is enabled only when fully configured; the reason is printed otherwise.
+    # Note the cost convention: dashboard numbers are CNY despite the dollar sign.
     langfuse_status = enable_langfuse(settings)
     if langfuse_status["langfuse_enabled"]:
         print(
-            f"Langfuse 已启用（{langfuse_status['langfuse_host']}，"
-            f"回调 {langfuse_status['langfuse_callback']}）。"
-            "面板只有 trace/延迟/token，**成本恒为 0**（上游缺口，非免费）；"
-            "成本请看 analyze_eval.py。",
+            f"Langfuse enabled ({langfuse_status['langfuse_host']}, "
+            f"callback {langfuse_status['langfuse_callback']}). "
+            "The dashboard has traces, latency and tokens only; cost is always 0 there "
+            "(an upstream gap, not a free run). Cost comes from analyze_eval.py.",
             flush=True,
         )
     else:
-        print(f"Langfuse 未启用：{langfuse_status['langfuse_reason']}", flush=True)
+        print(f"Langfuse not enabled: {langfuse_status['langfuse_reason']}", flush=True)
 
-    # 返回的记录器负责给判官记账：它的调用不在 messages 里，不主动记就永远统计不到
+    # The returned recorder accounts for the judge: its calls are not in messages and are
+    # otherwise never counted.
     judge_usage = patch_nl_judge(stack)
     for warning in stack.warnings():
-        print(f"[警告] {warning}", flush=True)
+        print(f"[warning] {warning}", flush=True)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     subject = "guarded" if args.guarded else "upstream"
-    # 被测对象写进目录名：两种对象的成绩不可比，目录名混在一起早晚会被搞混
+    # The subject goes in the directory name: scores of the two subjects are not
+    # comparable, and mixed directory names get confused eventually.
     run_dir = OUTPUT_ROOT / f"{run_id}_{args.model.replace('/', '_')}_{args.split}_{subject}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # 让面板上的 trace 能对回运行目录：会话号就取目录名，两边不用再维护对照表。
+    # Dashboard traces map back to the run directory: the session id is the directory
+    # name, so no lookup table is needed.
     session_id = tag_langfuse_session(run_dir.name)
     if langfuse_status["langfuse_enabled"]:
         langfuse_status["langfuse_session_id"] = session_id
         print(
-            f"Langfuse 会话号 = {session_id}（面板 Tracing -> Sessions 搜这个号）",
+            f"Langfuse session id = {session_id} (dashboard: Tracing -> Sessions)",
             flush=True,
         )
 
-    # 提前终止：先跑前 N 题，明显不合格就不再往下烧钱。
-    # 分段落盘，读的时候由 results_io 合并回一次运行。
+    # Early stop: run the first N tasks and stop spending if the result is clearly
+    # failing. Phases are written separately and merged back into one run by results_io.
     phases = plan_phases(task_ids, args.early_stop)
 
-    thinking_note = "关闭" if args.no_thinking else f"开启 effort={args.thinking}"
+    thinking_note = "off" if args.no_thinking else f"on, effort={args.thinking}"
     print(
-        f"运行 {len(task_ids)} 题 × {args.trials} 次，被测模型 {args.model}（思考{thinking_note}）",
+        f"running {len(task_ids)} tasks x {args.trials} trials, model {args.model} "
+        f"(thinking {thinking_note})",
         flush=True,
     )
     if len(phases) > 1:
         print(
-            f"提前终止已开启：先跑 {len(phases[0])} 题，平均奖励 ≤ {args.early_stop_below} 就停",
+            f"early stop enabled: run {len(phases[0])} tasks first and stop if the average "
+            f"reward is <= {args.early_stop_below}",
             flush=True,
         )
 
-    # 注意：tau2.run.run_tasks 是旧版兼容 shim，与 runner.batch.run_tasks 同名但签名不同。
-    # run_domain 是上游文档指定的高层入口，会自己按 config 里的 task_ids 过滤并算指标。
+    # Note: tau2.run.run_tasks is a legacy compatibility shim with the same name as
+    # runner.batch.run_tasks but a different signature. run_domain is the documented
+    # high-level entry point; it filters by the config's task_ids and computes metrics.
     from tau2.run import run_domain
 
     started = time.monotonic()
@@ -318,7 +345,7 @@ def main() -> int:
             guarded=args.guarded,
         )
         if len(phases) > 1:
-            print(f"\n第 {index}/{len(phases)} 段：{len(phase_ids)} 题", flush=True)
+            print(f"\nphase {index}/{len(phases)}: {len(phase_ids)} tasks", flush=True)
         results = run_domain(config)
         all_simulations.extend(getattr(results, "simulations", []) or [])
         completed_ids.extend(phase_ids)
@@ -328,24 +355,32 @@ def main() -> int:
             if avg is not None and avg <= args.early_stop_below:
                 stopped_early = True
                 print(
-                    f"\n提前终止：前 {len(completed_ids)} 题平均奖励 {avg:.4f}"
-                    f" ≤ {args.early_stop_below}，剩余 {len(task_ids) - len(completed_ids)}"
-                    f" 题不再运行。",
+                    f"\nstopping early: the first {len(completed_ids)} tasks average "
+                    f"{avg:.4f} <= {args.early_stop_below}; the remaining "
+                    f"{len(task_ids) - len(completed_ids)} tasks will not run.",
                     flush=True,
                 )
-                print("注意：这是「明显不合格」的判定，不是排名结论。", flush=True)
+                print(
+                    "This is a 'clearly failing' judgement, not a ranking conclusion.",
+                    flush=True,
+                )
                 break
-            shown = "无可评分记录" if avg is None else f"{avg:.4f}"
-            print(f"前 {len(completed_ids)} 题平均奖励 {shown}，继续。", flush=True)
+            shown = "no scored records" if avg is None else f"{avg:.4f}"
+            print(f"first {len(completed_ids)} tasks average {shown}; continuing.", flush=True)
 
     elapsed = time.monotonic() - started
 
-    # 必须显式推一次：不推的话，末尾几题的 trace 会静默丢在缓冲区里，
-    # 而进程退出码是 0、日志里什么都没有（2026-09-07 实测）。
+    # The explicit flush is required: without it the last tasks' traces sit in the
+    # buffer and are lost, while the exit code is 0 and the log says nothing
+    # (measured 2026-09-07).
     if langfuse_status["langfuse_enabled"]:
         langfuse_status["langfuse_flushed"] = flush_langfuse()
         if not langfuse_status["langfuse_flushed"]:
-            print("[警告] Langfuse trace 未能全部推出，面板上可能缺末尾几题。", file=sys.stderr)
+            print(
+                "[warning] not all Langfuse traces were flushed; the dashboard may be "
+                "missing the last few tasks.",
+                file=sys.stderr,
+            )
 
     summary = {
         "run_id": run_id,
@@ -355,9 +390,10 @@ def main() -> int:
         "completed_task_ids": completed_ids,
         "stopped_early": stopped_early,
         "num_trials": args.trials,
-        # 被测对象必须留痕：上游 agent 与带护栏的 agent 是**两个不同的被测对象**，
-        # 成绩不可比。不记的话，补跑会拿另一个对象去补，两者混进同一个目录——
-        # 而合并后的平均分看不出任何异常。
+        # The subject under test must be recorded: upstream's agent and the guarded agent
+        # are different subjects whose scores are not comparable. Without this, resuming
+        # would fill a run with the other subject and mix both into one directory, and
+        # the merged average would look entirely normal.
         "agent_under_test": subject,
         "stack": stack.describe(),
         "observability": langfuse_status,
@@ -372,19 +408,20 @@ def main() -> int:
     if results["incomplete"]:
         missing = results["expected_count"] - results["scored_count"]
         print(
-            f"\n[严重] 本轮缺 {missing} 个会话未评分，"
-            f"上面的 avg_reward={results['avg_reward']} 是**剩下那部分**的平均分，不是本轮成绩。",
+            f"\n[serious] {missing} sessions in this run are unscored. The avg_reward="
+            f"{results['avg_reward']} above is the average over the rest, not this run's score.",
             file=sys.stderr,
         )
-        print(f"       未评分题：{results['unscored_task_ids']}", file=sys.stderr)
-        print(f"       终止原因：{results['termination_reasons']}", file=sys.stderr)
+        print(f"       unscored tasks: {results['unscored_task_ids']}", file=sys.stderr)
+        print(f"       termination reasons: {results['termination_reasons']}", file=sys.stderr)
         print(
-            "       补跑：uv run python scripts/resume_run.py "
-            f"{run_dir.name}（评测栈会逐项核对，不一致则拒绝）",
+            "       resume: uv run python scripts/resume_run.py "
+            f"{run_dir.name} (the evaluation stack is verified field by field and a "
+            "mismatch is refused)",
             file=sys.stderr,
         )
-    print(f"判官用量：{judge_usage.describe()}")
-    print(f"\n原始结果：{run_dir}")
+    print(f"judge usage: {judge_usage.describe()}")
+    print(f"\nraw results: {run_dir}")
     return 0
 
 

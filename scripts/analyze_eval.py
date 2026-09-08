@@ -1,23 +1,28 @@
-"""从评测原始结果统计用量与成本，并按此推算更大规模运行的花费。
+"""Compute usage and cost from raw evaluation results, and project a larger run.
 
-上游用 litellm 记账。M0.5 起我们把价格快照按实际发出的模型名注册进了 litellm
-（见 pricing.register_with_litellm），所以 `agent_cost` 不再恒为 0；但成本仍由本脚本
-独立按 token 用量乘价格快照算，两条路径互相交叉核对——注册前跑的旧轮次那边仍是 0。
+Upstream accounts through litellm. Since M0.5 the price snapshot is registered with
+litellm under the model names actually sent (see pricing.register_with_litellm), so
+`agent_cost` is no longer always 0; cost is still computed here independently from
+token usage times the price snapshot, and the two paths cross-check each other. Runs
+from before registration still report 0 on the upstream side.
 
-三笔此前漏掉、且实测证明会改变结论的账：
+Three items that were missing and measurably change the conclusion:
 
-1. **缓存命中**：被测侧 72% 的输入 token 命中隐式缓存，命中部分按输入价 20% 计费，
-   按全价折算会**高估**成本。
-2. **推理 token**：模拟用户 89% 的输出 token 是 reasoning，按输出价计费，此前没算。
-3. **判官**：调用不在 messages 里，须由 JudgeUsageRecorder 单独记账。
+1. Cache hits: 72% of agent-side input tokens hit the implicit cache, billed at 20% of
+   the input rate. Full-price arithmetic overstates cost.
+2. Reasoning tokens: 89% of the simulated user's output tokens are reasoning, billed at
+   the output rate, and were previously not counted.
+3. The judge: its calls are not in `messages` and must be recorded separately by
+   JudgeUsageRecorder.
 
-用量取自 `message.raw_data.usage`——上游的 `usage` 字段只留了两个数，
-但完整响应一直存在 raw_data 里，所以历史结果也能回溯。
+Usage is read from `message.raw_data.usage`. Upstream's `usage` field keeps only two
+numbers, but the full response has always been in raw_data, so historical results can
+be recovered.
 
-用法：
-    uv run python scripts/analyze_eval.py                    # 分析最近一次运行
-    uv run python scripts/analyze_eval.py --run <目录名>
-    uv run python scripts/analyze_eval.py --project 74       # 按每题均值推算 74 题的花费
+Usage:
+    uv run python scripts/analyze_eval.py                    # analyze the latest run
+    uv run python scripts/analyze_eval.py --run <dir name>
+    uv run python scripts/analyze_eval.py --project 74       # project the cost of 74 tasks
 """
 
 from __future__ import annotations
@@ -47,7 +52,7 @@ RESULTS_ROOT = REPO / "evaluation" / "results"
 
 @dataclass
 class RoleUsage:
-    """一个角色（被测 Agent / 模拟用户）的累计用量。"""
+    """Accumulated usage for one role (agent under test, simulated user)."""
 
     calls: int = 0
     prompt: int = 0
@@ -55,10 +60,11 @@ class RoleUsage:
     cached: int = 0
     reasoning: int = 0
     missing_usage: int = 0
-    # 服务端**根本没报**缓存字段的调用数。与"报了、是 0"必须分开：
-    # 前者是未知（我们按全价计，偏保守），后者才是确认没命中。
-    # 实测 qwen3.6-plus 的 prompt_tokens_details.cached_tokens 恒为 null，
-    # 混作一谈会让报告里的"命中率 0%"被读成"这个模型没有缓存收益"。
+    # Calls where the server did not report a cache field at all. Distinct from
+    # "reported, and it was 0": the first is unknown, charged at full price, which is
+    # conservative; the second is a confirmed miss. Measured: qwen3.6-plus always
+    # returns null for prompt_tokens_details.cached_tokens, and conflating the two
+    # would make a reported "0% hit rate" read as "this model has no cache benefit".
     cache_unreported: int = 0
 
     @property
@@ -67,19 +73,20 @@ class RoleUsage:
 
     @property
     def cache_is_unknown(self) -> bool:
-        """全部调用都没报缓存字段——命中率无从得知，不是 0。"""
+        """No call reported a cache field, so the hit rate is unknown, not zero."""
         return self.calls > 0 and self.cache_unreported == self.calls
 
 
 def latest_run() -> Path:
     runs = sorted(p for p in RESULTS_ROOT.iterdir() if p.is_dir()) if RESULTS_ROOT.is_dir() else []
     if not runs:
-        raise SystemExit("没有找到评测结果，先运行 scripts/run_eval.py")
+        raise SystemExit("no evaluation results found; run scripts/run_eval.py first")
     return runs[-1]
 
 
 def _usage_of(message: dict[str, Any]) -> dict[str, Any] | None:
-    """优先用 raw_data 里的完整响应；它带缓存与推理明细，上游的 usage 字段没有。"""
+    """Prefer the full response in raw_data: it carries cache and reasoning detail that
+    upstream's usage field does not."""
     raw = message.get("raw_data")
     if isinstance(raw, dict):
         raw_usage = raw.get("usage")
@@ -97,10 +104,11 @@ def _detail(usage: dict[str, Any], group: str, key: str) -> int:
 
 
 def _cached_tokens(usage: dict[str, Any]) -> int | None:
-    """缓存命中数；服务端没报该字段时返回 None（而不是 0）。
+    """Cache hits, or None when the server did not report the field at all.
 
-    三种字段名都可能出现：我们补丁后的扁平字段、OpenAI 的嵌套明细、
-    DeepSeek 官方端点的 prompt_cache_hit_tokens。全都缺才算"未报"。
+    Three field names can appear: the flat field added by our patch, OpenAI's nested
+    detail, and DeepSeek's prompt_cache_hit_tokens. Only if all are absent is it
+    counted as unreported.
     """
     for key in ("cached_tokens", "prompt_cache_hit_tokens"):
         value = usage.get(key)
@@ -113,10 +121,11 @@ def _cached_tokens(usage: dict[str, Any]) -> int | None:
 
 
 def token_breakdown(simulations: list[dict[str, Any]]) -> dict[str, RoleUsage]:
-    """按消息角色拆分用量：assistant 是被测 Agent，user 是模拟用户。
+    """Split usage by message role: assistant is the agent under test, user is the
+    simulated user.
 
-    NL 断言评判的调用**不在 messages 里**，这里统计不到；
-    它由 JudgeUsageRecorder 在运行时单独记账，写进 summary.json。
+    NL-assertion judge calls are not in `messages` and are not counted here; they are
+    recorded at run time by JudgeUsageRecorder and written to summary.json.
     """
     roles: dict[str, RoleUsage] = collections.defaultdict(RoleUsage)
     for sim in simulations:
@@ -145,41 +154,44 @@ def token_breakdown(simulations: list[dict[str, Any]]) -> dict[str, RoleUsage]:
 
 
 def format_cost(model: str, usage: RoleUsage) -> str:
-    """缓存单价未知的模型只给区间，不给一个假装精确的数字。"""
+    """A model with an unknown cache rate gets a range, not a falsely precise number."""
     price = price_for(model)
     if price is None:
-        return f"{model} 不在价格快照里，无法折算"
+        return f"{model} is not in the price snapshot; cost cannot be computed"
     high = price.cost(usage.prompt, usage.completion, usage.cached)
     if cache_ratio_is_known(model) or not usage.cached:
-        return f"{high:.4f} 元"
+        return f"{high:.4f} CNY"
     low = price.cost_floor(usage.prompt, usage.completion, usage.cached)
-    return f"{low:.4f} – {high:.4f} 元（缓存命中单价未公开，只能给区间）"
+    return f"{low:.4f} - {high:.4f} CNY (cache-hit rate unpublished, so only a range)"
 
 
 def print_usage_table(roles: dict[str, RoleUsage]) -> None:
     print(
-        f"\n{'角色':<10}{'调用':>6}{'输入':>10}{'其中缓存':>10}{'命中率':>8}{'输出':>9}{'其中推理':>10}"
+        f"\n{'role':<12}{'calls':>7}{'input':>10}{'cached':>10}"
+        f"{'hit':>7}{'output':>9}{'reasoning':>11}"
     )
     for role, usage in sorted(roles.items()):
         print(
-            f"{role:<10}{usage.calls:>6}{usage.prompt:>10}{usage.cached:>10}"
-            f"{usage.cache_hit_rate:>7.0%}{usage.completion:>9}{usage.reasoning:>10}"
+            f"{role:<12}{usage.calls:>7}{usage.prompt:>10}{usage.cached:>10}"
+            f"{usage.cache_hit_rate:>6.0%}{usage.completion:>9}{usage.reasoning:>11}"
         )
         if usage.missing_usage:
             print(
-                f"{'':<10}（另有 {usage.missing_usage} 条消息没有用量记录，未计入——"
-                f"通常是开场白等本地生成、未调用模型的消息）"
+                f"{'':<12}({usage.missing_usage} messages had no usage record and are "
+                "excluded; usually locally generated messages such as the opening line, "
+                "which called no model)"
             )
         if usage.cache_unreported:
-            scope = "全部" if usage.cache_is_unknown else f"{usage.cache_unreported} 次"
+            scope = "every" if usage.cache_is_unknown else f"{usage.cache_unreported}"
             print(
-                f"{'':<10}（{scope}调用服务端未返回缓存字段：命中率**未知**，非 0；"
-                f"按全价折算，偏保守）"
+                f"{'':<12}({scope} call returned no cache field: the hit rate is unknown, "
+                "not zero. Charged at full price, which is conservative)"
             )
 
 
 def role_cost(model: str, usage: RoleUsage) -> float | None:
-    """该角色的成本；模型不在价格快照里返回 None——**不能当成 0**。"""
+    """Cost for this role, or None when the model is not in the price snapshot. None
+    must not be treated as zero."""
     price = price_for(model)
     if price is None:
         return None
@@ -189,38 +201,43 @@ def role_cost(model: str, usage: RoleUsage) -> float | None:
 def print_judge_cost(summary: dict[str, Any], judge_model: str) -> float | None:
     judge_usage = summary.get("judge_usage")
     if not judge_usage:
-        print(f"NL 判官（{judge_model}）：本次运行未记录用量——该运行早于判官记账功能。")
-        print("    注意：统计不到不等于没花钱，这笔账此前一直是空白。")
+        print(
+            f"NL judge ({judge_model}): no usage recorded for this run, which predates "
+            "judge accounting."
+        )
+        print("    Not being counted is not the same as being free; this was a blank line.")
         return None
     prompt = int(judge_usage.get("prompt_tokens", 0))
     completion = int(judge_usage.get("completion_tokens", 0))
     cached = int(judge_usage.get("cached_tokens", 0))
     price = price_for(judge_model)
     cost = price.cost(prompt, completion, cached) if price else None
-    tail = f"约 {cost:.4f} 元" if cost is not None else "价格未取得"
+    tail = f"about {cost:.4f} CNY" if cost is not None else "price unavailable"
     print(
-        f"NL 判官（{judge_model}）：{judge_usage.get('judge_calls', 0)} 次调用，"
-        f"输入 {prompt} tok（缓存 {cached}），输出 {completion} tok，{tail}"
+        f"NL judge ({judge_model}): {judge_usage.get('judge_calls', 0)} calls, "
+        f"input {prompt} tok (cached {cached}), output {completion} tok, {tail}"
     )
     return cost
 
 
-# 本项目声明的三类业务（查询 / 取消 / 退货）只覆盖 114 题中的 42 题。
-# 这两个标签合起来就是那 42 题：read_only（只读，查询类）与 in_scope_write
-# （写操作仅涉及取消/退货）。其余 72 题涉及改单、换货、改地址、改支付等
-# 本项目**没有声明**支持的操作。
+# The three flows this project declares (lookup / cancel / return) cover 42 of the 114
+# tasks. These two labels together are those 42: read_only (lookups) and in_scope_write
+# (writes limited to cancellation and returns). The other 72 involve modifying orders,
+# exchanges, address and payment changes, which this project does not claim to support.
 IN_SCOPE_LABELS = ("read_only", "in_scope_write")
 
 
 def print_scope_breakdown(simulations: list[dict[str, Any]]) -> None:
-    """按业务范围分层报告成绩。
+    """Report the score layered by business scope.
 
-    **两个口径都是真数字，谁也不冒充谁**：全集分是标准 τ²-bench Retail 分数，
-    42 题子集分是"本项目声明支持的业务"上的表现。只报前者会掩盖后者，
-    只报后者则不能再声称跑的是标准 τ²-bench——M0.1 定的规矩是两个都给。
+    Both figures are real and neither stands in for the other: the full-set score is the
+    standard τ²-bench Retail score, and the 42-task subset is performance on the flows
+    this project declares. Reporting only the first hides the second; reporting only the
+    second means the run can no longer be called standard τ²-bench. M0.1 requires both.
 
-    这一节只在跑了全集时才有足够样本：holdout 40 题里只有 9 题落在子集内，
-    9 道题撑不住任何结论，所以样本太少时直接说明而不是硬报一个数。
+    This section only has enough sample when the full set was run: only 9 of the 40
+    holdout tasks fall in the subset, and 9 tasks support no conclusion, so a small
+    sample is stated rather than scored.
     """
     labels_path = REPO / "evaluation" / "task_sets" / "scope_labels.json"
     if not labels_path.is_file():
@@ -239,21 +256,21 @@ def print_scope_breakdown(simulations: list[dict[str, Any]]) -> None:
     for task_id, reward in scored:
         buckets[labels.get(task_id, "unlabeled")].append(reward)
 
-    print("\n按业务范围分层（标签取自 evaluation/task_sets/scope_labels.json）")
+    print("\nBy business scope (labels from evaluation/task_sets/scope_labels.json)")
     order = ["read_only", "in_scope_write", "out_of_scope_write", "no_action", "unlabeled"]
     names = {
-        "read_only": "只读（查询类）",
-        "in_scope_write": "范围内写（取消/退货）",
-        "out_of_scope_write": "范围外写（改单/换货/改址/改支付）",
-        "no_action": "上游未给评分动作",
-        "unlabeled": "无标签",
+        "read_only": "read-only (lookups)",
+        "in_scope_write": "in-scope writes (cancel/return)",
+        "out_of_scope_write": "out-of-scope writes (modify/exchange/address/payment)",
+        "no_action": "no scored action upstream",
+        "unlabeled": "unlabeled",
     }
     for key in order:
         got = buckets.get(key)
         if not got:
             continue
         passed = sum(1 for r in got if r >= 1.0)
-        print(f"  {names[key]:<32}{passed:3d}/{len(got):<4d} = {passed / len(got):.4f}")
+        print(f"  {names[key]:<52}{passed:3d}/{len(got):<4d} = {passed / len(got):.4f}")
 
     in_scope = [r for key in IN_SCOPE_LABELS for r in buckets.get(key, [])]
     if not in_scope:
@@ -261,25 +278,31 @@ def print_scope_breakdown(simulations: list[dict[str, Any]]) -> None:
     passed = sum(1 for r in in_scope if r >= 1.0)
     if len(in_scope) < 20:
         print(
-            f"\n  本项目声明的三类业务子集只有 {len(in_scope)} 题落在本轮里，"
-            "样本太少，不单独报分（跑全集才有完整的 42 题）。"
+            f"\n  Only {len(in_scope)} tasks of the declared-flows subset are in this run. "
+            "Sample too small to score separately; the full 42 need a full-set run."
         )
         return
     print(
-        f"\n  本项目声明的三类业务（{len(in_scope)} 题子集）："
+        f"\n  Declared flows ({len(in_scope)}-task subset): "
         f"{passed}/{len(in_scope)} = {passed / len(in_scope):.4f}"
     )
-    print("  这与上面的总分是两个口径：总分才是标准 τ²-bench Retail 分数，两者不互相冒充。")
+    print(
+        "  This is a different figure from the total above: the total is the standard "
+        "τ²-bench Retail score, and neither stands in for the other."
+    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="统计评测用量与成本")
+    parser = argparse.ArgumentParser(description="Compute evaluation usage and cost")
     parser.add_argument("--run", default=None)
-    parser.add_argument("--project", type=int, default=None, help="按每题均值推算 N 题的花费")
+    parser.add_argument(
+        "--project", type=int, default=None, help="project the cost of N tasks from per-task means"
+    )
     parser.add_argument(
         "--allow-incomplete",
         action="store_true",
-        help="本轮有题未评分时，仍然打印平均分（默认拒绝：那不是本轮成绩）",
+        help="print the average even when tasks are unscored (refused by default: "
+        "that is not the run's score)",
     )
     args = parser.parse_args()
 
@@ -290,7 +313,7 @@ def main() -> int:
     run_dir = (RESULTS_ROOT / args.run) if args.run else latest_run()
     simulations = load_simulations(run_dir)
     if not simulations:
-        raise SystemExit(f"{run_dir} 里没有模拟记录")
+        raise SystemExit(f"{run_dir} contains no simulation records")
 
     summary_path = run_dir / "summary.json"
     summary: dict[str, Any] = {}
@@ -310,12 +333,13 @@ def main() -> int:
     ]
     durations = [float(sim.get("duration") or 0) for sim in simulations]
 
-    print(f"运行目录：{run_dir.name}")
-    print(f"被测模型：{agent_model}    模拟数：{count}")
+    print(f"run directory: {run_dir.name}")
+    print(f"model under test: {agent_model}    simulations: {count}")
 
-    # 缺题时**默认不报平均分**。上游把服务端故障的题从分母里剔掉，
-    # 40 题丢 5 题会算出 0.886 而不是 0.875——丢题不报错，还让成绩更好看。
-    # 一个更好看的数字比一个报错危险得多，所以这里宁可什么都不给。
+    # With tasks missing, no average is printed by default. Upstream drops
+    # infrastructure failures from the denominator, so losing 5 of 40 tasks yields 0.886
+    # instead of 0.875: the loss raises no error and makes the score look better. A
+    # better-looking number is far more dangerous than an error, so nothing is printed.
     expected = int(summary.get("results", {}).get("expected_count") or 0) or len(
         summary.get("task_ids") or []
     )
@@ -327,20 +351,21 @@ def main() -> int:
             if (sim.get("reward_info") or {}).get("reward") is None
         ]
         print()
-        print(f"[拒绝报分] 应有 {expected} 题，只有 {len(rewards)} 题拿到分数，缺 {missing} 题。")
-        print(f"           未评分：{sorted(set(unscored), key=lambda t: (len(t), t))}")
-        print("           补跑：uv run python scripts/resume_run.py " + run_dir.name)
-        print("           只想看跑通那部分的平均分：加 --allow-incomplete")
+        print(
+            f"[no score reported] expected {expected} tasks, only {len(rewards)} are scored, "
+            f"{missing} missing."
+        )
+        print(f"           unscored: {sorted(set(unscored), key=lambda t: (len(t), t))}")
+        print("           resume:   uv run python scripts/resume_run.py " + run_dir.name)
+        print("           to see the average over what did run: add --allow-incomplete")
     elif rewards:
         avg = sum(rewards) / len(rewards)
-        label = "平均奖励"
+        label = "average reward"
         if missing > 0:
-            label = f"平均奖励（**仅跑通的 {len(rewards)} 题**，非本轮成绩）"
-        print(
-            f"{label}：{avg:.4f}    满分题数：{sum(1 for r in rewards if r >= 1.0)}/{len(rewards)}"
-        )
+            label = f"average reward (over the {len(rewards)} scored tasks only, not the run)"
+        print(f"{label}: {avg:.4f}    passed: {sum(1 for r in rewards if r >= 1.0)}/{len(rewards)}")
     if durations:
-        print(f"平均时长：{sum(durations) / len(durations):.0f} 秒/题")
+        print(f"average duration: {sum(durations) / len(durations):.0f}s per task")
 
     print_scope_breakdown(simulations)
 
@@ -350,59 +375,74 @@ def main() -> int:
     user = roles.get("user", RoleUsage())
 
     print(
-        f"\n每题均值（被测 Agent 侧）："
-        f"输入 {agent.prompt / count:.0f} tok（缓存命中 {agent.cache_hit_rate:.0%}），"
-        f"输出 {agent.completion / count:.0f} tok"
+        f"\nper task (agent side): input {agent.prompt / count:.0f} tok "
+        f"({agent.cache_hit_rate:.0%} cache hits), output {agent.completion / count:.0f} tok"
     )
-    print(f"被测成本：{format_cost(agent_model, agent)}（价格快照 {PRICE_SNAPSHOT_DATE}）")
+    print(f"agent cost: {format_cost(agent_model, agent)} (price snapshot {PRICE_SNAPSHOT_DATE})")
 
-    # 与上游 litellm 的账交叉核对。两条完全独立的路径：litellm 逐次调用累加，
-    # 我们按 token 总量折算。注册人民币而不是换算美元，图的就是这里能**严格相等**；
-    # 对不上就是有一方错了，不是舍入。
+    # Cross-check against upstream litellm accounting. Two independent paths: litellm
+    # sums per call, this script computes from total tokens. Registering CNY rather than
+    # converting to USD is what makes exact equality possible here; a mismatch means one
+    # of them is wrong, not that rounding differs.
     upstream = summary.get("results", {}).get("agent_cost_reported_by_upstream")
     ours = role_cost(agent_model, agent)
     if isinstance(upstream, int | float) and ours is not None:
         if upstream == 0:
-            print("    上游 litellm 记账为 0——该轮跑在价格注册之前，不是真的免费")
+            print(
+                "    upstream litellm recorded 0: this run predates price registration, "
+                "it was not free"
+            )
         elif abs(upstream - ours) <= max(1e-6, ours * 1e-6):
-            print(f"    与上游 litellm 独立记账一致（{upstream:.6f} 元），缓存与推理口径均已对上")
+            print(
+                f"    matches upstream litellm accounting ({upstream:.6f} CNY); cache and "
+                "reasoning conventions agree"
+            )
         else:
             print(
-                f"    [不一致] 上游 litellm 记 {upstream:.6f} 元，本脚本折算 {ours:.6f} 元。"
-                "两套账应当严格相等，请先查明原因再引用任何成本数字"
+                f"    [mismatch] upstream litellm says {upstream:.6f} CNY, this script "
+                f"computes {ours:.6f} CNY. The two must be exactly equal; find out why "
+                "before citing any cost figure"
             )
-    print(f"模拟用户：{format_cost(user_model, user)}")
+    print(f"simulated user: {format_cost(user_model, user)}")
     if user.reasoning and user.completion:
         print(
-            f"    模拟用户 {user.reasoning / user.completion:.0%} 的输出是推理 token，"
-            f"按输出价计费——此前完全没算这笔"
+            f"    {user.reasoning / user.completion:.0%} of the simulated user's output is "
+            "reasoning tokens, billed at the output rate, which was previously not counted"
         )
     judge_cost = print_judge_cost(summary, judge_model)
 
-    # 三个角色的合计。任何一个角色算不出来，合计就只能给下界并明说——
-    # 把「价格未取得」当成 0 累加，正是本项目文档反复警告的那种假账。
+    # Total across the three roles. If any role cannot be computed, only a lower bound is
+    # given and said so: adding an unavailable price as 0 is exactly the false accounting
+    # this project's documentation warns about.
     parts: dict[str, float | None] = {
-        "被测": role_cost(agent_model, agent),
-        "模拟用户": role_cost(user_model, user),
-        "判官": judge_cost,
+        "agent": role_cost(agent_model, agent),
+        "simulated user": role_cost(user_model, user),
+        "judge": judge_cost,
     }
     unknown = [name for name, value in parts.items() if value is None]
     total = sum(value for value in parts.values() if value is not None)
     share = "    ".join(f"{n} {v:.4f}" for n, v in parts.items() if v is not None)
     if unknown:
-        print(f"\n三角色合计：≥ {total:.4f} 元（{share}）")
-        print(f"    {'、'.join(unknown)} 的单价未取得，**未计入**——缺价不等于免费。")
+        print(f"\nthree-role total: >= {total:.4f} CNY ({share})")
+        print(
+            f"    no price available for {', '.join(unknown)}, so it is excluded; "
+            "a missing price does not mean free."
+        )
     else:
-        print(f"\n三角色合计：{total:.4f} 元（{share}）    每题 {total / count:.4f} 元")
+        print(f"\nthree-role total: {total:.4f} CNY ({share})    {total / count:.4f} CNY per task")
 
     if args.project and count:
         scale = args.project / count
-        # 评测栈（模拟用户 + 判官）与被测模型无关，换被测模型这部分不变，
-        # 所以可以按题数线性放大后加到每个候选的成本上。
+        # The evaluation stack (simulated user plus judge) is independent of the model
+        # under test, so it scales linearly with task count and can be added to each
+        # candidate's cost.
         stack_cost = sum(
-            value for name, value in parts.items() if name != "被测" and value is not None
+            value for name, value in parts.items() if name != "agent" and value is not None
         )
-        print(f"\n推算 {args.project} 题（按本次实测的缓存命中率 {agent.cache_hit_rate:.0%}）：")
+        print(
+            f"\nprojection for {args.project} tasks "
+            f"(at this run's measured cache hit rate of {agent.cache_hit_rate:.0%}):"
+        )
         for model in sorted(DASHSCOPE_PRICES):
             projected = RoleUsage(
                 prompt=int(agent.prompt * scale),
@@ -411,15 +451,23 @@ def main() -> int:
             )
             merged = role_cost(model, projected)
             tail = (
-                f"    含评测栈 {merged + stack_cost * scale:.2f} 元"
+                f"    with the stack {merged + stack_cost * scale:.2f} CNY"
                 if merged is not None and not unknown
                 else ""
             )
             print(f"  {model:<26}{format_cost(model, projected)}{tail}")
-        print(f"  评测栈（模拟用户 + 判官）按本次实测线性放大：{stack_cost * scale:.2f} 元")
+        print(
+            f"  evaluation stack (simulated user + judge) scaled linearly from this run: "
+            f"{stack_cost * scale:.2f} CNY"
+        )
         if unknown:
-            print(f"  注意：{'、'.join(unknown)} 缺价，评测栈这笔是**下界**。")
-        print("  按本次用量推算；不同模型话多话少、缓存命中率不同都会带来偏差。")
+            print(
+                f"  note: {', '.join(unknown)} has no price, so the stack figure is a lower bound."
+            )
+        print(
+            "  Projected from this run's usage; models differ in verbosity and cache hit "
+            "rate, which shifts the estimate."
+        )
 
     return 0
 

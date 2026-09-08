@@ -1,8 +1,9 @@
-"""丢题必须被发现，且不能算出一个更好看的平均分。
+"""A lost task must be noticed and must not produce a better-looking average.
 
-这是实测过的缺陷，不是假想：2026-09-07 一轮 40 题 holdout 有 5 题因服务端额度
-耗尽而未开始，上游把这 5 题从分母里剔掉，`avg_reward` 显示 0.886——
-而补齐之后的真实成绩是 0.875。**丢题让成绩变好看**，比直接崩溃危险得多。
+This is a measured defect, not a hypothesis: on 2026-09-07 a 40-task holdout run had 5
+tasks that never started because the provider quota ran out. Upstream dropped those 5
+from the denominator and `avg_reward` read 0.886, while the completed run scored 0.875.
+Losing tasks improved the score, which is far more dangerous than a crash.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from run_eval import summarize
 
 
 class FakeSim:
-    """summarize() 读的是对象属性，不是 dict。"""
+    """summarize() reads attributes, not dict keys."""
 
     def __init__(self, task_id: str, reward: float | None, reason: str) -> None:
         self.task_id = task_id
@@ -37,10 +38,10 @@ class FakeSim:
 
 @pytest.fixture
 def run_dir() -> Iterator[Path]:
-    """自建临时目录，不用 pytest 的 tmp_path。
+    """Build a temporary directory instead of using pytest's tmp_path.
 
-    本机 `Temp/pytest-of-*` 是历史遗留、权限损坏且删不掉，tmp_path 会直接
-    PermissionError。这与被测逻辑无关，换个目录即可。
+    On this machine `Temp/pytest-of-*` is a leftover with broken permissions that cannot
+    be removed, and tmp_path raises PermissionError. Unrelated to the code under test.
     """
     with tempfile.TemporaryDirectory(prefix="rsa_run_") as d:
         yield Path(d)
@@ -79,10 +80,12 @@ class TestSummarizeReconcilesAgainstExpected:
         assert summarize(sims, expected=2)["incomplete"] is False
 
     def test_avg_reward_is_still_the_partial_average(self) -> None:
-        """avg_reward 本身不改口径——改的是"它旁边必须有 incomplete 标记"。
+        """avg_reward keeps its meaning; what changed is that an incomplete flag sits
+        next to it.
 
-        悄悄把分母换成 expected 会更糟：那等于把没跑的题按 0 分计，
-        同样是编造。正确的做法是拒绝把这个数当成绩。
+        Quietly switching the denominator to `expected` would be worse: that scores
+        tasks that never ran as 0, which is equally invented. The right response is to
+        refuse to treat the number as the run's score.
         """
         sims = [FakeSim("0", 1.0, "user_stop"), FakeSim("1", None, "infrastructure_error")]
         out = summarize(sims, expected=2)
@@ -92,7 +95,8 @@ class TestSummarizeReconcilesAgainstExpected:
 
 class TestResumedTasksAreDeduplicated:
     def test_scored_record_replaces_the_failed_one(self, run_dir: Path) -> None:
-        """补跑会让同一题出现两次，两条都算会让模拟数虚增、缺口永远归不了零。"""
+        """A resume makes one task appear twice; counting both inflates the simulation
+        count and keeps the gap from ever reaching zero."""
         write_run(run_dir, [sim("0", 1.0), sim("1", None)], "part1.json")
         write_run(run_dir, [sim("1", 1.0)], "resume_x.json")
         merged = load_simulations(run_dir)
@@ -106,7 +110,8 @@ class TestResumedTasksAreDeduplicated:
         assert unscored_task_ids(run_dir) == ["1"]
 
     def test_different_trials_are_kept_apart(self, run_dir: Path) -> None:
-        """多轮重复实验里同一题会合法地出现多次，不能被当成补跑去重掉。"""
+        """Repeated trials legitimately produce the same task more than once, and those
+        must not be deduplicated as resumes."""
         a, b = sim("0", 1.0), sim("0", 0.0)
         b["trial"] = 1
         write_run(run_dir, [a, b])
@@ -114,7 +119,7 @@ class TestResumedTasksAreDeduplicated:
 
 
 class TestResumeRefusesADifferentStack:
-    """补跑的题必须与原轮同栈，否则合并回去是两个栈的混合。"""
+    """Resumed tasks must run on the original stack, or merging mixes two stacks."""
 
     @pytest.fixture
     def settings(self, monkeypatch: pytest.MonkeyPatch) -> Settings:
@@ -129,40 +134,44 @@ class TestResumeRefusesADifferentStack:
         assert rebuild_stack(settings, described).agent_model == "deepseek-v4-pro"
 
     def test_changed_user_simulator_is_refused(self, settings: Settings) -> None:
-        """有人改了 FROZEN_USER_SIMULATOR 之后来补跑旧运行——必须拦下。
+        """Someone changes FROZEN_USER_SIMULATOR and then resumes an older run.
 
-        这不是假想：模拟用户 2026-09-07 刚从 qwen3.6-plus 换成 glm-5.3-flash，
-        换型前的运行目录还都在仓库里。
+        Not hypothetical: the simulated user changed from qwen3.6-plus to glm-5.3-flash
+        on 2026-09-07, and the pre-switch run directories are still in the repository.
         """
         described = self._described(settings) | {"user_simulator": "qwen3.6-plus-2026-04-02"}
-        with pytest.raises(SystemExit, match="评测栈与原轮不一致"):
+        with pytest.raises(SystemExit, match="differs from the original run"):
             rebuild_stack(settings, described)
 
     def test_replayed_run_params_are_not_treated_as_drift(self, settings: Settings) -> None:
-        """思考档位是调用方当时选的，补跑照抄就行——核对它等于自己跟自己比。"""
+        """The thinking level was the caller's choice and a resume copies it; verifying
+        it would be comparing a value with itself."""
         described = self._described(settings) | {"agent_thinking_effort": "low"}
         assert rebuild_stack(settings, described).agent_thinking_effort == "low"
 
     def test_changed_judge_is_refused(self, settings: Settings) -> None:
-        """判官换了就是换了尺子——这正是 A 轮 0.800 vs 0.600 不可比的原因。"""
+        """A different judge is a different ruler, which is why 0.800 and 0.600 from two
+        rounds were not comparable."""
         described = self._described(settings) | {"nl_judge": "some-other-judge"}
-        with pytest.raises(SystemExit, match="评测栈与原轮不一致"):
+        with pytest.raises(SystemExit, match="differs from the original run"):
             rebuild_stack(settings, described)
 
 
 class TestResumeKnowsWhichSubjectItIsResuming:
-    """补跑必须用**同一个被测对象**。
+    """A resume must use the same subject under test.
 
-    上游 agent 与带护栏的 agent 是两个不同的被测对象，成绩不可比。
-    用另一个去补跑，就是把两者混进同一个目录，而合并后的平均分
-    看不出任何异常——正是 resume_run 存在要防的那类掺假。
+    Upstream's agent and the guarded agent are different subjects whose scores are not
+    comparable. Resuming with the other one mixes both into one directory, and the
+    merged average looks entirely normal, which is the adulteration resume_run exists to
+    prevent.
 
-    实际踩过：`--guarded` 加进来时 summary.json 根本没记被测对象，
-    resume_run 会默默用上游 agent 去补带护栏的轮次。
+    This happened: when `--guarded` was added, summary.json did not record the subject at
+    all, and resume_run would silently have used the upstream agent to fill a guarded run.
     """
 
     def _resolve(self, name: str, summary: dict[str, Any]) -> Any:
-        """本机的 pytest tmp_path 有权限问题，改用 TemporaryDirectory。"""
+        """pytest's tmp_path has permission problems on this machine; use
+        TemporaryDirectory."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
         from resume_run import resolve_subject
 
@@ -178,14 +187,16 @@ class TestResumeKnowsWhichSubjectItIsResuming:
         assert self._resolve("r_upstream", {"agent_under_test": "upstream"}) is False
 
     def test_pre_m06_run_without_the_field_is_upstream(self) -> None:
-        """M0.6 之前只有上游一个被测对象，缺字段按 upstream 处理。"""
+        """Before M0.6 there was only the upstream subject, so a missing field means
+        upstream."""
         assert self._resolve("20260907T080504Z_x_holdout", {}) is False
 
     def test_missing_field_on_a_guarded_looking_dir_is_refused(self) -> None:
-        """目录名说 guarded 而字段缺失——两个信号打架，宁可中止也不猜。"""
-        with pytest.raises(SystemExit, match="无法确认被测对象"):
+        """The directory name says guarded while the field is missing: two signals
+        disagree, so abort rather than guess."""
+        with pytest.raises(SystemExit, match="cannot be confirmed"):
             self._resolve("r_guarded", {})
 
     def test_contradiction_between_name_and_record_is_refused(self) -> None:
-        with pytest.raises(SystemExit, match="不一致"):
+        with pytest.raises(SystemExit, match="disagree"):
             self._resolve("r_upstream", {"agent_under_test": "guarded"})
