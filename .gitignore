@@ -7,27 +7,29 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# 密钥：任何情况下都不进 Git
+# Secrets: never enter Git under any circumstance
 .env
 .env.*
 !.env.example
 *.key
 
-# 上游基准按固定 commit 拉取，不入库（见 scripts/fetch_tau2.py）
+# Upstream benchmark is fetched at a pinned commit, not committed (see scripts/fetch_tau2.py)
 third_party/
 
-# 评测结果：逐轮对话轨迹体积大（每题约 100KB），不默认入库；
-# 每次运行的 summary.json 必须入库，否则报告里的数字无法追溯到具体运行。
-# 上游把 save_to 当目录用，原始轨迹落在 <名字>.json/ 里，约 100KB/题，不入库。
-# 用通配而不是写死 simulations.json：提前终止会落盘成 phase1.json/、phase2.json/，
-# 写死名字会让这些目录漏网（曾经真的漏过一次）。
+# Evaluation results: per-turn conversation traces are large (about 100KB per task) and are
+# not committed by default; each run's summary.json must be committed, or the numbers in a
+# report cannot be traced back to a specific run.
+# Upstream treats save_to as a directory, so raw traces land in <name>.json/ at about 100KB
+# per task and are not committed.
+# Use a wildcard rather than hard-coding simulations.json: an early stop writes phase1.json/
+# and phase2.json/, and a hard-coded name lets those directories slip through (it happened).
 evaluation/results/**/*.json/
-# 但这两类必须入库——报告里的每个数字都要能回溯到具体运行
+# These two must be committed: every number in a report has to trace back to a run.
 !evaluation/results/**/summary.json
 !evaluation/results/**/judge_recheck_*.json
 
-# 本地启停的运行时产物：进程登记（PID + 启动时刻）与服务日志。
-# 登记文件是机器相关的，日志可能含请求内容，都不入库。
+# Runtime artefacts of local start/stop: the process registry (PID + start time) and service
+# logs. The registry is machine-specific and the logs may contain request content.
 .local/
 
 # OS / IDE

@@ -1,11 +1,12 @@
-"""litellm 的成本必须与我们自己的折算**严格相等**。
+"""litellm's cost must be exactly equal to our own conversion.
 
-这条相等关系是选择"注册人民币而不是换算美元"的全部理由：
-没有汇率假设，两套账就能对得上，对不上就是 bug 而不是舍入。
+That equality is the whole reason for registering prices in CNY rather than converting to
+USD: with no exchange-rate assumption the two accounts must agree, and a disagreement is a
+bug rather than rounding.
 
-背景：上游用 `completion_cost()` 记账，实测它对我们的每次调用都抛异常，
-`get_response_cost()` 捕获后 `return 0.0`——summary.json 里
-`agent_cost_reported_by_upstream` 长期恒为 0 就是这么来的。
+Background: upstream accounts with `completion_cost()`, which was measured to raise on
+every one of our calls; `get_response_cost()` catches it and returns 0.0, which is why
+`agent_cost_reported_by_upstream` in summary.json stayed at 0.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from retail_support_agent.pricing import (
     register_with_litellm,
 )
 
-pytest.importorskip("litellm", reason="litellm 属 bench 组，未装则跳过")
+pytest.importorskip("litellm", reason="litellm is in the bench group; skip when not installed")
 
 SELECTED = "deepseek-v4-pro"
 
@@ -45,13 +46,16 @@ def _response(model: str, prompt: int, completion: int) -> object:
 
 
 class TestKeysMatchWhatWeActuallySend:
-    """按错的键注册等于没注册——而且不会报错，成本继续是 0。"""
+    """Registering under the wrong key is the same as not registering: no error is raised
+    and the cost stays 0."""
 
     def test_keys_carry_the_openai_prefix(self) -> None:
-        """我们走 OpenAI 兼容端点，下发的模型名是 `openai/<model>`。
+        """We call the OpenAI-compatible endpoint and send the model name as
+        `openai/<model>`.
 
-        litellm 由此推断 custom_llm_provider=openai 并按这个前缀查表；
-        注册裸名字查不到，实测报 "This model isn't mapped yet"。
+        litellm infers custom_llm_provider=openai from that and looks up the table under the
+        same prefix. A bare name is not found, and the observed error is
+        "This model isn't mapped yet".
         """
         table = litellm_model_cost()
         assert all(key.startswith(LITELLM_PREFIX) for key in table)
@@ -59,7 +63,9 @@ class TestKeysMatchWhatWeActuallySend:
     def test_every_frozen_role_is_registered(self) -> None:
         table = litellm_model_cost()
         for model in (SELECTED, FROZEN_USER_SIMULATOR, FROZEN_NL_JUDGE):
-            assert litellm_model(model) in table, f"{model} 未注册，它的成本会被算成 0"
+            assert litellm_model(model) in table, (
+                f"{model} is not registered, so its cost would be counted as 0"
+            )
 
 
 class TestRegisteredCostMatchesOurOwn:
@@ -77,7 +83,8 @@ class TestRegisteredCostMatchesOurOwn:
         assert theirs == pytest.approx(ours, rel=1e-12)
 
     def test_registration_makes_the_zero_go_away(self) -> None:
-        """注册前 completion_cost 抛异常（上游吞掉后返回 0.0），注册后有真数。"""
+        """Before registration completion_cost raises (upstream swallows it and returns
+        0.0); after registration it returns a real number."""
         from litellm import completion_cost
 
         register_with_litellm()
@@ -85,10 +92,11 @@ class TestRegisteredCostMatchesOurOwn:
         assert cost > 0
 
     def test_the_currency_is_cny_and_says_so(self) -> None:
-        """数值是人民币。litellm 与 Langfuse 都会给它加美元符号，那是符号错、不是数值错。
+        """The values are CNY. litellm and Langfuse both label them with a dollar sign,
+        which is a wrong symbol, not a wrong number.
 
-        这条测试的作用是：谁要把它改成美元，得先来改这里，
-        顺带被迫读到"为什么不引汇率"的理由。
+        This test exists so that anyone switching to USD has to change it first, and is
+        forced to read why no exchange rate is introduced.
         """
         assert LITELLM_COST_CURRENCY == "CNY"
         entry = litellm_model_cost()[litellm_model(SELECTED)]
@@ -99,23 +107,26 @@ class TestRegisteredCostMatchesOurOwn:
 
 class TestCacheAndTierAreCarriedOver:
     def test_cache_hit_price_is_registered_under_both_names(self) -> None:
-        """litellm 在不同代码路径上读的不是同一个字段名，只给一个会漏。"""
+        """litellm reads different field names on different code paths, so registering
+        only one of them misses."""
         entry = litellm_model_cost()[litellm_model(SELECTED)]
         assert entry["cache_read_input_token_cost"] == entry["input_cost_per_token_cache_hit"]
 
     def test_deepseek_tier_is_reflected(self) -> None:
-        """DeepSeek 谷时价是峰时的一半，注册表必须跟着时段走。"""
+        """DeepSeek off-peak prices are half of peak, so the registry must follow the
+        time of day."""
         from datetime import UTC, datetime
 
-        peak = datetime(2026, 9, 7, 2, 0, tzinfo=UTC)  # 北京时间周一 10:00
-        off = datetime(2026, 9, 7, 20, 0, tzinfo=UTC)  # 北京时间周二 04:00
+        peak = datetime(2026, 9, 7, 2, 0, tzinfo=UTC)  # 10:00 Monday, Beijing time
+        off = datetime(2026, 9, 7, 20, 0, tzinfo=UTC)  # 04:00 Tuesday, Beijing time
         key = litellm_model(SELECTED)
         peak_cost = float(litellm_model_cost(peak)[key]["input_cost_per_token"])
         off_cost = float(litellm_model_cost(off)[key]["input_cost_per_token"])
         assert peak_cost == pytest.approx(off_cost * 2)
 
     def test_only_one_tier_is_registered_at_a_time(self) -> None:
-        """同一个模型名不能同时挂两档价——后写的会覆盖先写的，结果取决于字典顺序。"""
+        """One model name cannot carry two tiers at once: the later write overwrites the
+        earlier one and the result depends on dict order."""
         table = litellm_model_cost()
         assert sum(1 for k in table if k == litellm_model(SELECTED)) == 1
-        assert set(Tier)  # 两档都还在定义里，只是每次注册取其一
+        assert set(Tier)  # both tiers are still defined; each registration picks one

@@ -1,14 +1,16 @@
-# 演示流程存档说明
+# Demo run archive
 
-**权威记录：`20260906T132442Z/`** —— 四个流程（查询 / 取消 / 退货 / 越权拒绝）在最终代码上的完整运行。
+**Authoritative record: `20260906T132442Z/`** - the four flows (lookup / cancel / return /
+refusal of an out-of-scope request) run end to end on the final code.
 
-其余目录是实现过程中的中间运行，代码已改变，**不要引用其结论**，保留是因为它们记录了
-`docs/M0.3_BUSINESS_LOOP.md` 第 6 节所述问题的现场：
+The other directories are intermediate runs from the implementation. The code has changed
+since, so **do not cite their conclusions**. They are kept because they record the actual
+occurrence of the problems described in section 6 of `docs/M0.3_BUSINESS_LOOP.md`:
 
-| 目录 | 当时的状态 |
+| Directory | State at the time |
 |---|---|
-| `20260906T131912Z` | 只跑了查询流程，验证接线可用 |
-| `20260906T132119Z` | 暴露"确认被问两次"，且 pydantic 序列化 bug 已修但流程未走完 |
-| `20260906T132208Z` | 尝试用提示词压制 Agent 自己的确认，与上游政策原文冲突 |
-| `20260906T132251Z` | 模型转而坚持走 τ²-bench 身份识别协议，促成"演示身份 / 评测协议"分界 |
-| `20260906T132334Z` | 取消流程首次完整跑通，数据库指纹确认写操作已落地 |
+| `20260906T131912Z` | Only the lookup flow, verifying the wiring works |
+| `20260906T132119Z` | Exposed the double confirmation; the pydantic serialization bug was fixed but the flow did not finish |
+| `20260906T132208Z` | Attempted to suppress the agent's own confirmation with a prompt, which conflicts with the upstream policy text |
+| `20260906T132251Z` | The model insisted on the tau2-bench identification protocol instead, leading to the demo-identity / evaluation-protocol boundary |
+| `20260906T132334Z` | First complete cancellation run, with the database fingerprint confirming the write landed |

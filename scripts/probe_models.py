@@ -1,14 +1,15 @@
-"""M0.2：对候选模型逐个执行能力探针，产出可复现的原始记录。
+"""M0.2: run capability probes against each candidate model and record the raw results.
 
-**本脚本会发起真实 API 调用并产生费用**（提示词极小、输出上限很低，成本可忽略）。
+This makes real API calls and costs money, though the prompts are tiny and the
+output caps low, so the amount is negligible.
 
-用法：
-    uv run python scripts/probe_models.py                    # 全部候选模型
-    uv run python scripts/probe_models.py --models glm-5.2   # 指定模型
-    uv run python scripts/probe_models.py --dry-run          # 只列出将要执行的探针
+Usage:
+    uv run python scripts/probe_models.py                    # every candidate
+    uv run python scripts/probe_models.py --models glm-5.2   # one model
+    uv run python scripts/probe_models.py --dry-run          # list the probes only
 
-结果写入 evaluation/capability_checks/<UTC 时间戳>/，含逐模型原始记录与汇总。
-密钥不出现在任何输出中。
+Results go to evaluation/capability_checks/<UTC timestamp>/ with per-model raw
+records and a summary. No key appears in any output.
 """
 
 from __future__ import annotations
@@ -32,13 +33,13 @@ from retail_support_agent.tau2_pin import REPO_ROOT
 
 OUTPUT_ROOT = REPO_ROOT / "evaluation" / "capability_checks"
 
-# 逐档探测的力度等级取各家文档的并集：哪些被接受本身就是要测的结论，
-# 而不是先假定某模型只支持某几档。
+# The levels probed are the union of every provider's documentation: which ones
+# are accepted is the result being measured, not an assumption to start from.
 EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def probe_plan() -> list[tuple[str, Callable[[OpenAI, str], mp.ProbeOutcome]]]:
-    """探针执行顺序。basic 必须在最前——它失败就没必要继续烧钱。"""
+    """Probe order. basic comes first: if it fails there is no point spending more."""
     plan: list[tuple[str, Callable[[OpenAI, str], mp.ProbeOutcome]]] = [
         ("basic", mp.probe_basic),
         ("tool_call", mp.probe_tool_call),
@@ -48,7 +49,8 @@ def probe_plan() -> list[tuple[str, Callable[[OpenAI, str], mp.ProbeOutcome]]]:
         ("truncation", mp.probe_truncation),
         ("thinking_off", mp.probe_thinking_off),
     ]
-    # 先用小上限探出各档位映射的预算（报错即证据），再用不设上限的方式测实际生效情况
+    # First read each level's mapped budget out of the server error under a small
+    # output cap, then measure what actually takes effect with no cap.
     plan += [
         (
             f"effort_budget_mapping_{level}",
@@ -72,7 +74,7 @@ def probe_plan() -> list[tuple[str, Callable[[OpenAI, str], mp.ProbeOutcome]]]:
 
 @dataclass
 class ModelReport:
-    """一个模型的全部探针结果。"""
+    """All probe results for one model."""
 
     model_id_requested: str
     outcomes: list[mp.ProbeOutcome]
@@ -86,7 +88,8 @@ class ModelReport:
 
 
 def run_model(client: OpenAI, model: str) -> ModelReport:
-    """跑完一个模型的全部探针；模型不可用时如实记录并停止，不改用别的模型。"""
+    """Run every probe for one model. An unavailable model is recorded as such and
+    the run stops; no substitute model is used."""
     plan = probe_plan()
     outcomes: list[mp.ProbeOutcome] = []
 
@@ -98,16 +101,18 @@ def run_model(client: OpenAI, model: str) -> ModelReport:
         print(f"  {name:<28} {outcome.status:<9} {json.dumps(detail, ensure_ascii=False)[:110]}")
 
         if name == "basic" and outcome.status != "ok":
-            print("  basic 失败，跳过该模型其余探针（不擅自替换模型）")
+            print("  basic failed; skipping this model's remaining probes")
             break
 
     return ModelReport(model, outcomes)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="M0.2 模型能力探针（会产生真实费用）")
+    parser = argparse.ArgumentParser(description="M0.2 model capability probes (spends real money)")
     parser.add_argument("--models", nargs="*", default=list(CANDIDATE_MODELS))
-    parser.add_argument("--dry-run", action="store_true", help="只打印计划，不发请求")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the plan without sending requests"
+    )
     args = parser.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
@@ -117,16 +122,16 @@ def main() -> int:
     if args.dry_run:
         names = [name for name, _ in probe_plan()]
         total = len(args.models) * len(names)
-        print(f"模型 {len(args.models)} 个 × 探针 {len(names)} 个 = {total} 次请求")
-        print("模型：" + ", ".join(args.models))
-        print("探针：" + ", ".join(names))
+        print(f"{len(args.models)} models x {len(names)} probes = {total} requests")
+        print("models: " + ", ".join(args.models))
+        print("probes: " + ", ".join(names))
         return 0
 
     try:
-        settings = Settings()  # type: ignore[call-arg]  # 字段由环境/.env 提供
+        settings = Settings()  # type: ignore[call-arg]  # fields come from env/.env
     except Exception as exc:
         print(
-            f"配置读取失败（检查 .env 中的 DASHSCOPE_API_KEY）：{type(exc).__name__}",
+            f"failed to read configuration (check DASHSCOPE_API_KEY in .env): {type(exc).__name__}",
             file=sys.stderr,
         )
         return 2
@@ -148,9 +153,12 @@ def main() -> int:
     summary = {
         "run_at": datetime.now(UTC).isoformat(),
         "base_url": settings.base_url,
-        "api_key": settings.key_presence(),  # 只记录"配了没配"，不含任何密钥内容
+        "api_key": settings.key_presence(),  # presence only, never any key content
         "models": args.models,
-        "note": "HTTP 200 不等于参数生效；结论须以 reasoning_tokens 差异或服务端报错为证据。",
+        "note": (
+            "HTTP 200 does not mean a parameter took effect; a conclusion needs a "
+            "difference in reasoning_tokens or an explicit server error as evidence."
+        ),
         "per_model_status": {
             r.model_id_requested: {o.name: o.status for o in r.outcomes} for r in reports
         },
@@ -159,7 +167,7 @@ def main() -> int:
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
 
-    print(f"\n原始记录已写入 {run_dir}")
+    print(f"\nraw records written to {run_dir}")
     return 0
 
 

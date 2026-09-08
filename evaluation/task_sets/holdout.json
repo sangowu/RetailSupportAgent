@@ -1,5 +1,5 @@
 {
-  "$comment": "保留验证集＝上游 test 划分。仅用于入围配置的独立验证，不得用于调参。",
+  "$comment": "The holdout is upstream's test split. It is used only for independent verification of a shortlisted configuration, never for tuning.",
   "source": "tau2-bench v1.0.1 split_tasks.json:test",
   "count": 40,
   "task_ids": [

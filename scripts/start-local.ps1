@@ -1,31 +1,35 @@
 <#
 .SYNOPSIS
-    本地一键启动：检查依赖与配置，起服务，等健康，打印网址。
+    Start the local stack: check prerequisites, start the services, wait for health,
+    print the URLs.
 
 .DESCRIPTION
-    起两个进程：
-      api  FastAPI 业务接口（默认 127.0.0.1:8000）
-      ui   Gradio 演示界面（默认 127.0.0.1:7860）
+    Starts two processes:
+      api  the FastAPI service (default 127.0.0.1:8000)
+      ui   the Gradio demo UI (default 127.0.0.1:7860)
 
-    只绑定 127.0.0.1。M0 用固定模拟身份，没有注册也没有鉴权——真正的认证是 M3
-    的独立主题，这里不做也不假装做，所以**绝不能把它暴露到公网**。
+    Both bind to 127.0.0.1 only. M0 uses a fixed simulated identity with no registration
+    and no authentication; real authentication is M3. This must not be exposed publicly.
 
-    起服务本身不花钱：健康检查与界面渲染都不调模型，只有真的发消息才会计费。
+    Starting costs nothing: health checks and rendering call no model, and only sending
+    a message is billed.
 
-    起不来时会把已经起来的那个一并停掉再退出——留下半套服务比什么都没起更糟：
-    界面能开、一发消息就报错，排查方向全错。
+    If one service fails to start, any already-started service is stopped before
+    exiting. Leaving half a stack running is worse than nothing: the UI opens, the first
+    message fails, and the investigation starts in the wrong place.
 
 .PARAMETER ApiPort
-    业务接口端口，默认 8000。
+    Port for the API, default 8000.
 
 .PARAMETER UiPort
-    演示界面端口，默认 7860。
+    Port for the demo UI, default 7860.
 
 .PARAMETER SkipUi
-    只起业务接口，不起界面。
+    Start only the API.
 
 .PARAMETER TimeoutSec
-    单个服务等待健康的上限，默认 90 秒。首次启动要导入 τ²-bench，会慢一些。
+    How long to wait for one service to become healthy, default 90 seconds. The first
+    start imports τ²-bench and is slower.
 
 .EXAMPLE
     pwsh scripts/start-local.ps1
@@ -46,85 +50,90 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "local-common.ps1")
 
 $repo = Get-RepoRoot
-$started = @()   # 已经起来的服务名，失败时按此回滚
+$started = @()   # services started so far, rolled back on failure
 
 function Fail([string]$Message) {
     Write-Host ""
-    Write-Host "启动失败：$Message" -ForegroundColor Red
+    Write-Host "startup failed: $Message" -ForegroundColor Red
     if ($started.Count -gt 0) {
-        Write-Host "正在清理本次已启动的服务……" -ForegroundColor Yellow
+        Write-Host "stopping the services started by this run..." -ForegroundColor Yellow
         foreach ($name in $started) {
             $r = Stop-OurProcess -Name $name
             Write-Host "  $name -> $($r.Status)"
         }
-        Write-Host "清理完成。" -ForegroundColor Yellow
+        Write-Host "cleanup done." -ForegroundColor Yellow
     } else {
-        Write-Host "本次没有启动任何服务，无需清理。"
+        Write-Host "nothing was started, so there is nothing to clean up."
     }
-    Write-Host "日志目录：$(Get-LogDir)"
+    Write-Host "log directory: $(Get-LogDir)"
     exit 1
 }
 
-# ── 起飞前检查 ────────────────────────────────────────────────
-# 这些全部**不打印任何密钥值**，只回答"配没配"。
+# -- preflight checks -----------------------------------------------------
+# None of these print a key value; they only answer whether one is configured.
 
-Write-Host "检查运行前提……"
+Write-Host "checking prerequisites..."
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    Fail "找不到 uv。安装见 https://docs.astral.sh/uv/getting-started/installation/"
+    Fail "uv not found. See https://docs.astral.sh/uv/getting-started/installation/"
 }
 
-# 服务直接用虚拟环境的解释器启动（理由见 Start-Service），所以它必须存在。
+# Services are launched with the virtualenv interpreter directly (see Start-Service),
+# so it must exist.
 $script:VenvPython = Join-Path $repo ".venv/Scripts/python.exe"
 if (-not (Test-Path $script:VenvPython)) {
-    Fail "找不到虚拟环境（$script:VenvPython）。先运行：uv sync --group bench"
+    Fail "virtualenv not found ($script:VenvPython). Run: uv sync --group bench"
 }
 
 $envFile = Join-Path $repo ".env"
 if (-not (Test-Path $envFile)) {
-    Fail "缺少 .env。先 `cp .env.example .env` 并填入密钥（.env 已被 gitignore）。"
+    Fail "no .env. Run `cp .env.example .env` and fill in the keys (.env is gitignored)."
 }
-# 只判断"这一行有没有非空值"，绝不把值本身打出来或写进日志。
+# Only whether the line has a non-empty value; the value itself is never printed or logged.
 $hasKey = Select-String -Path $envFile -Pattern '^\s*DASHSCOPE_API_KEY\s*=\s*\S' -Quiet
 if (-not $hasKey) {
-    Fail ".env 里 DASHSCOPE_API_KEY 为空。被测模型走 DashScope 端点，没有它连不上。"
+    Fail "DASHSCOPE_API_KEY is empty in .env. The model under test uses the DashScope endpoint."
 }
 
-# 领域环境要从固定 commit 的 τ²-bench 数据里加载订单，缺了会在**第一次发消息时**
-# 才炸——那时界面已经开着，看起来像模型的问题。所以提前查。
+# The domain environment loads orders from the pinned τ²-bench data. Without it the
+# failure appears on the first message, when the UI is already open and it looks like a
+# model problem, so it is checked up front.
 $dataDir = Join-Path $repo "third_party/tau2-bench/data"
 if (-not (Test-Path $dataDir)) {
-    Fail "缺少 τ²-bench 数据。先运行：uv run python scripts/fetch_tau2.py"
+    Fail "τ²-bench data is missing. Run: uv run python scripts/fetch_tau2.py"
 }
 
-# 领域环境 import tau2，它在 bench 依赖组里，默认 `uv sync` 不装。
+# The domain environment imports tau2, which lives in the bench dependency group and is
+# not installed by a plain `uv sync`.
 & $script:VenvPython -c "import tau2" 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    Fail "未安装 bench 依赖组（领域环境需要 tau2）。先运行：uv sync --group bench"
+    Fail "the bench dependency group is not installed (the domain needs tau2). Run: uv sync --group bench"
 }
 
-foreach ($check in @(@{ Port = $ApiPort; What = "业务接口" }, @{ Port = $UiPort; What = "演示界面" })) {
-    if ($SkipUi -and $check.What -eq "演示界面") { continue }
+foreach ($check in @(@{ Port = $ApiPort; What = "the API" }, @{ Port = $UiPort; What = "the demo UI" })) {
+    if ($SkipUi -and $check.What -eq "the demo UI") { continue }
     if (-not (Test-PortFree -Port $check.Port)) {
-        Fail "端口 $($check.Port)（$($check.What)）已被占用。先跑 scripts/stop-local.ps1，或换端口重试。"
+        Fail "port $($check.Port) ($($check.What)) is in use. Run scripts/stop-local.ps1 or pick another port."
     }
 }
 
-Write-Host "前提检查通过。" -ForegroundColor Green
+Write-Host "prerequisites ok." -ForegroundColor Green
 Initialize-LocalDirs
 
-# ── 启动 ──────────────────────────────────────────────────────
+# -- start ----------------------------------------------------------------
 
 function Start-Service {
     <#
-        起一个后台服务并等它健康。窗口隐藏，stdout/stderr 分别落盘
-        （Start-Process 不允许两者指向同一个文件）。
+        Start one background service and wait for it to become healthy. The window is
+        hidden and stdout and stderr go to separate files, because Start-Process does
+        not allow both to point at the same file.
 
-        **直接用虚拟环境里的 python，不走 `uv run`。** 实测踩过的坑：
-        `uv run` 会先起一个 uv 进程，真正的服务是它的子进程；我们登记到的 PID
-        是那个包装进程，停服时杀掉它**并不会**杀掉子进程——端口还占着、服务还活着，
-        而登记文件已经删了，从此没人管得了它。直接起 python 让"登记的 PID"
-        就是"服务本身"，身份核对才有意义。
+        The virtualenv python is launched directly rather than through `uv run`. This
+        was measured: `uv run` starts a uv process and the real service is its child, so
+        the recorded PID is the wrapper. Killing the wrapper does not kill the child,
+        which keeps holding the port while the record file is already deleted, leaving
+        nothing able to manage it. Launching python directly makes the recorded PID the
+        service itself, which is what makes the identity check meaningful.
     #>
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -135,7 +144,7 @@ function Start-Service {
     )
     $log = Get-LogPath $Name
     $errLog = "$log.err"
-    Write-Host "启动 $Name ……"
+    Write-Host "starting $Name ..."
     $proc = Start-Process -FilePath $script:VenvPython -ArgumentList $ArgumentList `
         -WorkingDirectory $repo -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $log -RedirectStandardError $errLog
@@ -145,12 +154,12 @@ function Start-Service {
 
     $wait = Wait-ForEndpoint -Url $HealthUrl -Process $proc -TimeoutSec $TimeoutSec
     if (-not $wait.Ok) {
-        Write-Host "  $Name 未能就绪：$($wait.Reason)" -ForegroundColor Red
-        Write-Host "  日志：$log"
-        Write-Host "  错误输出：$errLog"
-        Fail "$Name 启动失败"
+        Write-Host "  $Name did not become ready: $($wait.Reason)" -ForegroundColor Red
+        Write-Host "  log: $log"
+        Write-Host "  stderr: $errLog"
+        Fail "$Name failed to start"
     }
-    Write-Host "  $Name 就绪 -> $Url" -ForegroundColor Green
+    Write-Host "  $Name ready -> $Url" -ForegroundColor Green
 }
 
 $apiUrl = "http://127.0.0.1:$ApiPort"
@@ -166,21 +175,21 @@ if (-not $SkipUi) {
         -ArgumentList @("-m", "retail_support_agent.ui")
 }
 
-# ── 汇报 ──────────────────────────────────────────────────────
+# -- report ---------------------------------------------------------------
 
 $health = Test-Endpoint -Url "$apiUrl/health"
 Write-Host ""
-Write-Host "已启动（仅本机可访问）" -ForegroundColor Green
-Write-Host "  业务接口   $apiUrl        健康检查 $apiUrl/health"
-if (-not $SkipUi) { Write-Host "  演示界面   http://127.0.0.1:$UiPort" }
+Write-Host "started (local access only)" -ForegroundColor Green
+Write-Host "  API        $apiUrl        health $apiUrl/health"
+if (-not $SkipUi) { Write-Host "  demo UI    http://127.0.0.1:$UiPort" }
 if ($null -ne $health) {
-    Write-Host "  演示身份   $($health.demo_user_id)（τ²-bench 模拟数据，不是真实用户）"
+    Write-Host "  identity   $($health.demo_user_id) (τ²-bench simulated data, not a real user)"
 }
 Write-Host ""
-Write-Host "三类业务演示（会发起真实模型调用并计费）："
-Write-Host "  uv run python scripts/demo_flows.py            # 查询 / 取消 / 退货 一次跑完"
+Write-Host "demo flows (these make real model calls and are billed):"
+Write-Host "  uv run python scripts/demo_flows.py            # lookup / cancel / return in one go"
 Write-Host "  uv run python scripts/demo_flows.py --flow cancel"
 Write-Host ""
-Write-Host "重置演示数据：pwsh scripts/reset-demo.ps1"
-Write-Host "停止：        pwsh scripts/stop-local.ps1"
-Write-Host "日志：        $(Get-LogDir)"
+Write-Host "reset demo data: pwsh scripts/reset-demo.ps1"
+Write-Host "stop:            pwsh scripts/stop-local.ps1"
+Write-Host "logs:            $(Get-LogDir)"

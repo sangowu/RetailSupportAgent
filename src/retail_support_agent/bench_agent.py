@@ -1,29 +1,36 @@
-"""把本项目的护栏接进 τ²-bench，让自研实现成为**被测对象**。
+"""Plug this project's guard into τ²-bench so the in-house implementation is the
+subject under test.
 
-## 为什么需要这个模块
+## Why this module exists
 
-M0 的 0.8509 衡量的不是本项目的实现：评测跑的是上游自带的 `llm_agent`
-（`build_run_config()` 里 `agent="llm_agent"`），而写操作两段确认、确认绑定
-具体参数、订单归属校验这些本项目真正的主张，全在 `guardrails.py` 里，
-**只被 demo_flows 和单元测试用过**。上游那个 agent 里连 `confirm` 这个词都没有。
+M0's 0.8509 did not measure this project. The benchmark ran upstream's own
+`llm_agent` (`agent="llm_agent"` in `build_run_config()`), while this project's actual
+claims — two-stage confirmation for writes, confirmation bound to specific arguments,
+order ownership checks — all live in `guardrails.py` and were exercised only by
+demo_flows and unit tests. Upstream's agent does not contain the word `confirm`.
 
-本模块注册一个 `rsa_guarded`，让护栏第一次面对 114 道真实任务。
+This module registers `rsa_guarded`, putting the guard in front of 114 real tasks.
 
-## 继承而不是重写
+## Subclass, do not rewrite
 
-系统提示词、消息组织、LLM 调用一律沿用上游 `LLMAgent`，只覆写
-`generate_next_message` 这一处。这样与 `baseline-v2` 的对比才是「有没有护栏」，
-而不是「两套不同的实现」——后者什么也说明不了。
+The system prompt, message handling and LLM calls all come from upstream `LLMAgent`;
+only `generate_next_message` is overridden. That makes the comparison against
+`baseline-v2` a comparison of "guard or no guard" rather than of two different
+implementations, which would show nothing.
 
-## 与 M0.3 应用路径的一处关键差异
+## One difference from the M0.3 application path
 
-应用路径用固定模拟身份（`SessionState.user_id` 是给定的）。基准里没有这个前提：
-Agent 必须按上游政策**先完成身份识别**才知道在为谁服务。所以这里的身份是
-**从对话中建立**的：看 `find_user_id_by_*` 的返回值。身份未建立前一切写操作拒绝。
+The application path has a fixed simulated identity (`SessionState.user_id` is
+given). The benchmark does not: the agent must complete identification per upstream
+policy before it knows who it is serving. Identity here is therefore learned from the
+conversation, by reading what `find_user_id_by_*` returned. Every write is denied
+until an identity exists.
 
-同理，订单归属**只用对话里已经查到的信息**判断，不额外调用工具去查——
-额外调用会在成绩、成本和 action metrics 之外产生不被记录的副作用，
-让这一轮的数字不再可解释。查不到归属就要求先查，这本来也是政策要求的。
+Order ownership likewise uses only what the conversation has already looked up. No
+extra tool call is made: an extra call would produce side effects outside the score,
+the cost and the action metrics, making the run's numbers unexplainable. When
+ownership is unknown the guard asks for the lookup first, which the policy requires
+anyway.
 """
 
 from __future__ import annotations
@@ -45,10 +52,11 @@ from retail_support_agent.guardrails import (
 
 AGENT_NAME = "rsa_guarded"
 
-# 这两个工具的返回值就是用户 id（上游 retail 政策规定的身份识别入口）。
+# These two tools return the user id; they are the identification entry point in the
+# upstream retail policy.
 IDENTITY_TOOLS = frozenset({"find_user_id_by_email", "find_user_id_by_name_zip"})
 
-# 从这个工具的返回里能读到订单归属。
+# Order ownership is read from this tool's result.
 ORDER_LOOKUP_TOOL = "get_order_details"
 
 NO_IDENTITY_REASON = (
@@ -62,7 +70,7 @@ UNKNOWN_OWNER_REASON = (
 
 
 def _clean(raw: Any) -> str:
-    """上游工具返回值可能是 pydantic 模型，也可能已经是字符串。"""
+    """An upstream tool result may be a pydantic model or already a string."""
     if isinstance(raw, str):
         return raw
     dump = getattr(raw, "model_dump_json", None)
@@ -72,28 +80,31 @@ def _clean(raw: Any) -> str:
 
 
 class GuardState:
-    """一题一份的护栏状态。
+    """Guard state for one task.
 
-    **不能用模块级全局**：批量运行是并发的，全局变量会让不同题互相污染，
-    而污染的表现是"某几题莫名其妙通过了确认"——一个不会报错的错误。
+    Must not be module-level global state: batch runs are concurrent, and a global
+    would let tasks contaminate each other. The symptom would be a few tasks passing
+    confirmation for no visible reason, which raises no error.
     """
 
     def __init__(self) -> None:
         self.identity: str | None = None
         self.order_owner: dict[str, str] = {}
-        # ToolMessage 只带 id 不带工具名，所以要自己记住 id -> 名字，
-        # 否则工具结果回来时不知道它是身份查询还是订单查询。
+        # A ToolMessage carries an id but not the tool name, so the id -> name mapping
+        # is tracked here. Otherwise an arriving result cannot be classified as an
+        # identity lookup or an order lookup.
         self.call_names: dict[str, str] = {}
         self.confirmed: set[str] = set()
         self.pending: ProposedCall | None = None
-        # 留痕：这一题里护栏一共拦下了什么。跑完可据此把退步的题分类。
+        # Record of what the guard blocked in this task, used to classify regressions.
         self.interventions: list[dict[str, str]] = []
 
     def as_session(self) -> SessionState:
-        """借用应用侧的 SessionState 来复用 WriteGuard 的裁决逻辑。
+        """Borrow the application-side SessionState to reuse WriteGuard's logic.
 
-        身份未建立时不该走到这里——调用方要先拦掉，因为 SessionState.user_id
-        是必填的 str，塞一个占位值会让归属校验拿它去比对，判出误导性的结论。
+        Callers must block before reaching here when no identity exists:
+        SessionState.user_id is a required str, and a placeholder value would be
+        compared by the ownership check and produce a misleading verdict.
         """
         assert self.identity is not None
         state = SessionState(user_id=self.identity, limits=SessionLimits())
@@ -102,13 +113,14 @@ class GuardState:
 
 
 def observe_tool_result(guard: GuardState, name: str, content: str) -> None:
-    """从工具结果里更新身份与订单归属。
+    """Update identity and order ownership from a tool result.
 
-    解析失败一律当作"没学到东西"，绝不猜：猜错的后果是放行一次本该拦下的写操作。
+    A parse failure teaches nothing and is never guessed at: a wrong guess would let
+    through a write that should have been blocked.
     """
     if name in IDENTITY_TOOLS:
         candidate = content.strip().strip('"')
-        # 用户 id 形如 ava_moore_2033；上游查不到时返回的是一段错误说明
+        # A user id looks like ava_moore_2033; a failed lookup returns prose.
         if candidate and " " not in candidate and "\n" not in candidate:
             guard.identity = candidate
         return
@@ -127,15 +139,18 @@ def observe_tool_result(guard: GuardState, name: str, content: str) -> None:
 
 
 def review_call(guard: GuardState, known_tools: set[str], call: ProposedCall) -> GuardVerdict:
-    """对一次提议的工具调用做裁决。
+    """Judge one proposed tool call.
 
-    读操作直接放行；写操作依次过三关：身份已建立 -> 归属已知且相符 -> 已确认。
+    Reads pass. Writes go through three checks in order: identity established,
+    ownership known and matching, confirmation present.
 
-    归属的**唯一来源是对话里已经查到的信息**（`guard.order_owner`）。
-    这一点必须显式接进 `WriteGuard`：它本来会自己调 `owner_lookup` 去查，
-    而在基准里我们不额外调工具（理由见模块开头），所以把已学到的映射喂给它。
-    早先给了个恒返回 None 的 lookup，结果每一次写操作都被判成"订单不存在"——
-    看起来很安全，实际上把所有写操作都拦死了，且原因完全不可解释。
+    Ownership comes only from what the conversation already looked up
+    (`guard.order_owner`), and that mapping must be handed to `WriteGuard`
+    explicitly: it would otherwise call `owner_lookup` itself, and no extra tool
+    calls are made in the benchmark (see the module docstring). An earlier version
+    passed a lookup that always returned None, so every write was judged "order does
+    not exist" — apparently safe, in fact blocking every write for an unexplainable
+    reason.
     """
     from retail_support_agent.guardrails import WriteGuard
 
@@ -159,23 +174,23 @@ def review_call(guard: GuardState, known_tools: set[str], call: ProposedCall) ->
 
 
 def _read_only_session(guard: GuardState) -> SessionState:
-    """读操作的裁决用不到身份，但 WriteGuard 的签名要一个 SessionState。"""
+    """Reads do not need an identity, but WriteGuard's signature requires a SessionState."""
     return SessionState(user_id=guard.identity or "", limits=SessionLimits())
 
 
-# 明确的拒绝措辞：出现在答复任何位置都算否定。
-# 裸词 "don't" / "do not" 曾经在整句范围内一票否决，代价是任务 80：用户说
-# "my Spanish is decent but I don't think that's Spanish! ... YES — go ahead!"
-# ——一句谈论语言的话否掉了同一条消息里毫不含糊的同意。所以否定必须**指向动作**
-# 才算数：否定词后面若干字内要跟着一个动作动词。
+# A negation that points at an action counts anywhere in the reply.
+# Bare "don't" / "do not" used to veto the whole message, and that cost task 80: the
+# user wrote "my Spanish is decent but I don't think that's Spanish! ... YES — go
+# ahead!" and a sentence about language cancelled an unambiguous agreement in the same
+# message. A negation now counts only when an action verb follows within a few words.
 _NEGATED_ACTION = re.compile(
     r"\b(?:don't|dont|do not|never)\b[^.,;!?\n]{0,24}"
     r"\b(?:do|cancel|change|modify|update|return|exchange|place|proceed|submit|confirm|go)\b"
 )
-# 这些短语本身就是拒绝，不需要再找动词
-HARD_NEGATIVES = ("cancel that", "not yet", "hold off", "别", "不要", "先别")
-# 裸词 "no" / "不" 只在**开头那一小句**里才算否定（理由见 is_affirmative）。
-LEADING_NEGATIVES = ("no", "nope", "wait", "not", "不", "否")
+# These phrases are refusals on their own and need no verb.
+HARD_NEGATIVES = ("cancel that", "not yet", "hold off")
+# Bare "no" / "not" counts only in the first clause; see is_affirmative.
+LEADING_NEGATIVES = ("no", "nope", "wait", "not")
 POSITIVES = (
     "yes",
     "yep",
@@ -186,38 +201,37 @@ POSITIVES = (
     "ok",
     "okay",
     "sure",
-    "确认",
-    "对",
-    "是的",
 )
 
-_CLAUSE_BREAK = re.compile(r"[,;.!?\n—–:]")
+_CLAUSE_BREAK = re.compile(r"[,;.!?\n—–:]")  # noqa: RUF001 - dashes are clause breaks on purpose
 
 
 def is_affirmative(text: str) -> bool:
-    """判定用户是否明确同意。
+    """Whether the user explicitly agreed.
 
-    **否定词只在开头那一小句里才算否定。** 这不是为了宽松，是被一次真实死循环
-    逼出来的：模拟用户回复
+    Bare negations count only in the first clause. This is not leniency; it came out
+    of a real infinite loop. The simulated user replied
 
         Confirmed — cancel #W5199551, "no longer needed."
 
-    这是一句毫不含糊的同意，但里面引述的订单理由含有 "no longer"。原先用子串
-    匹配 "no"，于是把它判成拒绝；确认永远拿不到，模型重发、护栏再拦，
-    一题在同一步上循环 93 次直到撞上步骤上限，整题记 0 分。
+    which is unambiguous agreement, but the quoted cancellation reason contains "no
+    longer". Substring matching on "no" read it as a refusal, the confirmation never
+    arrived, the model resent the call, the guard blocked it again, and one task
+    looped 93 times on the same step until it hit the step limit and scored 0.
 
-    所以规则分三层：
-      - 指向动作的否定（"don't cancel" / "do not proceed"）出现在任何位置都算否定
-      - 现成的拒绝短语（cancel that / 别…）同样全句生效
-      - 裸词 no / not / 不 只看开头那一小句——后面引述的内容不算表态
+    The rule has three layers:
+      - a negation pointing at an action ("don't cancel", "do not proceed") counts anywhere
+      - explicit refusal phrases (cancel that, not yet, hold off) also count anywhere
+      - bare no / not counts only in the first clause, so quoted text is not a stance
 
-    第一层原先是裸的 "don't"，任务 80 上栽了一次：用户在一句谈论**语言**的话里
-    用了 "don't"，却把同一条消息里的 "YES — go ahead!" 一起否决掉，交换没执行，
-    整题 0 分。判否定的方向仍然从严——误判成拒绝只多一轮往返，误判成同意
-    就是一次未经确认的写入。
+    The first layer used to be a bare "don't", which failed on task 80: the user used
+    "don't" in a sentence about language and it cancelled "YES — go ahead!" in the same
+    message; the exchange never ran and the task scored 0. The bias remains toward
+    reading a refusal: a false refusal costs one extra round trip, while a false
+    agreement is an unconfirmed write.
 
-    与应用侧 `agent._is_affirmative` 分开实现：基准里的模拟用户说英文，
-    应用侧演示说中文。合并成一个函数会让两边的词表互相牵制。
+    Kept separate from the application-side `agent._is_affirmative` so the two word
+    lists do not constrain each other.
     """
     lowered = text.strip().lower()
     if not lowered:
@@ -236,10 +250,11 @@ def is_affirmative(text: str) -> bool:
 
 
 def build_agent_class() -> Any:
-    """延迟构造 Agent 类。
+    """Build the agent class lazily.
 
-    上游包在导入时就会读 `TAU2_DATA_DIR`，所以不能在模块顶层 import tau2——
-    那会让任何只想用 `guardrails` 的调用方被迫先准备好数据目录。
+    Upstream reads `TAU2_DATA_DIR` at import time, so `import tau2` cannot happen at
+    module level: that would force any caller who only wants `guardrails` to prepare a
+    data directory first.
     """
     from tau2.agent.llm_agent import LLMAgent, LLMAgentState
     from tau2.data_model.message import (
@@ -250,20 +265,22 @@ def build_agent_class() -> Any:
     )
 
     class GuardedState(LLMAgentState):  # type: ignore[misc]
-        """上游状态 + 本项目的护栏状态。
+        """Upstream state plus this project's guard state.
 
-        护栏状态挂在 state 上而不是 agent 实例上：批量运行是并发的，
-        实例属性会让不同题互相污染，而污染的表现是"某几题莫名其妙通过了确认"。
+        The guard state hangs off the state object rather than the agent instance:
+        batch runs are concurrent, and instance attributes would let tasks contaminate
+        each other, showing up as tasks that pass confirmation for no visible reason.
         """
 
         model_config = ConfigDict(arbitrary_types_allowed=True)
         guard: Any = None
 
     class GuardedAgent(LLMAgent):  # type: ignore[misc]
-        """上游 LLMAgent 外面套一层本项目的护栏。
+        """Upstream LLMAgent wrapped in this project's guard.
 
-        只覆写 `generate_next_message`：模型照常产出工具调用，我们在**发出之前**
-        逐个裁决。不允许的调用不会被发出去，改为向用户说明。
+        Only `generate_next_message` is overridden: the model produces tool calls as
+        usual and each one is judged before it is issued. A call that is not allowed is
+        never sent; an explanation goes to the user instead.
         """
 
         def __init__(self, tools: Any, domain_policy: str, llm: str, llm_args: Any = None) -> None:
@@ -281,7 +298,8 @@ def build_agent_class() -> Any:
         def generate_next_message(self, message: Any, state: Any) -> Any:
             guard: GuardState = state.guard
 
-            # 1) 先从进来的消息里学东西：工具结果给身份与归属，用户答复消费确认
+            # 1) Learn from the incoming message: tool results give identity and
+            #    ownership, a user reply consumes the pending confirmation.
             for tool_message in _incoming_tool_messages(message, MultiToolMessage, ToolMessage):
                 name = guard.call_names.get(tool_message.id)
                 if name and tool_message.content and not tool_message.error:
@@ -291,10 +309,10 @@ def build_agent_class() -> Any:
                     guard.confirmed.add(guard.pending.fingerprint)
                 guard.pending = None
 
-            # 2) 让上游照常生成
+            # 2) Let upstream generate as usual.
             assistant = self._generate_next_message(message, state)
 
-            # 3) 发出去之前逐个裁决
+            # 3) Judge every call before it goes out.
             calls = list(assistant.tool_calls or [])
             if not calls:
                 state.messages.append(assistant)
@@ -319,14 +337,17 @@ def build_agent_class() -> Any:
                 state.messages.append(assistant)
                 return assistant, state
 
-            # 一次里只要有一个被拦下，整条消息都不发工具调用：
-            # 上游要求一轮里要么发消息、要么发工具调用，不能两者兼有；
-            # 而"放行一半"会让用户看到的解释与实际发生的事对不上。
-            # **必须把 cost/usage/raw_data 原样带过来。** 模型那次调用真的发生过、
-            # 真的花了钱，扣下工具调用不会退款。上游 `get_cost()` 更狠：整条轨迹里
-            # 只要有一条 assistant 消息 cost 为 None，**整轮的 agent_cost 直接变成
-            # None**，于是 M0.5 建立的「与 litellm 独立记账交叉校验」当场失效——
-            # 而表现只是成本显示为 0，不报任何错。冒烟第一轮就踩了这个。
+            # If any call in a message is blocked, the message carries no tool calls at
+            # all: upstream requires a turn to be either text or tool calls, and
+            # letting half through would make the explanation the user sees disagree
+            # with what happened.
+            #
+            # cost/usage/raw_data must be carried over. The model call really happened
+            # and really cost money; withholding the tool call is not a refund.
+            # Upstream `get_cost()` goes further: if any assistant message in the
+            # trace has cost None, the whole run's agent_cost becomes None, which
+            # silently disables the M0.5 cross-check against litellm's independent
+            # accounting. The only symptom is a cost of 0. The first smoke run hit this.
             held = AssistantMessage.text(
                 "\n\n".join(blocked),
                 cost=assistant.cost,
@@ -349,9 +370,10 @@ def _incoming_tool_messages(message: Any, multi_cls: Any, single_cls: Any) -> li
 
 
 def register(force: bool = False) -> str:
-    """把带护栏的 Agent 注册进上游 registry，返回注册名。
+    """Register the guarded agent with the upstream registry and return its name.
 
-    重复注册上游会抛错，所以这里做成幂等的——脚本可能被同一进程调用多次。
+    Upstream raises on duplicate registration, so this is idempotent: a script may
+    call it more than once in the same process.
     """
     from tau2.registry import registry
 
@@ -361,7 +383,7 @@ def register(force: bool = False) -> str:
     agent_class = build_agent_class()
 
     def factory(tools: Any, domain_policy: str, llm: str, llm_args: Any = None, **_: Any) -> Any:
-        # 工厂会被传入 task / audio 等我们用不到的参数，一律吞掉。
+        # The factory is also passed task / audio arguments this agent does not use.
         return agent_class(tools=tools, domain_policy=domain_policy, llm=llm, llm_args=llm_args)
 
     registry.register_agent_factory(factory, AGENT_NAME)

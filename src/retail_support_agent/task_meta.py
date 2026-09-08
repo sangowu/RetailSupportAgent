@@ -1,12 +1,13 @@
-"""读取上游 Retail 任务的评分构成，回答"这题到底考什么"。
+"""Read the reward composition of upstream Retail tasks: what each task actually checks.
 
-存在的理由是一个实测发现：114 题里有 112 题在 `reward_basis` 里声明了
-NL_ASSERTION，但其中 **72 题的断言列表是空的**——上游对空列表直接返回 1.0，
-判官根本不会被调用。真正会走判官的只有 **40 题**。
+This module exists because of a measurement: 112 of 114 tasks declare NL_ASSERTION in
+`reward_basis`, but 72 of those have an empty assertion list, and upstream returns 1.0
+for an empty list without calling the judge. Only 40 tasks actually reach the judge.
 
-后果有两个，都必须靠代码而不是靠记忆来防：
-1. 冒烟若抽到无断言的题，会在"判官链路已验证"的假象下通过；
-2. 判官选型的影响面被高估三倍，成本与风险评估都会失真。
+Two consequences, both guarded by code rather than by memory:
+1. a smoke run that happens to pick assertion-free tasks passes while appearing to
+   have exercised the judge;
+2. the impact of judge selection is overstated threefold, distorting cost and risk.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ TASKS_PATH = DEFAULT_CHECKOUT / "data" / "tau2" / "domains" / "retail" / "tasks.
 
 @dataclass(frozen=True)
 class TaskFacts:
-    """一道题的评分构成。"""
+    """The reward composition of one task."""
 
     task_id: str
     reward_basis: tuple[str, ...]
@@ -32,14 +33,16 @@ class TaskFacts:
 
     @property
     def invokes_judge(self) -> bool:
-        """声明了 NL_ASSERTION 不算数，断言列表非空才会真的调判官。"""
+        """Declaring NL_ASSERTION is not enough; the judge runs only for a non-empty list."""
         return self.nl_assertion_count > 0
 
 
 @lru_cache(maxsize=1)
 def load_task_facts(tasks_path: Path = TASKS_PATH) -> dict[str, TaskFacts]:
     if not tasks_path.is_file():
-        raise FileNotFoundError(f"找不到上游任务文件 {tasks_path}，先运行 scripts/fetch_tau2.py")
+        raise FileNotFoundError(
+            f"upstream task file not found: {tasks_path}. Run scripts/fetch_tau2.py first"
+        )
     raw: Any = json.loads(tasks_path.read_text(encoding="utf-8"))
     tasks = raw.get("tasks", raw) if isinstance(raw, dict) else raw
     facts: dict[str, TaskFacts] = {}
@@ -55,14 +58,14 @@ def load_task_facts(tasks_path: Path = TASKS_PATH) -> dict[str, TaskFacts]:
 
 
 def judge_bearing_ids(split: str) -> list[str]:
-    """给定划分里真正会调用判官的题号，保持冻结清单里的原始顺序。"""
+    """Task ids in a split that actually invoke the judge, in frozen-list order."""
     facts = load_task_facts()
     ids: list[str] = load_task_set(split)["task_ids"]
     return [tid for tid in ids if tid in facts and facts[tid].invokes_judge]
 
 
 def split_composition(split: str) -> dict[str, int]:
-    """一个划分的评分构成统计，用于报告里说明样本覆盖了什么。"""
+    """Reward composition of a split, used in reports to state what a sample covers."""
     facts = load_task_facts()
     ids: list[str] = load_task_set(split)["task_ids"]
     known = [facts[tid] for tid in ids if tid in facts]

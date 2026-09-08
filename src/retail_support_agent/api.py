@@ -1,7 +1,7 @@
-"""FastAPI 服务：最小业务闭环的 HTTP 入口。
+"""FastAPI service: HTTP entry point for the minimal business loop.
 
-M0.3 阶段使用**固定模拟身份**，只绑定本地地址，不提供注册或公开访问。
-真正的认证（Cognito）是 M3 的独立主题，此处不做也不假装做。
+M0.3 runs with a fixed simulated identity, binds to localhost only, and offers no
+registration or public access. Real authentication (Cognito) is M3.
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
 from retail_support_agent.store import Store
 
-# M0.3 的固定演示身份，来自 τ²-bench 模拟数据，不是真实用户。
-# 选它是因为名下同时有 pending 订单（可取消）与 delivered 订单（可退货），
-# 三类业务都能在同一身份下演示。
+# Fixed demo identity from the τ²-bench simulated data, not a real user. Chosen
+# because it owns both a pending order (cancellable) and a delivered order
+# (returnable), so all three flows can be demonstrated under one identity.
 DEMO_USER_ID = "ava_moore_2033"
 
 
@@ -39,10 +39,11 @@ class ChatResponse(BaseModel):
 
 
 def make_store(settings: Settings) -> Store | None:
-    """配了 `RSA_DATABASE_URL` 就返回一个 Store，否则 None。
+    """Return a Store when `RSA_DATABASE_URL` is set, otherwise None.
 
-    没配库服务照样起得来，行为退回 M0 的内存会话。**数据库是能力，不是启动的
-    前提条件**——评测回路里就没有 PostgreSQL，硬性依赖会让评测直接跑不起来。
+    Without it the service still starts and falls back to M0 in-memory sessions. The
+    database is a capability, not a startup precondition: the evaluation loop has no
+    PostgreSQL, and a hard dependency would stop evaluation from running at all.
     """
     if settings.database_url is None:
         return None
@@ -51,11 +52,12 @@ def make_store(settings: Settings) -> Store | None:
 
 
 class SessionRegistry:
-    """会话表。同一会话串行处理。
+    """Session table. One session is processed serially.
 
-    配了数据库时，会话、消息、确认与写操作会落库（M1）；进程内仍保留 Agent
-    实例，因为领域环境本身还在内存里——**跨进程恢复对话是 M2 的主题**，
-    这里不宣称。
+    With a database configured, sessions, messages, confirmations and write
+    operations are persisted (M1). Agent instances still live in the process because
+    the domain environment is in memory. Resuming a conversation across processes is
+    M2 and is not claimed here.
     """
 
     def __init__(
@@ -73,7 +75,7 @@ class SessionRegistry:
 
     def get(self, session_id: str) -> RetailAgent:
         if session_id not in self._agents:
-            # 每个会话独立的领域环境，各持一份数据库副本，互不污染
+            # Each session gets its own domain environment and database copy.
             domain = RetailDomain()
             state = SessionState(user_id=self._user_id, limits=SessionLimits())
             chat_fn = make_chat_fn(self._settings, self._config)
@@ -86,14 +88,14 @@ class SessionRegistry:
         self._agents.pop(session_id, None)
 
     def reset_all(self) -> int:
-        """丢掉全部会话，返回丢掉的条数。
+        """Drop every session and return how many were dropped.
 
-        每个会话各持一份内存里的数据库副本（见 `get`），所以丢掉会话就等于把
-        演示数据恢复成 τ²-bench 的初始状态——**不涉及任何磁盘上的东西**，
-        评测结果、基线和 .env 都不会被碰到。
+        Each session holds its own in-memory database copy (see `get`), so dropping
+        sessions restores the demo data to the τ²-bench initial state. Nothing on
+        disk is touched: evaluation results, baselines and .env are unaffected.
 
-        返回条数是为了让调用方能说清"重置了什么"：0 条和 3 条都是成功，
-        但对操作者是两件不同的事。
+        The count lets the caller distinguish "reset 3 sessions" from "there were
+        none". Both are success, but they are different events for an operator.
         """
         count = len(self._agents)
         self._agents.clear()
@@ -110,7 +112,7 @@ def create_app(
     store: Store | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings()  # type: ignore[call-arg]
-    # 显式传入的 store 优先：测试要指向自己那个库，不能去连 .env 里配的那个。
+    # An explicit store wins: tests must reach their own database, not the one in .env.
     resolved_store = store if store is not None else make_store(resolved_settings)
     registry = SessionRegistry(
         resolved_settings, config or ModelConfig(), user_id, store=resolved_store
@@ -119,7 +121,8 @@ def create_app(
     app = FastAPI(
         title="RetailSupportAgent",
         version="0.0.0",
-        description="零售客服 Agent 最小业务闭环（M0.3，固定模拟身份，仅本地）",
+        description="Retail support agent, minimal business loop "
+        "(M0.3, fixed simulated identity, local only)",
     )
 
     @app.get("/health")
@@ -128,7 +131,8 @@ def create_app(
             "status": "ok",
             "milestone": "M0.3",
             "demo_user_id": user_id,
-            # 启停脚本据此判断"现在关掉会不会打断正在进行的演示"
+            # The start/stop scripts use this to tell whether stopping now would
+            # interrupt a demo in progress.
             "active_sessions": registry.active_sessions(),
         }
 
@@ -138,7 +142,9 @@ def create_app(
         try:
             result = agent.send(request.message)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"模型或工具调用失败：{exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"Model or tool call failed: {exc}"
+            ) from exc
         return ChatResponse(
             reply=result.reply,
             status=result.status,
@@ -154,11 +160,11 @@ def create_app(
 
     @app.post("/sessions/reset")
     def reset_all() -> dict[str, Any]:
-        """重置全部演示会话。供 `scripts/reset-demo.ps1` 调用。
+        """Reset every demo session. Called by `scripts/reset-demo.ps1`.
 
-        只清进程内的会话，磁盘上的东西一概不动。`cleared` 是被丢掉的会话数，
-        让调用方能把"重置了 3 个会话"和"本来就没有会话"区分开——
-        两者都是成功，但对操作者不是一回事。
+        Clears in-process sessions only; nothing on disk is touched. `cleared` is the
+        number of sessions dropped, so the caller can distinguish "reset 3 sessions"
+        from "there were none".
         """
         return {"status": "reset", "scope": "all_sessions", "cleared": registry.reset_all()}
 

@@ -1,10 +1,10 @@
 {
-  "$comment": "业务范围标签，用于分层报告；不改变上游任务与评分，只影响结果切片。",
+  "$comment": "Business-scope labels for layered reporting. They change neither the upstream tasks nor the scoring, only how results are sliced.",
   "definitions": {
-    "read_only": "评分动作不含任何写操作工具",
-    "in_scope_write": "写操作仅涉及 ['cancel_pending_order', 'return_delivered_order_items']（本项目声明的取消/退货范围）",
-    "out_of_scope_write": "涉及改单/换货/改地址/改支付等超出三类业务声明的写操作",
-    "no_action": "上游未给出评分动作"
+    "read_only": "the scored actions use no write tool",
+    "in_scope_write": "writes limited to ['cancel_pending_order', 'return_delivered_order_items'], the cancel and return scope this project declares",
+    "out_of_scope_write": "writes such as modify, exchange, address or payment changes, outside the three declared flows",
+    "no_action": "upstream gives no scored action"
   },
   "counts": {
     "out_of_scope_write": 70,

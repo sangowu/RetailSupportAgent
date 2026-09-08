@@ -1,66 +1,84 @@
-# 项目目标与决策
+# Project goals and decisions
 
-记录日期：2026-09-06。状态：M0.1 已实现并验证，模型实验尚未开始。本文保存本次讨论的已确认要求，不代表功能已经存在。
+Recorded 2026-09-06; updated as later stages landed. This file records the requirements
+confirmed in discussion. It does not assert that a feature already exists.
 
-## 业务目标
+## Business goal
 
-给定模拟零售用户请求，Agent 在政策与授权范围内查询订单、取消订单或发起退货；对修改操作获得明确确认，无法处理时说明原因或转人工。以正确的最终业务状态及必要的确认和政策遵循判断成功，不能只看回答是否宣称成功。
+Given a simulated retail user request, the agent looks up an order, cancels one, or
+starts a return, within policy and its authorization. Modifying operations require
+explicit confirmation, and when something cannot be handled the agent says why or hands
+off to a human. Success is judged by the correct final business state together with the
+required confirmations and policy compliance, not by whether the reply claims success.
 
-首版不加入 RAG、多 Agent、真实付款、真实退款或生产订单系统。退货申请不等于资金已经到账，回答必须符合工具返回的真实模拟状态。
+The first version excludes RAG, multiple agents, real payments, real refunds and a
+production order system. An accepted return request is not a refund that has landed,
+and answers must match the simulated state the tools returned.
 
-## 用户确认的选择
+## Decisions confirmed by the user
 
-| 项目 | 决策 |
+| Item | Decision |
 |---|---|
-| 开发方式 | MVP 优先；完成后冻结基线；逐步开发，每一步必须有性能对比 |
-| 业务数据 | τ²-bench Retail，固定版本、模拟业务 |
-| 评测范围 | 按 τ²-bench Retail 原始设计跑全集 114 题，Agent 暴露全部 16 个工具；三类业务对应的 42 题子集另行分层报告（2026-09-06 确认） |
-| Agent | LangGraph，单 Agent |
-| 模型接口 | OpenAI Python SDK，Chat Completions 兼容接口 |
+| Method | MVP first, then freeze a baseline; develop stepwise with a performance comparison at every step |
+| Business data | τ²-bench Retail, pinned version, simulated business |
+| Evaluation scope | Run all 114 tasks per upstream's design with all 16 tools exposed; report the 42-task subset covering the three declared flows separately (confirmed 2026-09-06) |
+| Agent | LangGraph, single agent |
+| Model interface | OpenAI Python SDK, Chat Completions compatible |
 | base_url | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| 原始参照模型 | `qwen3.7-max-2026-06-08` |
-| 新增候选 | `qwen3.8-max`、`deepseek-v4-pro-0813`、`glm-5.2`、`qwen3.8-flash` |
-| 最终模型 | 通过本项目测试决定，不能预先指定胜者 |
-| 思考配置 | 自行核验支持参数，测试思考模式与预算，选择最低够用配置，不能默认最大 |
-| 身份认证 | Cognito User Pool，后续阶段接入 |
-| 权限规则 | 由开发方拟定，形成可测试的明确规则 |
-| AI 观测 | Langfuse 云端 |
-| CI/CD | GitHub Actions；无对比报告不能通过相应发布门禁 |
-| 门禁例外类别 | 修复以回归验证、维护以无退步放行；不要求二者伪造性能提升 |
-| AWS | 面试展示时按需创建，用完清理；Terraform 管理 |
-| 访问地址 | 免费地址；CloudFront 默认域名是待验证的实现候选 |
-| 启停 | 本地与 AWS 都提供一键入口和首次配置说明 |
-| 预算 | 用户暂不设金额上限；不是立即发起模型计费或云部署的授权 |
+| Original reference model | `qwen3.7-max-2026-06-08` |
+| Added candidates | `qwen3.8-max`, `deepseek-v4-pro-0813`, `glm-5.2`, `qwen3.8-flash` |
+| Final model | Decided by this project's tests; no winner named in advance |
+| Thinking configuration | Verify which parameters are supported, test thinking mode and budget, choose the lowest sufficient setting rather than defaulting to the maximum |
+| Authentication | Cognito user pool, a later stage |
+| Permission rules | Drafted by the developer as explicit, testable rules |
+| AI observability | Langfuse cloud |
+| CI/CD | GitHub Actions; a release gate does not pass without a comparison report |
+| Gate exceptions | A fix passes on regression verification and maintenance on no regression; neither is required to fabricate an improvement |
+| AWS | Created on demand for a demonstration and cleaned up afterwards; managed with Terraform |
+| Public URL | A free URL; the CloudFront default domain is a candidate still to be verified |
+| Start and stop | A single entry point plus first-time setup instructions, for both local and AWS |
+| Budget | No spending cap set by the user; this is not authorization to start billing models or deploying cloud resources |
 
-## 技术清单与实施阶段
+## Technology and stages
 
-| 技术 | 用途 | 阶段 |
+| Technology | Purpose | Stage |
 |---|---|---|
-| Python、uv、锁文件 | 程序与可复现依赖 | M0 |
-| FastAPI、Uvicorn、Pydantic | API 与数据校验 | M0 |
-| OpenAI SDK、LangGraph | 模型调用与业务流程 | M0 |
-| Gradio | 最小演示界面 | M0；M7 完善 |
-| Langfuse 云端 | 调用、实验、用量与延迟 | M0 |
-| Ruff、mypy、pytest、pytest-asyncio、HTTPX | 静态检查、异步与 API 测试 | M0 起按需 |
-| Docker、Docker Compose | 可复现运行 | M0 起 |
-| PostgreSQL、SQLAlchemy、psycopg、Alembic | 应用持久化、事务与迁移 | M1 |
-| LangGraph 持久化 checkpoint | 中断与恢复 | M2 |
-| Cognito | 认证 | M3 |
-| GitHub Actions | CI、评测门禁；后续 CD | M0 起 |
-| Terraform、ECR、ECS Fargate、RDS、ALB、Secrets Manager、S3、CloudWatch、IAM OIDC | 按需云端演示 | M6 |
+| Python, uv, lockfile | Program and reproducible dependencies | M0 |
+| FastAPI, Uvicorn, Pydantic | API and validation | M0 |
+| OpenAI SDK, LangGraph | Model calls and business flow | M0 |
+| Gradio | Minimal demo UI | M0; completed in M7 |
+| Langfuse cloud | Calls, experiments, usage and latency | M0 |
+| Ruff, mypy, pytest, pytest-asyncio, HTTPX | Static checks, async and API tests | From M0 as needed |
+| Docker, Docker Compose | Reproducible execution | From M0 |
+| PostgreSQL, SQLAlchemy, psycopg, Alembic | Application persistence, transactions and migrations | M1 |
+| LangGraph persistent checkpoints | Interruption and recovery | M2 |
+| Cognito | Authentication | M3 |
+| GitHub Actions | CI and evaluation gates; CD later | From M0 |
+| Terraform, ECR, ECS Fargate, RDS, ALB, Secrets Manager, S3, CloudWatch, IAM OIDC | On-demand cloud demo | M6 |
 
-## 成功证据
+## Evidence of success
 
-项目需提供：可复现启动方式、固定任务上的逐题结果、模型和思考配置的选型理由、每步开发对比报告、真实失败样例及修复证据。公开基准验证的是模拟场景能力，不等于真实客户价值或生产环境零风险。
+The project must provide: a reproducible way to start it, per-task results on a fixed
+task set, the reasoning behind the model and thinking configuration, a comparison report
+for every development step, and real failure cases with evidence of their fixes. A
+public benchmark verifies capability in a simulated setting; it is not customer value
+and not an absence of production risk.
 
-开发协议和指标阈值由开发方拟定，需在查看后续候选结果之前锁定。文档中的暂定数值不能伪装成已有实测结果。
+The development protocol and metric thresholds are drafted by the developer and locked
+before any later candidate's results are seen. A provisional number in a document must
+never be presented as a measurement.
 
-## 尚需通过实现验证的技术事项
+## Facts still to be established by implementation
 
-- 五个精确模型 ID 在指定账户和 endpoint 的可用性，参数是否实际生效。
-- τ²-bench 固定版本中的任务分类、许可、工具、模拟用户协议和评分语义。
-- 样本量是否足够支持成功率、P95 与非劣化判断。
-- 免费 HTTPS 入口与 Cognito 回调、流式响应、源站保护是否能兼容。
-- AWS 实际创建与清理时间、资源费用和残留检查。
+- Whether the five exact model ids are available on the given account and endpoint, and
+  whether the parameters actually take effect.
+- Task classification, licensing, tools, simulated-user protocol and scoring semantics
+  in the pinned τ²-bench version.
+- Whether the sample size supports conclusions about success rate, P95 and non-regression.
+- Whether a free HTTPS entry point is compatible with Cognito callbacks, streaming
+  responses and origin protection.
+- Real AWS creation and teardown times, resource cost, and a check for leftovers.
 
-这些是待验证事实，不需要用户预先编造答案。遇到接口不支持时先报告事实，不能默默替换模型或供应商。
+These are open questions, not answers to be invented in advance. When an interface turns
+out to be unsupported, report the fact rather than quietly substituting a different
+model or provider.

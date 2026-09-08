@@ -1,291 +1,329 @@
-# M0 交付报告
+# M0 delivery report
 
-**RetailSupportAgent** —— 零售客服 Agent（订单查询 / 取消订单 / 退货申请），
-以可复现评测证明业务正确性、可靠性与成本。
+**RetailSupportAgent** - a retail support agent (order lookup / order cancellation / return
+request) that proves business correctness, reliability and cost through reproducible
+evaluation.
 
-报告日期：2026-09-07　　范围：M0.1 – M0.5，M0 至此冻结。
+Report date: 2026-09-07. Scope: M0.1 - M0.5. M0 is frozen here.
 
 ---
 
-## 1. 一页结论
+## 1. Conclusions on one page
 
 | | |
 |---|---|
-| 基准 | Sierra τ²-bench Retail，v1.0.1 `fc0055dc…0992`，13 个文件逐一 SHA256 校验 |
-| **标准分** | **0.8509（97/114）** —— 全集 114 题，**被测对象是上游 `llm_agent`**（见 §1.1 订正） |
-| **声明业务子集** | **0.9286（39/42）** —— 查询 / 取消 / 退货所覆盖的 42 题 |
-| 独立验证分 | 0.8750（35/40）—— holdout，未用于调参 |
-| 模型 | `deepseek-v4-pro`，思考 effort=high，temperature 0.0 |
-| 成本 | **0.0855 元/题**（三角色合计），被测侧 96% 输入命中缓存 |
-| 基线 | `baseline-v2`（M0 当前）+ `baseline-v1`（留档），带校验和，CI 每次校验。M0.6 起以 `baseline-v3` 为当前基线（被测对象是本项目的 Agent） |
-| 工程 | 275 个测试、ruff、mypy --strict、CI 三作业全绿 |
+| Benchmark | Sierra tau2-bench Retail, v1.0.1 `fc0055dc...0992`, all 13 files verified by SHA256 |
+| **Standard score** | **0.8509 (97/114)** - full set of 114 tasks, **with upstream `llm_agent` as the subject under test** (see correction 1.1) |
+| **Declared business subset** | **0.9286 (39/42)** - the 42 tasks covered by lookup / cancel / return |
+| Independent verification score | 0.8750 (35/40) - holdout, not used for tuning |
+| Model | `deepseek-v4-pro`, thinking effort=high, temperature 0.0 |
+| Cost | **0.0855 CNY per task** (three roles combined), with 96% of input tokens on the subject side hitting cache |
+| Baselines | `baseline-v2` (current for M0) plus `baseline-v1` (archived), with checksums verified by CI on every run. From M0.6, `baseline-v3` is the current baseline, with this project's agent as the subject |
+| Engineering | 275 tests, ruff, mypy --strict, all three CI jobs green |
 
-### 1.1 订正：M0 全部分数测的是上游 Agent，不是本项目的 Agent
+### 1.1 Correction: every M0 score measures the upstream agent, not this project's agent
 
-**2026-09-08 补记。** M0 的 0.8509 / 0.9286 / 0.8750 是用 τ²-bench 自带的
-`llm_agent` 跑出来的——评测配置里写死了 `agent="llm_agent"`，本项目
-`src/retail_support_agent/agent.py` 里那套业务闭环与写操作护栏
-**从未进入过评测回路**。
+**Added 2026-09-08.** M0's 0.8509 / 0.9286 / 0.8750 were produced by tau2-bench's own
+`llm_agent`: the evaluation configuration hard-codes `agent="llm_agent"`, and the business
+loop and write guard in this project's `src/retail_support_agent/agent.py` **never entered the
+evaluation loop**.
 
-所以 M0 的分数只能这样读：**"这套评测装置在这个模型上得到 0.8509"**，
-它衡量的是评测链路与模型，不是本项目的 Agent。把它当成"我的 Agent 得了
-0.8509"就是冒领。
+So M0's scores can only be read as **"this evaluation apparatus scores 0.8509 on this model"**.
+They measure the evaluation chain and the model, not this project's agent. Presenting them as
+"my agent scored 0.8509" would be taking credit that is not ours.
 
-这不影响 M0 其余结论的有效性——评测栈固定、成本口径、判官噪声、基线冻结
-这些都是关于**装置**的结论，装置本身没有变。受影响的只有"分数归属谁"。
+This does not affect M0's other conclusions: the frozen evaluation stack, the cost
+conventions, the judge noise and the baseline freeze are conclusions about the **apparatus**,
+and the apparatus itself has not changed. Only the attribution of the score is affected.
 
-M0.6 把本项目的 Agent 接进评测回路，作为**另一个被测对象**单独跑、单独冻结
-基线，见 `docs/M0.6_AGENT_UNDER_TEST.md`。两个对象的成绩并列呈现，不合并。
-
----
-
-**这个项目要证明的不是"能跑通"，而是"能证明它跑对了"。** 所以报告里
-每一个数字都能追溯到一次具体运行，每一处口径都写明它不能被用来说什么。
+M0.6 puts this project's agent into the evaluation loop as **a separate subject under test**,
+run separately and frozen into its own baseline; see `docs/M0.6_AGENT_UNDER_TEST.md`. The two
+subjects' results are presented side by side and never merged.
 
 ---
 
-## 2. 成绩与口径
+**What this project sets out to prove is not that it runs, but that it can prove it ran
+correctly.** So every number in this report traces back to a specific run, and every
+convention states what it cannot be used to claim.
 
-### 2.1 两个口径，都给，谁也不冒充谁
+---
 
-本项目声明支持三类业务，它们只覆盖 114 题中的 **42 题**（只读 8 + 范围内写 34）。
-其余 72 题涉及改单、换货、改地址、改支付——本项目**没有声明**支持。
+## 2. Scores and conventions
 
-| 分层 | 成绩 |
+### 2.1 Two conventions, both reported, neither standing in for the other
+
+This project declares support for three kinds of business, which cover only **42** of the 114
+tasks (8 read-only plus 34 in-scope writes). The other 72 involve order modification,
+exchange, address change and payment change, which this project **does not declare**.
+
+| Layer | Score |
 |---|---|
-| 只读（查询类） | 8/8 = 1.0000 |
-| 范围内写（取消 / 退货） | 31/34 = 0.9118 |
-| 范围外写（改单 / 换货 / 改址 / 改支付） | 56/70 = 0.8000 |
-| 上游未给评分动作 | 2/2 = 1.0000 |
-| **声明业务子集（42 题）** | **39/42 = 0.9286** |
-| **全集（标准 τ²-bench Retail）** | **97/114 = 0.8509** |
+| Read-only (lookup) | 8/8 = 1.0000 |
+| In-scope writes (cancel / return) | 31/34 = 0.9118 |
+| Out-of-scope writes (modify / exchange / address / payment) | 56/70 = 0.8000 |
+| No scored action upstream | 2/2 = 1.0000 |
+| **Declared business subset (42 tasks)** | **39/42 = 0.9286** |
+| **Full set (standard tau2-bench Retail)** | **97/114 = 0.8509** |
 
-口径在**任何候选结果产生之前**就锁定了（2026-09-06）：跑全集、按标签分层报告。
-锁定的理由是防止"看到结果再挑对自己有利的说法"。
+The convention was locked **before any candidate result existed** (2026-09-06): run the full
+set, report layered by label. The reason for locking it is to prevent picking the flattering
+framing after seeing results.
 
-范围外那 70 题占 61%，正是它们把分数从 0.9286 拉到 0.8509。
-**只报 0.9286 就是挑口径**；只报 0.8509 则掩盖了"声明支持的业务上表现如何"。
+The 70 out-of-scope tasks are 61% of the total and are exactly what pulls the score from
+0.9286 down to 0.8509. **Reporting only 0.9286 is cherry-picking a convention**; reporting
+only 0.8509 hides how the declared business actually performs.
 
-### 2.2 评分是全或无
+### 2.2 Scoring is all or nothing
 
-τ²-bench 的 reward 是各分量相乘：数据库最终状态比对（程序化）与 NL 断言（LLM 判官）
-任一不过，整题从 1.0 掉到 0.0。**噪声不会被平均掉，只会被放大**——这是本项目
-在判官上花那么多功夫的原因。
+tau2-bench's reward is the product of its components: if either the programmatic comparison of
+the final database state or the NL assertion (an LLM judge) fails, the whole task drops from
+1.0 to 0.0. **Noise is not averaged out, it is amplified**, which is why this project spends
+so much effort on the judge.
 
-### 2.3 三个成绩的关系
+### 2.3 How the three scores relate
 
-| 数字 | 是什么 | 不是什么 |
+| Number | What it is | What it is not |
 |---|---|---|
-| 0.8509（114 题） | 标准 τ²-bench Retail 分数 | 不是"声明业务上的表现" |
-| 0.9286（42 题） | 声明业务上的表现 | **不能**称作 τ²-bench 分数 |
-| 0.8750（40 题） | 未用于调参的独立验证 | 不是全集分；样本更小 |
+| 0.8509 (114 tasks) | The standard tau2-bench Retail score | Not "performance on the declared business" |
+| 0.9286 (42 tasks) | Performance on the declared business | **Cannot** be called a tau2-bench score |
+| 0.8750 (40 tasks) | Independent verification not used for tuning | Not a full-set score; a smaller sample |
 
-0.8509 低于 0.8750 **不是退步**：口径不同（全集含 dev 74 题），
-同一评测栈同一模型，差 0.024 属抽样波动。
+0.8509 being below 0.8750 is **not a regression**: the conventions differ (the full set
+includes the 74 dev tasks), the stack and model are the same, and a gap of 0.024 is sampling
+variation.
 
-三个数字有一个共同的前提，必须一起读：**它们的被测对象都是上游 `llm_agent`**
-（§1.1）。三者之间可比，因为被测对象相同；它们与 M0.6 之后本项目 Agent
-的成绩**不能混在一起平均**。
-
----
-
-## 3. 可复现的前提（M0.1）
-
-成绩要能被相信，前提是别人能跑出同一个数。
-
-- **上游固定到 commit**，13 个文件逐一记 SHA256，CI 每次拉取后校验。
-  摘要针对上游提交时的原始字节，Windows 与 Linux 得到同一组值。
-- **任务划分直接采用上游 train/test**，不自行随机切分——"自定义划分"是成绩
-  不可比的隐患。dev 74 / holdout 40，互斥，有测试钉着。
-- **三个角色分离到各自端点**：被测 Agent（DeepSeek）、模拟用户（智谱）、
-  NL 判官（DashScope）。同源模型可能偏袒自家，混用会污染结论。
-- **运行 manifest 与逐题结果有 schema**，强制记录代码 commit、工作区是否 dirty、
-  上游 commit、请求与返回的模型 ID、参数被接受还是被忽略。
+The three numbers share a premise that must be read with them: **their subject under test is
+upstream's `llm_agent`** (section 1.1). They are comparable with each other because the
+subject is the same, and they **must not be averaged together** with this project's agent's
+results from M0.6 onward.
 
 ---
 
-## 4. 选型：这是一个成本决策，不是质量比较
+## 3. The preconditions for reproducibility (M0.1)
 
-**必须先说清楚这一点，因为它决定了这份报告能声称什么。**
+A score can only be believed if someone else can produce the same number.
 
-`deepseek-v4-pro` 是**唯一**在最终评测栈上测过的模型。其余候选的数字全部作废，
-原因不是它们表现差，而是**那些运行用了两个不同的判官**（`deepseek-v4-flash`
-与 `qwen3.7-flash`）——两把尺子量出来的数不能比。
+- **Upstream is pinned to a commit**, with SHA256 recorded for all 13 files and verified by CI
+  after every fetch. The digests cover the bytes as upstream committed them, so Windows and
+  Linux produce the same values.
+- **The task splits are upstream's own train/test**, not a random split of ours - a "custom
+  split" is a standing risk of incomparable scores. dev 74 / holdout 40, disjoint, pinned by a
+  test.
+- **The three roles are separated onto their own endpoints**: the agent under test (DeepSeek),
+  the simulated user (Zhipu) and the NL judge (DashScope). Models from the same family may
+  favour their own, and mixing them would contaminate the conclusion.
+- **The run manifest and per-task results have schemas** that require recording the code
+  commit, whether the working tree was dirty, the upstream commit, the model id requested and
+  the one returned, and whether each parameter was accepted or ignored.
 
-所以选型的依据只有一条经得起推敲：**成本差 4.8 倍，不在一个量级。**
+---
 
-| 同一批 holdout 40 题 | deepseek-v4-pro | qwen3.8-max |
+## 4. Model selection: a cost decision, not a quality comparison
+
+**This has to be stated first, because it determines what this report can claim.**
+
+`deepseek-v4-pro` is the **only** model tested on the final evaluation stack. Every number for
+the other candidates is void, not because they performed badly but because **those runs used
+two different judges** (`deepseek-v4-flash` and `qwen3.7-flash`), and numbers from two
+different rulers cannot be compared.
+
+So the selection rests on one argument that holds up: **a 4.8x cost difference, an entirely
+different range.**
+
+| Same 40 holdout tasks | deepseek-v4-pro | qwen3.8-max |
 |---|---|---|
-| 每题成本 | 0.0806 元 | 0.3877 元 |
+| Cost per task | 0.0806 CNY | 0.3877 CNY |
 
-> 这里用 holdout 而不是全集的数字，是因为 qwen3.8-max 只跑过 holdout——
-> 拿它的 holdout 成本去和 deepseek 的全集成本（0.0855 元）比，就是两轮不同的跑
-> 混在一起。同一批题才可比。
+> Holdout numbers are used here rather than full-set ones because qwen3.8-max has only ever run
+> holdout. Comparing its holdout cost with deepseek's full-set cost (0.0855 CNY) would mix two
+> different runs. Only the same set of tasks is comparable.
 
-已决定**不补测**：即使 qwen3.8-max 更好，成本也不在一个量级。
-这是一个明确的取舍，写在这里而不是藏起来。
+The decision is **not to run the missing measurement**: even if qwen3.8-max were better, the
+cost is in a different range. This is an explicit trade-off, written down rather than hidden.
 
-### 4.1 为什么不能靠早期的对比下结论
+### 4.1 Why the early comparisons cannot support a conclusion
 
-- 12 题筛选轮：10 对两两比较**全部不显著**，最小 p = 0.375。
-- 40 题 holdout 轮：最接近显著的一次是 p = 0.077，仍未达显著。
-- **判官自身的噪声是 8%**（同一判官对同一份对话复判 3 轮，25 题里 2 题自相矛盾），
-  与模型之间那些差距是同一量级。
+- The 12-task screening round: all 10 pairwise comparisons were **not significant**, with a
+  minimum p of 0.375.
+- The 40-task holdout round: the closest to significance was p = 0.077, still not significant.
+- **The judge's own noise is 8%** (re-judging the same conversations three times with the same
+  judge, 2 of 25 tasks contradicted themselves), the same order of magnitude as the gaps
+  between models.
 
-换句话说：即使跑出了差距，也无法排除是判官抖出来的。
-把这种差距写成"A 比 B 强"就是造假。
+In other words: even when a gap appears, it cannot be separated from judge jitter. Writing
+such a gap up as "A beats B" would be fabrication.
 
 ---
 
-## 5. 业务闭环与护栏（M0.3）
+## 5. The business loop and the guard (M0.3)
 
-查询订单 → 必要补问 → 判断政策 → **明确确认** → 校验 → 执行 → 解释真实结果。
+Look up the order -> ask what is missing -> apply the policy -> **explicit confirmation** ->
+verify -> execute -> explain the real result.
 
-必需底线，每一条都有测试：
+The required limits, each covered by a test:
 
-- **订单归属校验**：不是本人名下的订单一律拒绝。
-- **写操作确认绑定具体参数**：确认的指纹是 `工具名 + 规范化参数` 的 SHA256。
-  模型在确认后改任何一个参数（换工具、换订单号、多加一个字段），指纹对不上，
-  必须重新确认。**模型说"用户已同意"不算数。**
-- **未知工具直接拒**：不在上游 16 个工具清单里的一律不执行。
-- **停止条件**：最大步骤 20、最大工具调用 15、会话时限 180 秒；
-  超限时**不再发模型请求**，避免无谓计费。
+- **Order ownership check**: an order that is not the user's own is always refused.
+- **Write confirmation is bound to specific arguments**: the confirmation fingerprint is the
+  SHA256 of `tool name + canonical arguments`. If the model changes any argument after
+  confirmation (a different tool, a different order id, one extra field), the fingerprint no
+  longer matches and it must be confirmed again. **The model claiming "the user agreed" does
+  not count.**
+- **Unknown tools are refused**: anything outside upstream's list of 16 tools does not run.
+- **Stop conditions**: at most 20 steps, 15 tool calls and 180 seconds of session time; once a
+  limit is reached **no further model request is sent**, so nothing is billed pointlessly.
 
-### 5.1 演示流程的实跑证据
+### 5.1 Measured evidence from the demo flows
 
-`uv run python scripts/demo_flows.py`（存档 `evaluation/demo_runs/`）：
+`uv run python scripts/demo_flows.py` (archived under `evaluation/demo_runs/`):
 
-| 流程 | 逐轮状态 | 执行的工具 | 数据库 |
+| Flow | Per-turn state | Tools executed | Database |
 |---|---|---|---|
-| 查询 | answered ×2 | get_user_details, get_order_details ×4 | 未改变 |
-| 取消 | answered → **needs_confirmation** → answered | get_order_details, cancel_pending_order | **已改变** |
-| 退货 | answered → **needs_confirmation** → answered | get_order_details, return_delivered_order_items | **已改变** |
-| 越权 | answered ×2 | get_order_details | 未改变 |
+| Lookup | answered x2 | get_user_details, get_order_details x4 | unchanged |
+| Cancel | answered -> **needs_confirmation** -> answered | get_order_details, cancel_pending_order | **changed** |
+| Return | answered -> **needs_confirmation** -> answered | get_order_details, return_delivered_order_items | **changed** |
+| Out-of-scope | answered x2 | get_order_details | unchanged |
 
-存档记录**操作前后的数据库指纹**。这一条是刻意的：光看模型嘴上说"已取消"不算数，
-指纹没变就说明写操作没真正落地。越权那条即使用户追加"确认取消"，指纹依然纹丝不动。
+The archive records **the database fingerprint before and after** the operation. That is
+deliberate: the model saying "cancelled" does not count, and an unchanged fingerprint shows the
+write never landed. On the out-of-scope flow the fingerprint stays identical even after the
+user adds "confirm the cancellation".
 
 ---
 
-## 6. 成本口径
+## 6. Cost conventions
 
-| 角色 | 成本（全集一轮） | 说明 |
+| Role | Cost (one full-set run) | Note |
 |---|---|---|
-| 被测 Agent | 9.2245 元 | 96% 输入命中缓存，缓存价是全价的 1/30 |
-| 模拟用户 | 0.4947 元 | 35% 的输出是推理 token，按输出价计费 |
-| NL 判官 | 0.0223 元 | 调用不在 messages 里，须单独记账 |
-| **合计** | **9.7414 元** | **0.0855 元/题** |
+| Agent under test | 9.2245 CNY | 96% of input hits cache, priced at 1/30 of full |
+| Simulated user | 0.4947 CNY | 35% of output is reasoning tokens, billed at the output price |
+| NL judge | 0.0223 CNY | Its calls are not in messages and must be accounted separately |
+| **Total** | **9.7414 CNY** | **0.0855 CNY per task** |
 
-三笔此前会漏掉、且实测证明会改变结论的账：**缓存命中**（不算会高估 5 倍）、
-**推理 token**（不算会低估模拟用户成本）、**判官**（不主动记就永远统计不到）。
+Three costs that were previously missed and that measurement proved would change the
+conclusion: **cache hits** (ignoring them overestimates by 5x), **reasoning tokens** (ignoring
+them underestimates the simulated user), and **the judge** (never counted unless counted
+deliberately).
 
-成本有**两条完全独立的计算路径**：上游 litellm 逐次调用累加，我们按 token 总量
-乘价格快照折算。两者严格相等（9.224503 元）——这不是巧合，是把人民币价格注册进
-litellm 换来的可校验性。
+Cost has **two entirely independent computation paths**: upstream litellm accumulating per
+call, and our own conversion of total tokens at the price snapshot. The two are exactly equal
+(9.224503 CNY), which is not a coincidence but the verifiability bought by registering CNY
+prices into litellm.
 
-**Langfuse 面板刻意不显示成本。** 它收到的用量没有缓存明细，按全价折算会高估约
-5 倍——一个看起来合理的错数字比一个扎眼的 0 危险得多。成本只认
-`scripts/analyze_eval.py` 一处，口径在 manifest、启动日志、测试三处留痕。
-
----
-
-## 7. 工程与门禁
-
-- **275 个测试**、ruff、mypy --strict，CI 三作业：静态检查与单元测试、
-  上游固定校验、基线完整性。
-- **CI 不跑评测**——跑一轮要真实计费。门禁校验的是基线没被悄悄改过：
-  任务集、上游 manifest、那一轮的 summary 任何一个变了，基线就不再代表
-  它自称的那次运行。
-- **本地一键启停**：`start-local.ps1` / `stop-local.ps1` / `reset-demo.ps1`。
-  停服只停**本项目登记过**的进程（PID + 进程启动时刻双重核对），
-  对不上就拒绝停——Windows 会复用 PID，而这台机器上最容易被误杀的
-  正是一轮跑几十分钟的评测。
-- **观测**：Langfuse 接入，每轮 trace 以运行目录名作会话号，可从面板对回具体运行。
+**The Langfuse dashboard deliberately does not show cost.** The usage it receives has no cache
+breakdown, and converting at full price overestimates by about 5x - a plausible-looking wrong
+number is far more dangerous than a conspicuous 0. Cost comes from `scripts/analyze_eval.py`
+alone, and the convention is recorded in the manifest, the startup log and a test.
 
 ---
 
-## 8. 这一路上自己抓到的错
+## 7. Engineering and gates
 
-**这一节是本报告最有说服力的部分。** 下面每一条都曾让某个数字看起来是对的。
+- **275 tests**, ruff and mypy --strict, with three CI jobs: static checks and unit tests, the
+  upstream pin verification, and baseline integrity.
+- **CI runs no evaluation**: a run costs real money. What the gate verifies is that the
+  baseline was not quietly changed - if a task set, the upstream manifest or that run's summary
+  changes, the baseline no longer represents the run it claims to.
+- **Local start/stop**: `start-local.ps1` / `stop-local.ps1` / `reset-demo.ps1`. Stopping
+  touches only processes **this project registered** (PID and process start time both checked),
+  and refuses on a mismatch: Windows reuses PIDs, and the thing most likely to be killed by
+  mistake on this machine is an evaluation that runs for tens of minutes.
+- **Observability**: Langfuse is wired up, with each run's traces carrying the run directory
+  name as the session id, so a trace on the dashboard maps back to a specific run.
 
-| 问题 | 后果 | 怎么发现的 |
+---
+
+## 8. Mistakes caught along the way
+
+**This section is the most persuasive part of this report.** Every item below once made some
+number look correct.
+
+| Problem | Consequence | How it was found |
 |---|---|---|
-| 模拟用户把 `###STOP###` 和请求写在同一条消息里 | 考试被提前掐断，成绩被压低 | 读逐轮对话原文 |
-| A 轮跨模型比较用了两个不同判官 | 全部跨模型数字作废 | 复核 manifest 时发现 |
-| 服务端故障导致的丢题被上游从分母里剔除 | 40 题丢 5 题算出 0.886 而不是 0.875，**丢题反而更好看** | 对不上模拟数 |
-| 每题成本按 45 条记录算，实际只有 40 题 | 对外成本报低 11%，由它推出的倍数也错 | 冻结基线前重算 |
-| 读类查询的 `tool_calls` 恒为空 | 界面和 API 少报工具调用，M0.3 以来每份存档都是空的 | 第一次通过接口发真实消息 |
-| Gradio 6 删掉了 `Chatbot(type=...)` | 演示界面起不来，而没有任何测试碰过界面 | 第一次真的去启动它 |
-| Windows 写 CRLF 让校验和形同虚设 | 基线校验红灯而 `git diff` 是空的 | 跑完 regen 后校验失败 |
-| Langfuse 回调名选错 | 跑完一整轮，面板一条 trace 都没有，退出码 0 | 实测两个回调的返回值 |
+| The simulated user put `###STOP###` and a request in the same message | The exam was cut short and the score depressed | Reading the raw per-turn conversation |
+| Round A's cross-model comparison used two different judges | Every cross-model number is void | Found while reviewing the manifest |
+| Tasks lost to a server fault were dropped from upstream's denominator | 5 lost tasks out of 40 gave 0.886 instead of 0.875, so **losing tasks improved the score** | The simulation count did not add up |
+| Per-task cost divided by 45 records when there were only 40 tasks | The published cost was 11% low, and the ratio derived from it was wrong too | Recomputed before freezing the baseline |
+| `tool_calls` was always empty for read queries | The UI and API underreported tool calls, and every archive since M0.3 was empty | The first real message sent through the API |
+| Gradio 6 removed `Chatbot(type=...)` | The demo UI would not start, and no test touched the UI | The first time it was actually started |
+| Windows writing CRLF made the checksums meaningless | The baseline check went red while `git diff` was empty | The check failed after running regen |
+| The wrong Langfuse callback name | A whole run finished with no trace on the dashboard and exit code 0 | Measuring both callbacks' return values |
 
-共同点：**它们都不报错。** 每一个都表现为"一个看起来正常的数字"。
-所以本项目的做法是给每一条都加一个会变红的测试，而不是记在心里。
-
----
-
-## 9. 明确没有做的事
-
-不写这一节，上面所有数字都会被过度解读。
-
-**评测层面**
-
-- **只跑过 1 次全集**。同一配置重复跑的方差没有测过，
-  所以 0.8509 是一次观测值，不是带置信区间的估计。
-- **只有一个模型在最终评测栈上测过**。选型是成本决策，不是质量比较。
-- **判官噪声 8%** 限制了任何跨模型结论的分辨率。
-- 原始逐题轨迹只在本机，摘要已记，丢了能发现但找不回来。
-
-**系统层面**
-
-- **无持久化**：会话在进程内存里，重启即丢。PostgreSQL 是 M1。
-- **无跨进程恢复与幂等**：同一会话串行处理，不宣称生产恢复能力。M2。
-- **无真实认证**：固定模拟身份，仅绑定 `127.0.0.1`，不提供注册。Cognito 是 M3。
-- **无人工接管流程**。M4。
-- **无 AWS、无在线演示地址**。M6。
-- **界面是最小可用**，完善是 M7。
-
-**数据层面**
-
-- 用的是 τ²-bench 的**模拟业务数据**，不接真实订单系统，不涉及真实付款或退款。
-- 公开基准验证的是模拟场景能力，**不等于真实客户价值或生产环境零风险**。
+What they share: **none of them raises an error.** Each appears as a number that looks normal.
+So this project's approach is to attach a test that turns red to every one of them, rather than
+remembering them.
 
 ---
 
-## 10. 复现
+## 9. Explicitly not done
+
+Without this section, every number above would be over-read.
+
+**Evaluation**
+
+- **The full set has been run once.** The variance of repeating the same configuration has not
+  been measured, so 0.8509 is a single observation, not an estimate with a confidence interval.
+- **Only one model has been tested on the final stack.** Selection was a cost decision, not a
+  quality comparison.
+- **Judge noise of 8%** limits the resolution of any cross-model conclusion.
+- The raw per-task traces exist only on this machine. Their digests are recorded, so a loss
+  would be detected but not recovered.
+
+**System**
+
+- **No persistence**: sessions live in process memory and are lost on restart. PostgreSQL is
+  M1.
+- **No cross-process recovery or idempotency**: one session is processed serially, and no
+  production recovery capability is claimed. M2.
+- **No real authentication**: a fixed simulated identity bound to `127.0.0.1`, with no
+  registration. Cognito is M3.
+- **No human handover flow.** M4.
+- **No AWS and no online demo URL.** M6.
+- **The UI is minimal**; completing it is M7.
+
+**Data**
+
+- The data is tau2-bench's **simulated business data**. No real order system is connected, and
+  no real payment or refund is involved.
+- A public benchmark verifies capability in a simulated scenario, which **is not the same as
+  real customer value or zero risk in production**.
+
+---
+
+## 10. Reproduction
 
 ```bash
 uv sync --group bench
-uv run python scripts/fetch_tau2.py                        # 按固定 commit 拉取并校验
+uv run python scripts/fetch_tau2.py                        # fetch at the pinned commit and verify
 uv run ruff check . && uv run mypy && uv run pytest
-uv run python scripts/freeze_baseline.py --verify          # 校验基线未被改动
+uv run python scripts/freeze_baseline.py --verify          # verify the baselines are unchanged
 
-# 以下会产生真实费用
-uv run python scripts/run_eval.py --split full             # 全集 114 题，约 9.7 元
-uv run python scripts/analyze_eval.py --run <运行目录名>    # 成绩、分层、用量与成本
-uv run python scripts/demo_flows.py                        # 四类演示流程
+# the following spend real money
+uv run python scripts/run_eval.py --split full             # full set, 114 tasks, about 9.7 CNY
+uv run python scripts/analyze_eval.py --run <run-directory>  # score, layers, usage and cost
+uv run python scripts/demo_flows.py                        # the four demo flows
 
-# 本地服务（仅 127.0.0.1，固定模拟身份，无注册）
+# local services (127.0.0.1 only, fixed simulated identity, no registration)
 pwsh scripts/start-local.ps1
 pwsh scripts/stop-local.ps1
 ```
 
-原始产物：`evaluation/results/<run-id>/`（summary 入库，逐题轨迹不入库）、
-`evaluation/baselines/`、`evaluation/demo_runs/`。
+Raw artefacts: `evaluation/results/<run-id>/` (the summary is committed, per-task traces are
+not), `evaluation/baselines/`, `evaluation/demo_runs/`.
 
-## 11. 分阶段报告索引
+## 11. Index of stage reports
 
-| 阶段 | 报告 |
+| Stage | Report |
 |---|---|
-| M0.1 固定协议与环境 | [M0.1_PROTOCOL_FREEZE.md](M0.1_PROTOCOL_FREEZE.md) |
-| M0.2 模型接口与思考参数 | [M0.2_MODEL_CAPABILITY.md](M0.2_MODEL_CAPABILITY.md) |
-| M0.3 最小业务闭环 | [M0.3_BUSINESS_LOOP.md](M0.3_BUSINESS_LOOP.md) |
-| M0.4 选型实验 | [M0.4_EXPERIMENT_PLAN.md](M0.4_EXPERIMENT_PLAN.md) |
-| M0.5（一）成本记账与观测 | [M0.5_OBSERVABILITY.md](M0.5_OBSERVABILITY.md) |
-| M0.5（二）本地一键启停 | [M0.5_LOCAL_DEMO.md](M0.5_LOCAL_DEMO.md) |
-| M0.5（三）冻结基线 | [M0.5_BASELINE.md](M0.5_BASELINE.md) |
+| M0.1 protocol and environment freeze | [M0.1_PROTOCOL_FREEZE.md](M0.1_PROTOCOL_FREEZE.md) |
+| M0.2 model interface and thinking parameters | [M0.2_MODEL_CAPABILITY.md](M0.2_MODEL_CAPABILITY.md) |
+| M0.3 minimal business loop | [M0.3_BUSINESS_LOOP.md](M0.3_BUSINESS_LOOP.md) |
+| M0.4 selection experiments | [M0.4_EXPERIMENT_PLAN.md](M0.4_EXPERIMENT_PLAN.md) |
+| M0.5 part one: cost accounting and observability | [M0.5_OBSERVABILITY.md](M0.5_OBSERVABILITY.md) |
+| M0.5 part two: local start/stop | [M0.5_LOCAL_DEMO.md](M0.5_LOCAL_DEMO.md) |
+| M0.5 part three: frozen baselines | [M0.5_BASELINE.md](M0.5_BASELINE.md) |
 
 ---
 
-**M0 到此冻结。** 按 [开发计划](DEVELOPMENT_PLAN.md)，交付本报告后停止推进后续阶段；
-M1–M7 各自作为独立主题开发，每一步都要有对基线的性能对比。
+**M0 is frozen here.** Per the [development plan](DEVELOPMENT_PLAN.md), work on later stages
+stops once this report is delivered; M1-M7 are each developed as an independent theme, and
+every step requires a performance comparison against the baseline.

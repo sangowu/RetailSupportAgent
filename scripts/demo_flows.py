@@ -1,12 +1,13 @@
-"""跑通三类业务的演示流程，并把完整对话与数据库状态变化存档。
+"""Run the three demo flows end to end and archive the conversation and database state.
 
-**会发起真实模型调用并产生费用。**
+This makes real model calls and costs money.
 
-M0.3 的验收标准是"三类演示流程可复现"。本脚本把这件事变成一条命令：
-每个流程记录逐轮回复、状态、实际执行的工具，以及**操作前后的数据库指纹**——
-指纹没变就说明写操作没真正落地，光看模型嘴上说"已取消"不算数。
+The M0.3 acceptance criterion is that the three demo flows are reproducible. This
+script turns that into one command: each flow records every turn's reply, status and
+executed tools, plus the database fingerprint before and after. An unchanged
+fingerprint means the write never landed, whatever the model said.
 
-用法：
+Usage:
     uv run python scripts/demo_flows.py
     uv run python scripts/demo_flows.py --flow cancel
 """
@@ -33,37 +34,41 @@ from retail_support_agent.tau2_pin import REPO_ROOT
 
 OUTPUT_ROOT = REPO_ROOT / "evaluation" / "demo_runs"
 
-# 该演示身份名下的订单（来自 τ²-bench 模拟数据）：
-#   #W4135875 pending    -> 可取消
-#   #W4817420 delivered  -> 可退货
+# Orders owned by the demo identity, from the τ²-bench simulated data:
+#   #W4135875 pending    -> cancellable
+#   #W4817420 delivered  -> returnable
 FLOWS: dict[str, list[str]] = {
     "query": [
-        "你好，我想看看我名下都有哪些订单。",
-        "订单 #W4135875 现在是什么状态？",
+        "Hi, I would like to see the orders on my account.",
+        "What is the status of order #W4135875?",
     ],
-    # 写操作是两段式确认：政策要求 Agent 先解释并取得同意，
-    # 系统再拿完整参数要一次最终确认。所以写流程比读流程多一轮。
+    # Writes are confirmed in two stages: the policy requires the agent to explain and
+    # obtain agreement, and the system then asks once more with the full arguments. A
+    # write flow therefore takes one more turn than a read flow.
     #
-    # 退货流程多给一轮，是被实测逼出来的：选定模型 deepseek-v4-pro 在写操作上
-    # **偏保守**——参数越多越倾向于再确认一次而不是动手。退货要带 5 个商品 ID，
-    # 于是它在第三轮又问了一遍"请回复是"，写操作始终没发出，DB 纹丝不动。
-    # 同样的三轮在取消流程上是够的（只带一个订单号）。
-    # 这不是护栏的问题：护栏正确地扣住了写操作，是模型自己没有再次发起调用。
+    # The return flow gets an extra turn because of a measurement: the selected model
+    # deepseek-v4-pro is conservative about writes and, with more arguments, prefers to
+    # confirm again rather than act. A return carries 5 item ids, so on the third turn it
+    # asked "please reply yes" again, never issued the write, and the database did not
+    # move. The same three turns are enough for cancellation, which carries one order id.
+    # This is not a guard problem: the guard correctly held the write, and the model
+    # simply did not issue the call again.
     "cancel": [
-        "我想取消订单 #W4135875，我不想要了。",
-        "对，就按这个原因取消。",
-        "确认执行。",
+        "I want to cancel order #W4135875, I no longer need it.",
+        "Yes, cancel it for that reason.",
+        "Confirmed, go ahead.",
     ],
     "return": [
-        "订单 #W4817420 我收到了但不合适，想申请全部退货，退回原支付方式。",
-        "对，全部退，退回原支付方式。",
-        "确认执行。",
-        "是，确认无误，请提交。",
+        "Order #W4817420 arrived but does not fit. I would like to return all of it to the "
+        "original payment method.",
+        "Yes, return everything to the original payment method.",
+        "Confirmed, go ahead.",
+        "Yes, that is correct, please submit it.",
     ],
-    # 越权尝试：该订单不属于当前身份，必须被拒绝
+    # An attempt on someone else's order, which must be refused.
     "ownership_denied": [
-        "帮我取消订单 #W2378156。",
-        "确认取消。",
+        "Please cancel order #W2378156.",
+        "Yes, cancel it.",
     ],
 }
 
@@ -90,18 +95,18 @@ class FlowRecord:
 
 
 def run_flow(name: str, messages: list[str], settings: Settings, config: ModelConfig) -> FlowRecord:
-    """每个流程用全新的领域实例，避免流程之间互相影响。"""
+    """Each flow gets a fresh domain instance so flows cannot affect each other."""
     domain = RetailDomain()
     agent = RetailAgent(make_chat_fn(settings, config), domain, SessionState(user_id=DEMO_USER_ID))
     record = FlowRecord(flow=name, db_hash_before=domain.db_hash(), db_hash_after="")
 
-    print(f"\n=== 流程 {name} ===", flush=True)
+    print(f"\n=== flow {name} ===", flush=True)
     for message in messages:
-        print(f"  用户 > {message}")
+        print(f"  user  > {message}")
         result = agent.send(message)
-        print(f"  Agent> [{result.status}] {result.reply.strip()[:220]}")
+        print(f"  agent > [{result.status}] {result.reply.strip()[:220]}")
         if result.tool_calls:
-            print(f"         已执行工具：{', '.join(result.tool_calls)}")
+            print(f"          tools executed: {', '.join(result.tool_calls)}")
         record.turns.append(
             TurnRecord(
                 user=message,
@@ -113,14 +118,14 @@ def run_flow(name: str, messages: list[str], settings: Settings, config: ModelCo
         )
 
     record.db_hash_after = domain.db_hash()
-    print(f"  数据库状态：{'已改变' if record.db_changed else '未改变'}")
+    print(f"  database state: {'changed' if record.db_changed else 'unchanged'}")
     return record
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="M0.3 三类业务演示（会产生真实费用）")
+    parser = argparse.ArgumentParser(description="M0.3 demo of the three flows (spends real money)")
     parser.add_argument("--flow", choices=sorted(FLOWS), default=None)
-    parser.add_argument("--model", default=None, help="覆盖默认的参照模型")
+    parser.add_argument("--model", default=None, help="override the default model")
     args = parser.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
@@ -131,7 +136,7 @@ def main() -> int:
         settings = Settings()  # type: ignore[call-arg]
     except Exception as exc:
         print(
-            f"配置读取失败（检查 .env 中的 DASHSCOPE_API_KEY）：{type(exc).__name__}",
+            f"failed to read configuration (check DASHSCOPE_API_KEY in .env): {type(exc).__name__}",
             file=sys.stderr,
         )
         return 2
@@ -148,13 +153,16 @@ def main() -> int:
         "demo_user_id": DEMO_USER_ID,
         "model": config.model_id,
         "thinking": config.thinking.as_extra_body(),
-        "note": "模拟业务数据，非真实系统。数据库指纹用于验证写操作是否真的落地。",
+        "note": (
+            "Simulated business data, not a real system. The database fingerprint shows "
+            "whether a write actually landed."
+        ),
         "flows": [asdict(record) | {"db_changed": record.db_changed} for record in records],
     }
     (run_dir / "flows.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
-    print(f"\n存档：{run_dir / 'flows.json'}")
+    print(f"\narchived: {run_dir / 'flows.json'}")
     return 0
 
 

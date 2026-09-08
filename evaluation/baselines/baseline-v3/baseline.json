@@ -2,10 +2,10 @@
   "baseline_id": "baseline-v3",
   "status": "current",
   "task_split": "full",
-  "scope_note": "全集 114 题，被测对象是**本项目带写操作护栏的 Agent**。与 baseline-v2 同栈同模型同种子，逐题可配对比较；两者是两个不同的被测对象，成绩并列呈现，不合并平均。",
-  "frozen_at": "2026-09-08T15:13:48.333321+00:00",
+  "scope_note": "All 114 tasks, with this project's write-guarded agent as the subject under test. Same stack, model and seed as baseline-v2, so the two can be paired task by task. They are different subjects: their scores are presented side by side and never averaged together.",
+  "frozen_at": "2026-09-08T19:00:55.356298+00:00",
   "code": {
-    "commit": "d136a76c59ce03faa62ae17624b61ee1434ce49d",
+    "commit": "e02177f2d61ae94a495af7d96f253bf68f5f3fbd",
     "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },
@@ -67,5 +67,5 @@
     "resumed_task_ids": []
   },
   "checksum_file": "checksums.sha256",
-  "note": "成本以 scripts/analyze_eval.py 现算为准，不在此处冻结数字——价格快照会随时间新增条目，把成本抄进基线会让它悄悄过期。"
+  "note": "Cost comes from scripts/analyze_eval.py and is deliberately not frozen here: the price snapshot gains entries over time, and a cost copied into the baseline would expire silently."
 }

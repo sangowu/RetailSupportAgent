@@ -1,4 +1,5 @@
-"""评测栈冻结纪律的测试。不导入 tau2，CI 无需安装 bench 组即可运行。"""
+"""Tests for evaluation-stack freeze discipline. Does not import tau2, so CI runs them
+without the bench group."""
 
 from __future__ import annotations
 
@@ -29,7 +30,8 @@ DUMMY_JUDGE_KEY = "sk-judge-test-key-111111111111"
 
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """不读 .env：否则开发机上真实的判官配置会渗进单测，结果因人而异。"""
+    """Do not read .env, or a developer's real judge configuration would leak into unit
+    tests and results would differ per machine."""
     monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
     for name in ("RSA_JUDGE_BASE_URL", "RSA_JUDGE_API_KEY", "RSA_JUDGE_MODEL"):
         monkeypatch.delenv(name, raising=False)
@@ -46,34 +48,36 @@ def settings_with_judge(monkeypatch: pytest.MonkeyPatch) -> Settings:
 
 
 def test_frozen_stack_is_outside_the_candidate_pool() -> None:
-    """评判与模拟用户若取自候选池，等于让候选模型给自己打分。"""
+    """A judge or simulated user from the candidate pool lets a candidate grade itself."""
     assert FROZEN_USER_SIMULATOR not in CANDIDATE_MODELS
     assert FROZEN_NL_JUDGE not in CANDIDATE_MODELS
 
 
 def test_frozen_judge_uses_a_dated_snapshot_not_an_alias() -> None:
-    """别名可能被服务端悄悄更新，导致不同时间的成绩不可比。"""
+    """An alias can be repointed server-side, making scores from different dates
+    incomparable."""
     assert any(char.isdigit() for char in FROZEN_NL_JUDGE.split("-")[-1])
 
 
 def test_frozen_user_simulator_alias_risk_is_recorded() -> None:
-    """模拟用户是这条纪律的**已知例外**，把它钉成明账而不是默默破例。
+    """The simulated user is a known exception to that rule, recorded rather than
+    quietly broken.
 
-    智谱没有为 glm-5.3-flash 提供带日期的快照 ID（2026-09-07 查阅官方文档）。
-    代价是：智谱若在这个别名后面换模型，我们只能靠复跑发现，不会有任何提示。
-    这条测试的作用是——哪天有了快照 ID，它会提醒我们去钉上。
+    Zhipu publishes no dated snapshot id for glm-5.3-flash (documentation read
+    2026-09-07). The cost: if Zhipu repoints the alias, only a re-run would reveal it.
+    This test exists so that the day a snapshot id appears, we pin it.
     """
     assert FROZEN_USER_SIMULATOR == "glm-5.3-flash"
     assert not any(char.isdigit() for char in FROZEN_USER_SIMULATOR.split("-")[-1])
 
 
 def test_candidate_user_simulator_is_rejected(settings: Settings) -> None:
-    with pytest.raises(EvaluationSetupError, match="模拟用户"):
+    with pytest.raises(EvaluationSetupError, match="simulated user"):
         EvalStack(settings=settings, agent_model=REFERENCE_MODEL, user_model=REFERENCE_MODEL)
 
 
 def test_candidate_judge_is_rejected(settings: Settings) -> None:
-    with pytest.raises(EvaluationSetupError, match="评判"):
+    with pytest.raises(EvaluationSetupError, match="judge"):
         EvalStack(settings=settings, agent_model=REFERENCE_MODEL, judge_model="glm-5.2")
 
 
@@ -89,7 +93,8 @@ def test_litellm_prefix_routes_to_openai_compatible_endpoint() -> None:
 
 
 class TestIndependentJudgeEndpoint:
-    """判官跑在独立服务商上：被测账户额度耗尽不应连带判官一起挂掉。"""
+    """The judge runs on its own provider: exhausting the agent's quota must not take
+    the judge down with it."""
 
     def test_judge_model_comes_from_env(self, settings_with_judge: Settings) -> None:
         stack = EvalStack(settings=settings_with_judge, agent_model=REFERENCE_MODEL)
@@ -100,7 +105,8 @@ class TestIndependentJudgeEndpoint:
         stack = EvalStack(settings=settings_with_judge, agent_model=REFERENCE_MODEL)
         assert stack.judge_args()["api_base"] == "https://judge.example.com"
         assert stack.judge_args()["api_key"] == DUMMY_JUDGE_KEY
-        # 被测仍走 DashScope、模拟用户走智谱，三条链路不能串
+        # The agent stays on DashScope and the simulated user on Zhipu; the three
+        # routes must not cross.
         assert stack.agent_args()["api_key"] == DUMMY_KEY
         assert "bigmodel" in stack.frozen_args()["api_base"]
 
@@ -111,7 +117,8 @@ class TestIndependentJudgeEndpoint:
     def test_partial_config_falls_back_instead_of_half_wiring(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """只配了 base_url 没配 key，宁可退回默认判官，也不能拿错误的 key 去请求。"""
+        """With a base_url but no key, fall back to the default judge rather than send
+        the wrong key."""
         monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
         monkeypatch.setenv("RSA_JUDGE_BASE_URL", "https://judge.example.com")
         monkeypatch.delenv("RSA_JUDGE_API_KEY", raising=False)
@@ -125,7 +132,8 @@ class TestIndependentJudgeEndpoint:
 
 
 class TestFamilyCollision:
-    """精确匹配拦不住同家族模型——那也是一种自评偏袒，必须留痕。"""
+    """Exact matching misses same-family models, which is also self-preference and must
+    be recorded."""
 
     def test_family_extraction(self) -> None:
         assert model_family("deepseek-v4-flash") == "deepseek-v4"
@@ -134,12 +142,12 @@ class TestFamilyCollision:
         assert model_family("glm-5.2") == "glm"
 
     def test_same_family_judge_produces_a_warning(self) -> None:
-        warning = family_collision("deepseek-v4-flash", "NL 断言评判模型")
+        warning = family_collision("deepseek-v4-flash", "The NL-assertion judge")
         assert warning is not None
         assert "deepseek-v4-pro-0813" in warning
 
     def test_unrelated_judge_produces_no_warning(self) -> None:
-        assert family_collision(FROZEN_NL_JUDGE, "NL 断言评判模型") is None
+        assert family_collision(FROZEN_NL_JUDGE, "The NL-assertion judge") is None
 
     def test_warning_reaches_the_run_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
@@ -154,13 +162,15 @@ class TestFamilyCollision:
 
 
 def test_frozen_user_simulator_collides_with_a_candidate_family() -> None:
-    """换 GLM 的代价之三：模拟用户与候选池里的 glm-5.2 同属 glm 家族。
+    """Third cost of moving to GLM: the simulated user shares the glm family with
+    candidate glm-5.2.
 
-    这条警告从此每轮都会出现。留着而不是消音，因为它是真的：
-    哪天拿 glm-5.2 当被测，模拟用户就是它的同门，"聊得来"本身就是一种偏袒。
-    这条测试保证有人想通过改 family_collision 来图清净时会被拦下。
+    That warning now appears on every run. It stays rather than being silenced because
+    it is true: with glm-5.2 as the agent under test, the simulated user is its
+    relative, and getting along is itself a bias. This test blocks anyone tempted to
+    edit family_collision for quiet.
     """
-    assert family_collision(FROZEN_USER_SIMULATOR, "模拟用户") is not None
+    assert family_collision(FROZEN_USER_SIMULATOR, "The simulated user") is not None
     assert model_family(FROZEN_USER_SIMULATOR) == model_family("glm-5.2")
 
 
@@ -178,25 +188,28 @@ class TestSecretsStayOutOfReports:
         self, settings: Settings
     ) -> None:
         stack = EvalStack(settings=settings, agent_model=REFERENCE_MODEL)
-        # 密钥只能出现在真正发请求的参数里
+        # A key may appear only in the arguments that actually make the request.
         assert stack.frozen_args()["api_key"] == FAKE_USER_KEY
         assert "api_key" not in stack.describe()
         assert FAKE_USER_KEY not in str(stack.describe())
 
 
 def test_frozen_stack_drops_temperature_on_zhipu(settings: Settings) -> None:
-    """换 GLM 的代价之二：模拟用户的温度不再由我们控制。
+    """Second cost of moving to GLM: the simulated user's temperature is no longer ours
+    to set.
 
-    智谱文档写明思考模式下 temperature 被固定为 1.0。发一个 0 过去不会报错，
-    只会让 manifest 记下「我们跑在 temperature=0」的假象——所以干脆不发。
-    这意味着模拟用户的复现性下降了，是这次换型实打实的代价，不是笔误。
+    Zhipu documents that thinking mode fixes temperature at 1.0. Sending 0 does not
+    error; it would only record the false claim that we run at temperature=0, so it is
+    not sent. Reproducibility of the simulated user is lower as a result. That is a
+    real cost of the switch, not an oversight.
     """
     stack = EvalStack(settings=settings, agent_model=REFERENCE_MODEL)
     assert "temperature" not in stack.frozen_args()
 
 
 def test_frozen_stack_temperature_still_applies_off_zhipu(settings: Settings) -> None:
-    """纪律本身没废：换回吃温度的模拟用户时，仍然钉死 0。"""
+    """The rule itself stands: with a simulated user that honours temperature, it is
+    still pinned to 0."""
     stack = EvalStack(
         settings=settings, agent_model=REFERENCE_MODEL, user_model=PREVIOUS_USER_SIMULATOR
     )
@@ -204,11 +217,12 @@ def test_frozen_stack_temperature_still_applies_off_zhipu(settings: Settings) ->
 
 
 class TestAgentEndpointAndTemperature:
-    """被测方的两条纪律：端点可独立、温度必须钉死。"""
+    """Two rules for the agent under test: its endpoint may be separate, its temperature
+    must be pinned."""
 
     def test_agent_temperature_is_pinned_to_upstream_default(self, settings: Settings) -> None:
-        """上游用 default_factory 提供 temperature=0.0，只在字段缺省时生效；
-        我们每次都传自己的 dict，不显式带上就等于把它替换掉了。"""
+        """Upstream supplies temperature=0.0 through default_factory, which applies only
+        when the field is absent; passing our own dict without it replaces the default."""
         stack = EvalStack(settings=settings, agent_model=REFERENCE_MODEL)
         assert stack.agent_args()["temperature"] == 0.0
 
@@ -218,7 +232,8 @@ class TestAgentEndpointAndTemperature:
         assert stack.agent_args()["api_key"] == DUMMY_KEY
 
     def test_agent_can_use_its_own_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """同一模型跨平台价差可达 3 倍，所以被测方要能单独换端点。"""
+        """The same model can cost 3x more on another platform, so the agent must be
+        able to move endpoints on its own."""
         monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
         monkeypatch.setenv("RSA_AGENT_BASE_URL", "https://api.deepseek.com")
         monkeypatch.setenv("RSA_AGENT_API_KEY", "sk-agent-test-key-2222")
@@ -229,8 +244,8 @@ class TestAgentEndpointAndTemperature:
         assert stack.agent_is_independent is True
         assert stack.agent_args()["api_base"] == "https://api.deepseek.com"
         assert stack.agent_args()["api_key"] == "sk-agent-test-key-2222"
-        # 模拟用户绝不能跟着被测一起搬家——它是冻结评测栈的一部分。
-        # 它自己在智谱上，与被测的 DeepSeek 端点无关。
+        # The simulated user must not follow the agent: it is part of the frozen stack
+        # and lives on Zhipu, unrelated to the agent's DeepSeek endpoint.
         assert "bigmodel" in stack.frozen_args()["api_base"]
         assert stack.frozen_args()["api_key"] != "sk-agent-test-key-2222"
 
@@ -248,7 +263,8 @@ class TestAgentEndpointAndTemperature:
 
 
 class TestAgentJudgeFamilyCollision:
-    """判官给自家模型打分，是比"同候选池家族"更直接的自评偏袒。"""
+    """A judge grading its own family is more direct self-preference than sharing a
+    candidate-pool family."""
 
     def test_same_family_agent_and_judge_is_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
@@ -259,7 +275,7 @@ class TestAgentJudgeFamilyCollision:
             settings=Settings(_env_file=None),  # type: ignore[call-arg]
             agent_model="deepseek-v4-pro",
         )
-        assert any("给自家模型的输出打分" in w for w in stack.warnings())
+        assert any("grading its own family" in w for w in stack.warnings())
 
     def test_cross_family_agent_and_judge_is_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DASHSCOPE_API_KEY", DUMMY_KEY)
@@ -270,20 +286,22 @@ class TestAgentJudgeFamilyCollision:
             settings=Settings(_env_file=None),  # type: ignore[call-arg]
             agent_model="deepseek-v4-pro",
         )
-        # 不能再断言"没有任何警告"：冻结模拟用户 glm-5.3-flash 与候选池里的
-        # glm-5.2 同属 glm 家族，那条提示现在恒在（见
-        # test_frozen_user_simulator_collides_with_a_candidate_family）。
-        # 这里要断言的是**被测与判官**不同族，所以只查那一条。
-        assert not any("给自家模型的输出打分" in w for w in stack.warnings())
+        # "No warnings at all" is no longer assertable: the frozen simulated user
+        # glm-5.3-flash shares the glm family with candidate glm-5.2, so that warning is
+        # permanent (see test_frozen_user_simulator_collides_with_a_candidate_family).
+        # This asserts only that agent and judge are in different families.
+        assert not any("grading its own family" in w for w in stack.warnings())
 
 
 class TestUserSimulatorThinking:
-    """模拟用户是冻结评测栈：改它会让全部历史成绩失效。
+    """The simulated user is part of the frozen stack: changing it invalidates every
+    historical score.
 
-    2026-09-07 换成 glm-5.3-flash 后，这里的口径变了两处，都是**能力下降**，
-    必须由测试记着，不能只当成"改个断言"：
-      1. GLM-5.3 系列**不允许关思考**，`user_thinking_disabled` 这个对照开关没了；
-      2. GLM 思考模式下 temperature 被服务端固定为 1.0，我们发的 0 不生效。
+    Two capabilities were lost when it moved to glm-5.3-flash on 2026-09-07, and the
+    tests record both rather than treating them as assertion edits:
+      1. the GLM-5.3 family cannot disable thinking, so the `user_thinking_disabled`
+         comparison switch is gone;
+      2. GLM fixes temperature at 1.0 in thinking mode, so the 0 we send does not apply.
     """
 
     def test_thinking_stays_on_by_default(self, settings: Settings) -> None:
@@ -292,40 +310,44 @@ class TestUserSimulatorThinking:
         assert stack.frozen_args()["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_effort_is_pinned_not_left_to_the_server(self, settings: Settings) -> None:
-        """档位必须显式下发。
+        """The level must be sent explicitly.
 
-        不下发不等于"用某个固定档位"，而是"用服务端当天的默认值"——
-        GLM 实测默认 2698 个推理 token，high 只有 151：差了一个数量级。
-        服务商改了默认值，考卷难度就跟着变，而我们不会察觉。
+        Omitting it does not mean "some fixed level", it means "whatever the server
+        defaults to that day": GLM's default measured 2698 reasoning tokens against 151
+        at high, an order of magnitude apart. If the provider changes the default, the
+        difficulty of the test changes and we would not notice.
         """
         stack = EvalStack(settings=settings, agent_model=REFERENCE_MODEL)
         assert stack.frozen_args()["extra_body"]["reasoning_effort"] == THINKING_EFFORT
 
     def test_zhipu_dialect_puts_both_keys_at_top_level(self, settings: Settings) -> None:
-        """智谱把 thinking 和 reasoning_effort 都放顶层，与另外两家都不同。
+        """Zhipu puts thinking and reasoning_effort at the top level, unlike the other two.
 
-        发错方言不会报错，只会被静默忽略——那样跑出来的是"服务端默认档位"的成绩。
+        The wrong dialect is silently ignored, and the run would then measure the
+        server's default level.
         """
         assert EvalStack(settings=settings, agent_model=REFERENCE_MODEL).frozen_args()[
             "extra_body"
         ] == {"thinking": {"type": "enabled"}, "reasoning_effort": THINKING_EFFORT}
 
     def test_disabling_thinking_fails_at_setup_not_mid_run(self, settings: Settings) -> None:
-        """换 GLM 的代价之一：关思考的对照实验做不了了，必须当场报错。
+        """First cost of moving to GLM: the thinking-off comparison is impossible and
+        must fail immediately.
 
-        `frozen_args()` 才是真正会抛的地方，但那时已经在跑批中途——钱花了、
-        结果没有。所以构造时就拦。
+        `frozen_args()` is where it would actually raise, but that is mid-batch, after
+        money has been spent and with nothing to show. So it is caught at construction.
         """
-        with pytest.raises(EvaluationSetupError, match="不支持关闭思考"):
+        with pytest.raises(EvaluationSetupError, match="cannot disable thinking"):
             EvalStack(settings=settings, agent_model=REFERENCE_MODEL, user_thinking_disabled=True)
 
     def test_the_switch_is_recorded_in_the_manifest(self, settings: Settings) -> None:
-        """成绩可不可比取决于这个开关，它必须出现在运行 manifest 里。"""
+        """Comparability depends on this switch, so it must appear in the run manifest."""
         on = EvalStack(settings=settings, agent_model=REFERENCE_MODEL)
         assert on.describe()["user_thinking_disabled"] is False
 
     def test_switch_is_still_available_on_the_previous_simulator(self, settings: Settings) -> None:
-        """旧模拟用户仍可关思考：复跑历史对照实验的路没被堵死。"""
+        """The old simulated user can still disable thinking, so historical comparisons
+        remain reproducible."""
         stack = EvalStack(
             settings=settings,
             agent_model=REFERENCE_MODEL,
@@ -333,4 +355,4 @@ class TestUserSimulatorThinking:
             user_thinking_disabled=True,
         )
         assert stack.frozen_args()["extra_body"] == {"enable_thinking": False}
-        assert stack.judge_thinking_disabled is True  # 判官独立于此开关
+        assert stack.judge_thinking_disabled is True  # the judge is independent of it

@@ -1,10 +1,12 @@
-"""按业务范围分层报告。
+"""Layered reporting by business scope.
 
-M0.1 定的规矩：**总分与 42 题子集分都要给，两者不互相冒充**。
-只报总分会掩盖"本项目声明支持的业务上表现如何"；只报子集分则不能再声称
-跑的是标准 τ²-bench Retail。
+The M0.1 rule: report both the total and the 42-task subset, and let neither
+stand in for the other. Reporting only the total hides how the declared flows
+perform; reporting only the subset means the run can no longer be called
+standard τ²-bench Retail.
 
-这里守两件事：42 题这个子集的定义没有漂移；样本不够时拒绝报分而不是硬给一个数。
+Two things are guarded here: the definition of the 42-task subset has not
+drifted, and a small sample is refused rather than scored anyway.
 """
 
 from __future__ import annotations
@@ -28,7 +30,8 @@ def _sim(task_id: str, reward: float | None) -> dict[str, Any]:
 
 class TestTheSubsetDefinition:
     def test_in_scope_is_exactly_read_only_plus_in_scope_write(self) -> None:
-        """42 = 只读 8 + 范围内写 34。这个定义漂了，"42 题子集分"就换了含义。"""
+        """42 = 8 read-only + 34 in-scope writes. If the definition drifts, the
+        "42-task subset score" means something else."""
         assert set(IN_SCOPE_LABELS) == {"read_only", "in_scope_write"}
 
     def test_the_subset_really_has_42_tasks(self) -> None:
@@ -36,16 +39,16 @@ class TestTheSubsetDefinition:
             (REPO / "evaluation" / "task_sets" / "scope_labels.json").read_text(encoding="utf-8")
         )["labels"]
         in_scope = [t for t, label in labels.items() if label in IN_SCOPE_LABELS]
-        assert len(in_scope) == 42, "子集大小变了——M0.1 声明的是 114 题里的 42 题"
+        assert len(in_scope) == 42, "the subset size changed; M0.1 declared 42 of the 114 tasks"
         assert len(labels) == 114
 
 
 class TestReporting:
     def test_small_sample_is_refused_not_reported(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """样本不够就说清楚，不要硬报一个数。
+        """State the small sample instead of printing a number anyway.
 
-        holdout 只有 13 题落在这个子集里——13 道题撑不住任何结论，
-        而一个印出来的比例看上去和全集分一样权威。
+        Only 13 holdout tasks fall in this subset, which supports no conclusion,
+        while a printed ratio looks as authoritative as the full-set score.
         """
         labels = json.loads(
             (REPO / "evaluation" / "task_sets" / "scope_labels.json").read_text(encoding="utf-8")
@@ -53,26 +56,29 @@ class TestReporting:
         in_scope = [t for t, label in labels.items() if label in IN_SCOPE_LABELS][:5]
         print_scope_breakdown([_sim(t, 1.0) for t in in_scope])
         out = capsys.readouterr().out
-        assert "样本太少，不单独报分" in out
-        assert "= 1.0000" not in out.split("样本太少")[-1]
+        assert "Sample too small to score separately" in out
+        assert "= 1.0000" not in out.split("Sample too small")[-1]
 
     def test_full_sample_reports_both_scopes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """够样本时两个口径都要出现，并明说它们不互相冒充。"""
+        """With enough sample both figures appear, and the text says neither stands
+        in for the other."""
         labels = json.loads(
             (REPO / "evaluation" / "task_sets" / "scope_labels.json").read_text(encoding="utf-8")
         )["labels"]
         sims = [_sim(t, 1.0 if label in IN_SCOPE_LABELS else 0.0) for t, label in labels.items()]
         print_scope_breakdown(sims)
         out = capsys.readouterr().out
-        assert "42 题子集）：42/42 = 1.0000" in out
-        assert "两者不互相冒充" in out
-        # 范围外那 70 题全判 0，分层里必须如实反映，而不是被总分平均掉
+        assert "Declared flows (42-task subset): 42/42 = 1.0000" in out
+        assert "neither stands in for the other" in out
+        # The 70 out-of-scope tasks all scored 0, which the layered view must show
+        # rather than average away into the total.
         assert "0/70" in out
 
     def test_unscored_tasks_are_left_out_of_every_bucket(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """没拿到分数的题不能进分母，否则丢题会让分层成绩虚低。"""
+        """Unscored tasks stay out of the denominator, or losing tasks would drag
+        the layered score down."""
         labels = json.loads(
             (REPO / "evaluation" / "task_sets" / "scope_labels.json").read_text(encoding="utf-8")
         )["labels"]
@@ -80,4 +86,4 @@ class TestReporting:
         sims = [_sim(t, 1.0) for t in in_scope[:30]] + [_sim(t, None) for t in in_scope[30:]]
         print_scope_breakdown(sims)
         out = capsys.readouterr().out
-        assert "30 题" in out, "未评分的题混进了分母"
+        assert "30" in out, "unscored tasks reached the denominator"

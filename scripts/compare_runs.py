@@ -1,14 +1,15 @@
-"""配对比较两次运行：McNemar 精确检验 + 成本/用量对比。
+"""Paired comparison of two runs: McNemar exact test plus cost and usage.
 
-为什么必须配对：两次运行跑的是**同一批题**，题目难度是共享的。
-按独立两组比平均分会把题目难度当成随机误差，白白丢掉大部分统计功效。
-McNemar 只看"一边过、另一边没过"的那些题，正是我们想问的东西。
+Pairing is required because both runs cover the same tasks, so task difficulty
+is shared. Comparing averages as two independent groups treats difficulty as
+random error and throws away most of the statistical power. McNemar looks only
+at tasks one run passed and the other did not, which is the question being asked.
 
-为什么用精确检验而不是卡方近似：不一致的题通常只有个位数，
-卡方在这个量级上不可靠。
+The exact test rather than a chi-squared approximation: the number of
+disagreements is usually in the single digits, where chi-squared is unreliable.
 
-用法：
-    uv run python scripts/compare_runs.py <基线目录名> <对比目录名>
+Usage:
+    uv run python scripts/compare_runs.py <baseline dir> <candidate dir>
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ RESULTS_ROOT = REPO / "evaluation" / "results"
 
 
 def rewards_by_task(run_dir: Path) -> dict[str, float]:
-    """题号 -> 奖励。未评分的模拟不计入，不当成 0。"""
+    """Task id to reward. Unscored simulations are excluded, not counted as 0."""
     out: dict[str, float] = {}
     for sim in load_simulations(run_dir):
         info = sim.get("reward_info") or {}
@@ -41,7 +42,8 @@ def rewards_by_task(run_dir: Path) -> dict[str, float]:
 
 
 def usage_of(run_dir: Path) -> dict[str, int]:
-    """从 messages 里累计被测侧用量。判官用量另记在 summary.json。"""
+    """Accumulate agent-side usage from messages. Judge usage is recorded
+    separately in summary.json."""
     totals = {"calls": 0, "prompt": 0, "completion": 0, "cached": 0, "reasoning": 0}
     for sim in load_simulations(run_dir):
         for message in sim.get("messages") or []:
@@ -63,7 +65,8 @@ def usage_of(run_dir: Path) -> dict[str, int]:
 
 
 def mcnemar_exact(b: int, c: int) -> float:
-    """双尾精确检验。b/c 是两个方向的不一致数；一致的题不携带信息。"""
+    """Two-sided exact test. b and c are the disagreements in each direction;
+    tasks both runs agree on carry no information."""
     n = b + c
     if n == 0:
         return 1.0
@@ -90,22 +93,24 @@ def main() -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="两次运行的配对比较（McNemar 精确检验）")
-    parser.add_argument("baseline", help="基线运行目录名")
-    parser.add_argument("candidate", help="对比运行目录名")
+    parser = argparse.ArgumentParser(
+        description="Paired comparison of two runs (McNemar exact test)"
+    )
+    parser.add_argument("baseline", help="baseline run directory name")
+    parser.add_argument("candidate", help="candidate run directory name")
     args = parser.parse_args()
 
     base_dir, cand_dir = RESULTS_ROOT / args.baseline, RESULTS_ROOT / args.candidate
     base, cand = rewards_by_task(base_dir), rewards_by_task(cand_dir)
     shared = sorted(set(base) & set(cand), key=int)
     if not shared:
-        raise SystemExit("两次运行没有共同的已评分题目，无法配对比较")
+        raise SystemExit("the two runs share no scored tasks, so they cannot be paired")
 
     only_base = sorted(set(base) - set(cand), key=int)
     only_cand = sorted(set(cand) - set(base), key=int)
     if only_base or only_cand:
-        print(f"[警告] 题集不完全重合，只比较共有的 {len(shared)} 题")
-        print(f"    仅基线有：{only_base}    仅对比有：{only_cand}")
+        print(f"[warning] the task sets differ; comparing the {len(shared)} shared tasks")
+        print(f"    baseline only: {only_base}    candidate only: {only_cand}")
 
     facts = load_task_facts()
     base_sum, cand_sum = summary_of(base_dir), summary_of(cand_dir)
@@ -115,67 +120,74 @@ def main() -> int:
     def describe(label: str, run: dict[str, Any]) -> None:
         stack = run.get("stack") or {}
         print(
-            f"  {label:<6} {stack.get('agent_model', '?'):<20}"
-            f" 思考 {stack.get('agent_thinking_enabled', '?')}"
-            f"/{stack.get('agent_thinking_effort', '未记录')}"
-            f"  用户档位 {stack.get('user_simulator_thinking_effort', '未记录')}"
-            f"  判官格式 {stack.get('nl_judge_response_format', '未记录')}"
+            f"  {label:<10} {stack.get('agent_model', '?'):<20}"
+            f" thinking {stack.get('agent_thinking_enabled', '?')}"
+            f"/{stack.get('agent_thinking_effort', 'not recorded')}"
+            f"  user effort {stack.get('user_simulator_thinking_effort', 'not recorded')}"
+            f"  judge format {stack.get('nl_judge_response_format', 'not recorded')}"
         )
 
-    print("=== 两次运行的配置 ===")
-    describe("基线", base_sum)
-    describe("对比", cand_sum)
+    print("=== configuration of the two runs ===")
+    describe("baseline", base_sum)
+    describe("candidate", cand_sum)
 
     both = [t for t in shared if base[t] >= 1.0 and cand[t] >= 1.0]
     neither = [t for t in shared if base[t] < 1.0 and cand[t] < 1.0]
     lost = [t for t in shared if base[t] >= 1.0 and cand[t] < 1.0]
     gained = [t for t in shared if base[t] < 1.0 and cand[t] >= 1.0]
 
-    print(f"\n=== 配对结果（共有 {len(shared)} 题）===")
+    print(f"\n=== paired results ({len(shared)} shared tasks) ===")
     print(
-        f"  基线 {len(both) + len(lost)}/{len(shared)}"
-        f"    对比 {len(both) + len(gained)}/{len(shared)}"
+        f"  baseline {len(both) + len(lost)}/{len(shared)}"
+        f"    candidate {len(both) + len(gained)}/{len(shared)}"
     )
-    print(f"  两边都过 {len(both)}    两边都没过 {len(neither)}")
-    print(f"  对比修好了 {len(gained)} 题 {gained}")
-    print(f"  对比弄坏了 {len(lost)} 题 {lost}")
+    print(f"  both passed {len(both)}    neither passed {len(neither)}")
+    print(f"  candidate fixed {len(gained)} tasks {gained}")
+    print(f"  candidate broke {len(lost)} tasks {lost}")
 
     p = mcnemar_exact(len(lost), len(gained))
-    print(f"\n  McNemar 精确检验 p = {p:.4f}", end="")
+    print(f"\n  McNemar exact test p = {p:.4f}", end="")
     if len(gained) + len(lost) == 0:
-        print("    （没有任何一题结果不同，两者在这批题上无法区分）")
+        print("    (no task changed; the two are indistinguishable on this set)")
     elif p < 0.05:
-        print("    **差异显著**")
+        print("    significant")
     else:
-        print(f"    未达显著——{len(gained) + len(lost)} 题的不一致量本就撑不起结论")
+        print(
+            f"    not significant: {len(gained) + len(lost)} disagreements cannot"
+            " support a conclusion"
+        )
 
     judged = [t for t in shared if facts[t].invokes_judge]
     if judged:
         b_j = sum(1 for t in judged if base[t] >= 1.0)
         c_j = sum(1 for t in judged if cand[t] >= 1.0)
-        print(f"\n  仅看真正调判官的 {len(judged)} 题：基线 {b_j}    对比 {c_j}")
+        print(
+            f"\n  over the {len(judged)} tasks that reach the judge: "
+            f"baseline {b_j}    candidate {c_j}"
+        )
 
-    print("\n=== 被测侧用量与成本 ===")
+    print("\n=== agent-side usage and cost ===")
     tier = deepseek_tier()
     for label, run_dir, model, run in (
-        ("基线", base_dir, base_model, base_sum),
-        ("对比", cand_dir, cand_model, cand_sum),
+        ("baseline", base_dir, base_model, base_sum),
+        ("candidate", cand_dir, cand_model, cand_sum),
     ):
         u = usage_of(run_dir)
         cost = cost_of(model, u)
         judge = run.get("judge_usage") or {}
-        shown = "价格快照里没有该模型" if cost is None else f"{cost:.3f} 元"
+        shown = "model not in the price snapshot" if cost is None else f"{cost:.3f} CNY"
         print(
-            f"  {label}  {u['calls']:>4} 次调用   输入 {u['prompt']:>8}"
-            f"（缓存 {u['cached']:>7}）   输出 {u['completion']:>6}"
-            f"（推理 {u['reasoning']:>6}）   {shown}"
+            f"  {label:<10} {u['calls']:>4} calls   input {u['prompt']:>8}"
+            f" (cached {u['cached']:>7})   output {u['completion']:>6}"
+            f" (reasoning {u['reasoning']:>6})   {shown}"
         )
         if judge:
             print(
-                f"        判官 {judge.get('judge_calls', 0)} 次，"
-                f"输入 {judge.get('prompt_tokens', 0)}，输出 {judge.get('completion_tokens', 0)}"
+                f"        judge {judge.get('judge_calls', 0)} calls, "
+                f"input {judge.get('prompt_tokens', 0)}, "
+                f"output {judge.get('completion_tokens', 0)}"
             )
-    print(f"\n  （DeepSeek 时段：{tier}；成本按 pricing.py 快照折算）")
+    print(f"\n  (DeepSeek tier: {tier}; cost computed from the pricing.py snapshot)")
     return 0
 
 

@@ -1,67 +1,93 @@
-# MVP 与分阶段开发
+# MVP and staged development
 
-## 阶段原则
+## Staging principle
 
-先实现并冻结 M0，后续按单一主题开发。每一步在动手前写明问题、改动、预期收益、可能代价、适用测试和对比方法。未经验证不能把“新增了组件”作为完成证据。
+Implement and freeze M0 first, then develop one theme at a time. Before each step,
+write down the problem, the change, the expected benefit, the possible cost, the tests
+that apply and the comparison method. "A component was added" is not evidence of
+completion until it has been verified.
 
-## M0：最小可运行版本
+## M0: minimal working version
 
-### M0.1 固定协议和环境
+### M0.1 Freeze the protocol and environment
 
-- 固定 τ²-bench commit、许可、Retail 数据、政策、工具和评分器，建立来源清单与校验和。
-- 检查所选版本是否具有需要的三类任务；不得捏造任务数或私自改变原始政策。
-- 固定开发、回归和保留测试任务清单。建立原始结果格式、运行 manifest 和对比报告。
-- 搭建静态检查、最小相关测试和 CI；此时没有 MVP 性能基线，应明确报告“不适用”。
+- Pin the τ²-bench commit, licence, Retail data, policy, tools and evaluators, with a
+  source inventory and checksums.
+- Check that the pinned version actually contains the three kinds of task needed. Do not
+  invent task counts or alter the original policy.
+- Fix the dev, regression and holdout task lists. Establish the raw result format, the
+  run manifest and the comparison report.
+- Set up static checks, the minimal relevant tests and CI. There is no MVP performance
+  baseline at this point, and that must be reported as "not applicable".
 
-### M0.2 模型接口与工具适配
+### M0.2 Model interface and tool adaptation
 
-- OpenAI SDK 连接指定 endpoint，逐个验证候选模型精确 ID。
-- 验证工具请求、参数、工具结果回传、多轮对话、流式 usage、超时及截断。
-- 核验思考参数能力表；先建立一个明确配置的实验参照，不默认最大思考。
-- 每个评测任务和本地会话拥有独立环境；禁止共享可变上游 DB 导致相互污染。
+- Connect the OpenAI SDK to the given endpoint and verify each candidate's exact model id.
+- Verify tool requests, arguments, tool-result round trips, multi-turn conversation,
+  streaming usage, timeouts and truncation.
+- Verify the thinking-parameter capability table, and establish one explicitly
+  configured reference rather than defaulting to maximum thinking.
+- Give every evaluation task and local session its own environment. Sharing a mutable
+  upstream database would let them contaminate each other.
 
-### M0.3 最小业务闭环
+### M0.3 Minimal business loop
 
-查询订单 → 必要补问 → 判断政策 → 明确确认 → 校验 → 执行 → 解释实际结果。
+Look up the order, ask for missing details, apply policy, obtain explicit confirmation,
+validate, execute, and report the actual result.
 
-实现 Python、LangGraph、FastAPI 和最小 Gradio 界面。暂用固定模拟身份并仅绑定本地地址，不提供公开注册。数据是 τ²-bench 模拟业务数据，不接真实系统。
+Implemented with Python, LangGraph, FastAPI and a minimal Gradio UI. It uses a fixed
+simulated identity, binds to localhost only, and offers no public registration. The data
+is τ²-bench simulated business data, connected to no real system.
 
-必需底线：订单归属、工具参数和政策校验，写操作确认绑定具体参数，最大步骤、超时与停止条件。同一会话串行处理，不在 M0 宣称已具备跨进程幂等或生产恢复能力。
+Baseline requirements: order ownership, tool arguments and policy checks; write
+confirmation bound to specific arguments; a step limit, a timeout and stop conditions.
+One session is processed serially, and M0 claims neither cross-process idempotency nor
+production recovery.
 
-原始 τ²-bench 评测遵循其身份识别协议；应用演示使用固定身份上下文。二者分别记录，不能把演示身份绕过方式用于改变标准评分条件。
+A standard τ²-bench run follows upstream's identification protocol, while the
+application demo uses a fixed identity context. The two are recorded separately, and the
+demo's identity shortcut must never be used to change standard scoring conditions.
 
-### M0.4 模型和思考参数实验
+### M0.4 Model and thinking-parameter experiments
 
-按 [模型实验](MODEL_EXPERIMENTS.md) 执行能力检查、开发集筛选、逐档比较和独立验证。维持相同业务实现与评测器，保存淘汰配置和失败结果。
+Follow [model experiments](MODEL_EXPERIMENTS.md): capability checks, dev-set selection,
+level-by-level comparison and independent verification. Keep the business implementation
+and evaluator identical throughout, and keep the rejected configurations and failed
+results.
 
-### M0.5 冻结 MVP
+### M0.5 Freeze the MVP
 
-- 核心测试通过；预先确定的质量下限满足。
-- 独立验证完成，结论足以支持选型；不明确就继续采样或报告阻塞原因。
-- 固定一个模型和思考配置；动态模型或预算路由不进入 MVP。
-- 原始结果、配置、依赖、源码和镜像可回溯；Langfuse trace 与结果相互关联。
-- 本地一键启动、停止和三类演示流程可复现。
-- 建立 `baseline-v1` 归档及校验和，交付 M0 报告后停止推进后续阶段。
+- Core tests pass and the quality floor set in advance is met.
+- Independent verification is complete and supports the selection. If it does not,
+  continue sampling or report what is blocking.
+- One model and one thinking configuration are fixed. Dynamic model or budget routing is
+  not part of the MVP.
+- Raw results, configuration, dependencies, source and image are traceable, and Langfuse
+  traces correlate with results.
+- Local start, stop and the three demo flows are reproducible.
+- `baseline-v1` is archived with checksums, and after the M0 report is delivered, later
+  stages do not start automatically.
 
-> **2026-09-07：M0 已冻结。** 六条验收全部满足，[M0 交付报告](M0_REPORT.md) 已交付。
-> 基线为 `baseline-v2`（全集 114 题，0.8509），`baseline-v1`（holdout 40 题）留档。
-> 按本节最后一句，后续阶段暂停推进；M1–M7 各自作为独立主题，
-> 每一步都要有对基线的性能对比。
+> **2026-09-07: M0 is frozen.** All six acceptance criteria are met and the
+> [M0 report](M0_REPORT.md) has been delivered. The baseline is `baseline-v2` (all 114
+> tasks, 0.8509), with `baseline-v1` (40-task holdout) archived. M0.6 later added
+> `baseline-v3` for this project's own agent (102/114, 0 unconfirmed writes).
+> Per the last line of this section, later stages proceed one at a time, each with a
+> performance comparison against the baseline.
 
-## 后续路线
+## Roadmap
 
-| 阶段 | 单独开发的主题 | 新能力验收 | 性能对比 |
+| Stage | Theme developed on its own | Acceptance for the new capability | Performance comparison |
 |---|---|---|---|
-| M1 | PostgreSQL、迁移、事务、幂等 | 重试与并发不重复修改，失败回滚 | 数据库读写开销、成功率 |
-| M2 | checkpoint、任务领取、恢复 | 重启可恢复、不重复执行 | 恢复耗时、正常流程延迟 |
-| M3 | Cognito、角色和资源权限 | 无越权，Token 与归属校验 | 认证延迟与原业务成功率 |
-| M4 | 分配、审批、接管 | 正确升级、拒绝与继续执行 | 系统时间与人工等待分开 |
-| M5 | 性能/模型/思考优化 | 一次只优化一个主题 | 同任务的质量、延迟、成本 |
-| M6 | AWS、Terraform、一键启停 | 创建、登录、流式、归档、清理、回滚 | 单独建立 AWS 环境基线 |
-| M7 | 界面与演示完善 | 用户操作、状态与错误展示 | 原后端不退步，交互单独验收 |
+| M1 | PostgreSQL, migrations, transactions, idempotency | Retries and concurrency do not repeat a modification; failures roll back | Database read/write overhead, success rate |
+| M2 | Checkpoints, task claiming, recovery | Recovers after a restart without re-executing | Recovery time, latency of the normal path |
+| M3 | Cognito, roles and resource permissions | No privilege escalation; token and ownership checks | Authentication latency and the existing success rate |
+| M4 | Assignment, approval, handoff | Correct escalation, refusal and continuation | System time and human waiting reported separately |
+| M5 | Performance, model and thinking optimization | One theme optimized at a time | Quality, latency and cost on the same tasks |
+| M6 | AWS, Terraform, one-command start/stop | Creation, login, streaming, archiving, teardown, rollback | A separate AWS baseline |
+| M7 | UI and demo completion | User actions, state and error display | No regression in the existing backend; interaction accepted separately |
 
-阶段可细分，但每一步都使用 [开发报告模板](CHANGE_REPORT_TEMPLATE.md)。新增功能以能力提升验收，不要求虚构成本下降；无基准对比报告仍不得放行。
-
-## 本轮交付限制
-
-本轮只写设计文档，没有代码、真实模型调用、实际 CI workflow 或 AWS 资源。后续实现遵循独立任务授权。依赖版本、上游 commit、模型可用性及基线数值均在 M0 实测后填写，不能用示例值充当结果。
+A stage may be subdivided, but every step uses the
+[change report template](CHANGE_REPORT_TEMPLATE.md). A new feature is accepted on the
+capability it adds and is not required to invent a cost reduction, and nothing is
+released without a comparison report.

@@ -1,16 +1,20 @@
 <#
 .SYNOPSIS
-    本地启停脚本的共用部分：进程登记、身份核对、健康等待。
+    Shared parts of the local start/stop scripts: process records, identity checks,
+    health waiting.
 
 .DESCRIPTION
-    这里最要紧的一件事是**只停我们自己启的进程**。
+    The important property here is that only processes we started are ever stopped.
 
-    Windows 会复用 PID：我们启动时记下的 4321，等到停服时可能已经是别人的进程了。
-    只按 PID 停，或者更糟——按 "python" 之类的名字模糊匹配去停，都可能杀掉操作者
-    正在跑的评测甚至无关程序。所以每个服务登记的不只是 PID，还有**进程启动时刻**，
-    停之前两者都要对上；对不上就拒绝停并说明原因，让人自己处理。
+    Windows reuses PIDs: the 4321 recorded at startup may belong to something else by
+    the time the stop script runs. Stopping by PID alone, or worse by a name match such
+    as "python", could kill an evaluation the operator is running, or an unrelated
+    program. Each service therefore records its start time as well as its PID, and both
+    must match before anything is stopped. On a mismatch the stop is refused with an
+    explanation.
 
-    这不是理论风险：一轮 τ²-bench 评测要跑几十分钟，正是最容易被误杀的东西。
+    This is not a theoretical risk: a τ²-bench run takes tens of minutes and is exactly
+    the kind of thing that would be killed by accident.
 #>
 
 Set-StrictMode -Version Latest
@@ -38,8 +42,8 @@ function Get-LogPath([string]$Name) {
 
 function Save-ServiceRecord {
     <#
-        登记一个我们启动的服务。StartTime 是防 PID 复用的关键，
-        必须存成不受本地化影响的往返格式（"o"），不能存 ToString() 的本地时间。
+        Record a service we started. StartTime is what defeats PID reuse and must be
+        stored in the round-trip format ("o"), never as a localized ToString().
     #>
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -74,24 +78,26 @@ function Remove-ServiceRecord([string]$Name) {
 
 function Resolve-OurProcess {
     <#
-        按登记信息找回进程，并核对身份。
+        Find the recorded process again and verify its identity.
 
-        返回：
-          @{ Status = "running";  Process = <进程> }   PID 与启动时刻都对上
-          @{ Status = "gone" }                          进程已不在（正常停过或崩了）
-          @{ Status = "foreign"; Detail = "..." }       PID 被别人占了——**绝不能停**
+        Returns:
+          @{ Status = "running";  Process = <process> }  PID and start time both match
+          @{ Status = "gone" }                           the process is no longer there
+          @{ Status = "foreign"; Detail = "..." }        the PID belongs to something else
     #>
     param([Parameter(Mandatory)]$Record)
 
     $proc = Get-Process -Id $Record.pid -ErrorAction SilentlyContinue
     if ($null -eq $proc) { return @{ Status = "gone" } }
 
-    # PID 复用的唯一可靠判据：同一个 PID 必须还是同一时刻启动的那个进程。
+    # The only reliable test against PID reuse: the same PID must still be the process
+    # that started at the same moment.
     #
-    # ConvertFrom-Json 会把 ISO-8601 字符串**自动转成 DateTime 对象**，所以这里
-    # 拿到的通常已经是 DateTime，不是字符串。原先无条件按字符串解析能跑通，
-    # 只是因为 PowerShell 又把它隐式 ToString() 回去了——那用的是**当地格式**，
-    # 换一台区域设置不同的机器就可能解析失败，而失败的后果是守卫失效。
+    # ConvertFrom-Json turns an ISO-8601 string into a DateTime object, so this value is
+    # usually already a DateTime rather than a string. Parsing it unconditionally as a
+    # string worked only because PowerShell implicitly called ToString() on it, using
+    # the current culture's format; on a machine with different regional settings that
+    # parse could fail, and a failed parse disables the guard.
     $raw = $Record.start_time
     if ($raw -is [datetime]) {
         $recorded = $raw
@@ -104,14 +110,14 @@ function Resolve-OurProcess {
     if ([math]::Abs(($actual - $recorded).TotalSeconds) -gt 2) {
         return @{
             Status = "foreign"
-            Detail = "PID $($Record.pid) 现在的启动时刻是 $($actual.ToString('o'))，登记的是 $($recorded.ToString('o'))——这个 PID 已被别的进程占用"
+            Detail = "PID $($Record.pid) now started at $($actual.ToString('o')) but was recorded as $($recorded.ToString('o')): the PID has been taken by another process"
         }
     }
     return @{ Status = "running"; Process = $proc }
 }
 
 function Test-Endpoint {
-    <# 探一次地址。通了返回响应体，没通返回 $null。#>
+    <# Probe a URL once. Returns the response body, or $null if it did not respond. #>
     param([Parameter(Mandatory)][string]$Url, [int]$TimeoutSec = 3)
     try {
         return Invoke-RestMethod -Uri $Url -TimeoutSec $TimeoutSec -ErrorAction Stop
@@ -122,8 +128,10 @@ function Test-Endpoint {
 
 function Wait-ForEndpoint {
     <#
-        等到地址可用为止。**同时盯着进程是否还活着**——进程已经退了还傻等到超时，
-        只会让操作者多等几十秒才看到一个没有信息量的"超时"，而真正的原因在日志里。
+        Wait until the URL responds, while also watching whether the process is still
+        alive. Waiting out the full timeout after the process has exited only makes the
+        operator wait tens of seconds for an uninformative "timeout" while the real
+        reason is in the log.
     #>
     param(
         [Parameter(Mandatory)][string]$Url,
@@ -133,14 +141,14 @@ function Wait-ForEndpoint {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         if ($Process.HasExited) {
-            return @{ Ok = $false; Reason = "进程已退出（退出码 $($Process.ExitCode)）" }
+            return @{ Ok = $false; Reason = "the process exited (exit code $($Process.ExitCode))" }
         }
         if ($null -ne (Test-Endpoint -Url $Url -TimeoutSec 2)) {
             return @{ Ok = $true }
         }
         Start-Sleep -Milliseconds 500
     }
-    return @{ Ok = $false; Reason = "等待 $TimeoutSec 秒仍未就绪" }
+    return @{ Ok = $false; Reason = "still not ready after $TimeoutSec seconds" }
 }
 
 function Test-PortFree {
@@ -151,11 +159,12 @@ function Test-PortFree {
 
 function Stop-OurProcess {
     <#
-        停一个我们启的进程。身份对不上就**拒绝停**并如实报告。
+        Stop a process we started. A mismatched identity refuses the stop and reports why.
 
-        先请它自己退（CloseMainWindow 对隐藏窗口的控制台进程通常无效，所以直接
-        Stop-Process），再等它真的走。等待是必要的：立刻返回会让紧接着的重启撞上
-        还没释放的端口。
+        Ask it to exit (CloseMainWindow usually does nothing for a hidden console
+        process, so Stop-Process is used directly), then wait until it is really gone.
+        The wait matters: returning immediately would make a following restart collide
+        with a port that has not been released yet.
     #>
     param([Parameter(Mandatory)][string]$Name)
 
@@ -169,7 +178,7 @@ function Stop-OurProcess {
             return @{ Status = "already-stopped"; Pid = $record.pid }
         }
         "foreign" {
-            # 不删登记：留着让人能看到发生过什么。
+            # The record is kept so the operator can see what happened.
             return @{ Status = "refused"; Detail = $found.Detail; Pid = $record.pid }
         }
     }

@@ -1,4 +1,5 @@
-"""对照真实检出的校验；未拉取上游时跳过，不伪装成通过。"""
+"""Verification against the real checkout. Skipped when upstream has not been
+fetched, rather than passing vacuously."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from retail_support_agent.tau2_pin import DEFAULT_CHECKOUT, verify_checkout
 
 pytestmark = pytest.mark.skipif(
     not (DEFAULT_CHECKOUT / ".git").is_dir(),
-    reason="未拉取 τ²-bench，先运行 scripts/fetch_tau2.py",
+    reason="τ²-bench not fetched; run scripts/fetch_tau2.py first",
 )
 
 
@@ -20,7 +21,8 @@ def test_checkout_matches_manifest() -> None:
 
 
 def test_checkout_disables_line_ending_conversion() -> None:
-    """Windows 的 autocrlf 会改写上游文件，使同一 commit 在不同平台算出不同摘要。"""
+    """Windows autocrlf rewrites upstream files, so the same commit would hash
+    differently per platform."""
     result = subprocess.run(
         ["git", "config", "--get", "core.autocrlf"],
         cwd=DEFAULT_CHECKOUT,
@@ -29,6 +31,6 @@ def test_checkout_disables_line_ending_conversion() -> None:
         check=False,
     )
     assert result.stdout.strip() == "false", (
-        "上游检出必须以 core.autocrlf=false 配置，否则 SHA256 固定不跨平台成立；"
-        "重新运行 scripts/fetch_tau2.py 修复"
+        "the upstream checkout must set core.autocrlf=false, or the SHA256 pin "
+        "does not hold across platforms. Re-run scripts/fetch_tau2.py to fix it"
     )

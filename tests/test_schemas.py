@@ -1,4 +1,5 @@
-"""结果格式规范的自洽性：schema 与任务集标签必须同步，避免报告口径漂移。"""
+"""Internal consistency of the result formats: the schemas and the task-set
+labels must stay in step, or report definitions drift apart."""
 
 from __future__ import annotations
 
@@ -31,20 +32,22 @@ def test_schema_is_valid_json_with_identity(name: str) -> None:
 def test_scope_label_enum_matches_task_set_definitions() -> None:
     enum = set(_load("task_result.schema.json")["properties"]["scope_label"]["enum"])
     defined = set(load_task_set("scope_labels")["definitions"])
-    assert enum == defined, "结果 schema 的范围标签与任务集定义必须一致"
+    assert enum == defined, "scope labels in the result schema must match the task-set definitions"
 
 
 def test_run_manifest_requires_frozen_evaluation_stack() -> None:
     schema = _load("run_manifest.schema.json")
     required = set(schema["required"])
-    # 模拟用户与评判模型若不随运行记录冻结，跨模型对比结论无法成立
+    # Without the simulated user and judge frozen into the run record, no
+    # cross-model comparison holds.
     assert {"user_simulator", "judge", "upstream", "code"} <= required
     assert "verified" in schema["properties"]["upstream"]["required"]
 
 
 def test_task_result_separates_failure_kinds() -> None:
     outcomes = set(_load("task_result.schema.json")["properties"]["outcome"]["enum"])
-    # 业务失败与服务错误、参数不支持必须可区分，否则失败率会被稀释
+    # Business failures must be distinguishable from service errors and
+    # unsupported parameters, or the failure rate gets diluted.
     assert {"task_failure", "service_error", "unsupported_param"} <= outcomes
 
 

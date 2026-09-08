@@ -1,83 +1,126 @@
-# 模型选型与思考预算实验
+# Model selection and thinking-budget experiments
 
-## 固定候选池
+## Fixed candidate pool
 
-调用方式为 OpenAI Python SDK 的 Chat Completions，base_url 固定为 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
+Calls go through the OpenAI Python SDK's Chat Completions with base_url fixed to
+`https://dashscope.aliyuncs.com/compatible-mode/v1`.
 
-| 精确模型 ID | 作用 |
+| Exact model id | Role |
 |---|---|
-| `qwen3.7-max-2026-06-08` | 原始模型参照，也参与候选比较 |
-| `qwen3.8-max` | 候选 |
-| `deepseek-v4-pro-0813` | 候选 |
-| `glm-5.2` | 候选 |
-| `qwen3.8-flash` | 候选 |
+| `qwen3.7-max-2026-06-08` | Original reference, and also a candidate |
+| `qwen3.8-max` | Candidate |
+| `deepseek-v4-pro-0813` | Candidate |
+| `glm-5.2` | Candidate |
+| `qwen3.8-flash` | Candidate |
 
-模型名字不决定胜者。前期可用参照不等于已冻结的 MVP。最终冻结的是“精确模型/可识别版本 + 参数 + 提示词 + 实现”的组合。
+A model's name does not decide the winner. An early reference is not a frozen MVP. What
+is frozen at the end is the combination of an exact model or identifiable version, its
+parameters, the prompt and the implementation.
 
-## 文档核验记录：2026-09-06
+## Documentation check, 2026-09-06
 
-以下来自本次阅读的阿里云官方文档，**未进行真实 API 核验**。实现前重新核对指定地域、供应路线和模型版本；同名第三方直供模型不能视为相同部署。
+The following comes from reading Alibaba Cloud's documentation and was not verified
+against the real API. Re-check the region, supply route and model version before
+implementing. A same-named third-party direct model is not the same deployment.
 
-| 系列 | 文档线索 | 实验注意 |
+| Family | Documented | Note for the experiment |
 |---|---|---|
-| Qwen3.8 Max/Flash | Chat 文档列出 `low / medium / xhigh`；也有 `thinking_budget` | 二者不能同时设置；关闭思考及具体预算范围实测确认 |
-| DeepSeek V4 Pro 0813 | Chat 文档列出 `low / high / max` | 不默认支持独立 `thinking_budget`；不要替换成带第三方前缀的型号 |
-| GLM-5.2 | 思考开关可用；GLM 页面与通用 Chat 页面对力度级别描述不一致 | 保留冲突，按指定接口验证；接受参数不等于实际采用该档 |
-| Qwen3.7 参照版本 | 通用文档提供思考开关和预算相关能力 | 精确日期版本尚待核验 |
+| Qwen3.8 Max/Flash | Chat docs list `low / medium / xhigh`, and also `thinking_budget` | The two cannot both be set; verify disabling thinking and the budget range by measurement |
+| DeepSeek V4 Pro 0813 | Chat docs list `low / high / max` | Do not assume a separate `thinking_budget`; do not substitute a third-party-prefixed model id |
+| GLM-5.2 | A thinking switch exists; the GLM page and the general Chat page describe effort levels differently | Keep the conflict on record and verify against the actual interface; accepting a parameter is not proof the level applied |
+| Qwen3.7 reference version | General docs describe a thinking switch and budget | The exact dated version is still to be verified |
 
-官方来源：
+Official sources:
 
-- [OpenAI 兼容 Chat 参数](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)
-- [GLM 专项参数](https://help.aliyun.com/en/model-studio/glm)
-- [GLM 中文说明](https://help.aliyun.com/zh/model-studio/glm)
-- [Base URL 与地域](https://www.alibabacloud.com/help/en/model-studio/base-url)
+- [OpenAI-compatible Chat parameters](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)
+- [GLM-specific parameters](https://help.aliyun.com/en/model-studio/glm)
+- [GLM documentation, Chinese](https://help.aliyun.com/zh/model-studio/glm)
+- [Base URL and regions](https://www.alibabacloud.com/help/en/model-studio/base-url)
 
-`max_tokens` 与 `max_completion_tokens` 的思考/回答计数边界可能随模型和配置变化。不得用相同数字就宣称五个模型具有相同思考预算。保留历史 reasoning 内容的要求也需按供应商协议适配并记录，以免破坏工具调用链。
+How `max_tokens` and `max_completion_tokens` divide thinking from answer may vary by
+model and configuration. The same number does not mean five models have the same
+thinking budget. Requirements about retaining historical reasoning content also need to
+follow each provider's protocol and be recorded, or the tool-call chain breaks.
 
-## 能力检查表
+## Capability checklist
 
-每个模型必须记录：
+Each model must have on record:
 
-1. 精确请求 ID、响应模型 ID、endpoint、地域、文档核验日期、供应路线。
-2. 账户是否可调用；不可用时保存错误类型，不擅自切换模型或开通服务。
-3. `tools`、工具参数类型、多轮 tool result、流式 tool call、usage 是否可用。
-4. 思考开关、力度等级、预算上限、互斥规则和映射关系。
-5. temperature/top_p、输出限制、seed 是否支持与实际传值；未传也记录。
-6. 结束原因、截断、超时、重试和返回的实际用量字段。
-7. 输入/输出/思考/缓存 Token 的计费关系，价格来源、日期、币种。
+1. The exact request id, the response model id, the endpoint, the region, the date the
+   documentation was checked, and the supply route.
+2. Whether the account can call it. If not, keep the error type rather than switching
+   model or enabling a service.
+3. Whether `tools`, argument types, multi-turn tool results, streamed tool calls and
+   usage all work.
+4. The thinking switch, effort levels, budget cap, mutual-exclusion rule and mapping.
+5. Whether temperature, top_p, output limits and seed are supported and what was actually
+   sent, including when nothing was sent.
+6. Finish reasons, truncation, timeouts, retries and the usage fields actually returned.
+7. How input, output, thinking and cached tokens are billed, with the price source, date
+   and currency.
 
-被拒绝、被忽略、被映射的参数分别记录；不能把“HTTP 200”当作预算限制生效的证明。若无法验证实际档位，报告证据边界。
+Record rejected, ignored and remapped parameters separately. HTTP 200 is not proof a
+budget limit took effect. Where the actual level cannot be verified, report the limits of
+the evidence.
 
-## 实验顺序
+## Experiment order
 
-### A. 固定实验环境
+### A. Fix the environment
 
-固定代码、政策、数据、工具、任务、模拟用户模型/参数和评估器。第一轮使用模型允许的合理采样设置并明确记录；不强行给不支持 temperature 的模型传同一个值。运行顺序交错，记录服务端缓存和限流，避免某模型独占热缓存优势。
+Fix the code, policy, data, tools, tasks, simulated-user model and parameters, and the
+evaluator. The first round uses a reasonable sampling setting each model allows, recorded
+explicitly; a model that does not support temperature is not forced to take the same
+value. Interleave the run order, and record server-side caching and rate limiting so no
+model gets an exclusive warm-cache advantage.
 
-### B. 小规模筛选
+### B. Small-scale screening
 
-从开发集按业务类型和难度分层取固定任务。每模型从非思考或最低有效思考配置起步，检查成功率、安全、截断、成本和延迟。先淘汰不兼容或明显无法完成任务的配置，不直接对所有模型做全参数穷举。
+Take a fixed set of dev tasks stratified by business type and difficulty. Start each
+model from no thinking or the lowest effective thinking configuration, checking success
+rate, safety, truncation, cost and latency. Eliminate incompatible or clearly incapable
+configurations first, rather than sweeping every parameter for every model.
 
-### C. 逐档比较
+### C. Level-by-level comparison
 
-固定其余参数，依次增加思考预算/力度。记录每次升级是否增加正确完成任务，是否只是增加耗时或 Token。高档仅在收益值得进一步验证时扩大样本。最高档可以作为对照，不作为默认值。
+Hold everything else fixed and raise the thinking budget or effort step by step. Record
+whether each step completes more tasks correctly or only adds time and tokens. Widen the
+sample at a higher level only when the gain is worth further verification. The highest
+level may be a control, never a default.
 
-先测语义上的模式/档位，再对入围配置做细预算测试；互斥参数不混用。思考预算与最大总输出同时可能造成截断，必须记录原因并区别“思考不够”和“总输出不够”。
+Test semantic modes and levels first, then fine-grained budgets on the shortlisted
+configurations, never mixing mutually exclusive parameters. A thinking budget together
+with a total output cap can cause truncation, and the reason must be recorded so
+"not enough thinking" is distinguished from "not enough total output".
 
-### D. 独立验证与冻结
+### D. Independent verification and freeze
 
-用未参与调参的任务确认入围配置。冻结模拟用户和评分器，不随候选 Agent 模型一起切换。不同模型重复运行，检查任务级配对差异和不确定性。
+Confirm the shortlisted configuration on tasks that were not used for tuning. Freeze the
+simulated user and the evaluator so they do not change with the candidate agent. Repeat
+runs across models and examine task-level paired differences and uncertainty.
 
-先满足业务质量与硬性规则，再比较每个成功任务成本及 P95，选一个固定默认组合。如果多个方案各有优劣，公开权衡而非伪造唯一最优。若所有配置都不达质量下限，则不冻结合格 MVP，也不降低门槛掩盖问题。
+Meet the business quality bar and the hard rules first, then compare cost per successful
+task and P95, and pick one fixed default. Where several options have different strengths,
+state the trade-off openly rather than inventing a single optimum. If no configuration
+meets the quality floor, do not freeze an MVP and do not lower the bar to hide it.
 
-## 后续改动
+## Later changes
 
-- 模型切换、思考调整、提示词修改、代码优化分别提交实验报告。
-- 动态按任务选择模型或思考预算是 M5 的独立功能，必须与固定最佳组合比较，计入路由本身的费用及错误。
-- 不因一次失败就无条件升级最大预算；升级规则也需要测试。
-- 别名模型可能发生服务端更新。可用时冻结快照 ID；不可用时记录时间及响应信息，不能宣称完全确定复现。
-- 不把独立保留测试集无限用于调参。已暴露的失败题进入回归集，同时补充未见任务并版本化。
+- A model switch, a thinking change, a prompt change and a code optimization each get
+  their own experiment report.
+- Choosing a model or thinking budget per task is a separate M5 feature, compared against
+  the fixed best combination and charged for the routing's own cost and errors.
+- One failure does not justify raising the maximum budget unconditionally; the escalation
+  rule itself needs testing.
+- An aliased model can be updated server-side. Pin a snapshot id where one exists;
+  where none does, record the time and response information rather than claiming full
+  reproducibility.
+- Do not use the independent holdout for tuning indefinitely. Failures already exposed
+  move into the regression set, with unseen tasks added and the set versioned.
 
-## 必须交付
+## Deliverables
 
-模型能力矩阵、每次实际参数、逐题原始结果、成本价格快照、淘汰原因、入围组合对比、独立验证结果、最终选择理由。MVP 参照与最终选型结果都保留，不覆盖旧实验。
+The capability matrix, the actual parameters of each run, per-task raw results, the
+price snapshot, why each configuration was eliminated, the comparison among shortlisted
+combinations, the independent verification, and the reasoning behind the final choice.
+Both the MVP reference and the final selection are kept; older experiments are not
+overwritten.

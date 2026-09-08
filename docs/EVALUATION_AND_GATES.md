@@ -1,89 +1,152 @@
-# 评测、基线与 CI/CD 门禁
+# Evaluation, baselines and CI/CD gates
 
-## 不可变参照
+## Immutable references
 
-- `baseline-v1`：首个通过 M0 验收的源码、参数、环境与结果快照，永久保留。
-- `last-accepted`：上一通过版本，指针可更新，但其历史产物不可覆盖。
-- 候选版本同时相对两者报告。M0 内先保留默认参照，再进行参数实验；此时不虚称已有 MVP 基线。
-- 每步都需要报告。文档/维护等无运行行为变化的步骤也记录静态影响检查和比较证据；可复用同一运行镜像与输入的可信成绩，但必须写明复用原因，不冒充新跑。
+- `baseline-v1`: the first snapshot of source, parameters, environment and results that
+  passed M0 acceptance. Kept permanently.
+- `last-accepted`: the previous passing version. The pointer moves; its historical
+  artifacts are never overwritten.
+- A candidate reports against both. Within M0 the default reference is kept while
+  parameter experiments run, and no MVP baseline is claimed at that point.
+- Every step needs a report. Steps with no runtime change, such as documentation or
+  maintenance, still record a static impact check and comparison evidence. A trustworthy
+  score may be reused from the same image and inputs, provided the reason is stated and
+  it is not presented as a new run.
 
-## 数据划分和评分
+## Splits and scoring
 
-1. 固定 τ²-bench 版本与官方任务划分，保留原始政策、模拟用户语义和评估器。
-2. 三类任务子集成绩必须标为项目子集，不能冒充完整 Retail 基准成绩。
-3. 开发集用于调试选型，回归集用于缺陷与发布检查，保留测试集用于阶段验收。
-4. 应用自建权限、审批、事务、恢复场景独立保存 expected state 和明确断言。
-5. 参考答案、预期动作、评分标准与隐藏用户指令不可泄露给被测 Agent。
-6. 参考动作序列可能只是实现目标状态的一种路径；保留官方评分语义，不强制合理替代路径逐步一致。应用安全断言另行执行。
+1. Pin the τ²-bench version and official splits, keeping the original policy, the
+   simulated-user semantics and the evaluators.
+2. A score on the three-flow subset must be labelled as this project's subset and never
+   presented as a complete Retail benchmark score.
+3. The dev set is for debugging and selection, the regression set for defect and release
+   checks, and the holdout for stage acceptance.
+4. Permission, approval, transaction and recovery scenarios built by this project keep
+   their own expected state and explicit assertions.
+5. Reference answers, expected actions, scoring criteria and hidden user instructions
+   must not leak to the agent under test.
+6. A reference action sequence may be only one path to the target state. Keep upstream's
+   scoring semantics rather than forcing a reasonable alternative path to match step by
+   step. This project's safety assertions run separately.
 
-上游来源：[τ²-bench](https://github.com/sierra-research/tau2-bench)、[领域和评分结构](https://github.com/sierra-research/tau2-bench/blob/main/src/tau2/domains/README.md)。
+Upstream sources: [τ²-bench](https://github.com/sierra-research/tau2-bench),
+[domain and scoring structure](https://github.com/sierra-research/tau2-bench/blob/main/src/tau2/domains/README.md).
 
-## 指标定义
+## Metric definitions
 
-| 指标 | 定义 |
+| Metric | Definition |
 |---|---|
-| 任务成功率（主指标） | 满足任务评分条件的运行数 / 全部有效尝试数；查询、取消、退货及难度分别统计 |
-| 安全违规 | 越权、未确认写入、重复操作、政策违反的次数与分母，硬性场景必须零违规 |
-| 重复稳定性 | 每任务重复次数、成功次数、全成功任务比例；保留每次结果 |
-| 工具可靠性 | 错误参数、执行错误、超时、重试、无效/重复调用 |
-| 人工介入 | 应转交场景的召回、不必要转交率；仅在相应功能实现后评分 |
-| 恢复率 | 可恢复故障中正确恢复且无重复副作用的比例 |
-| 首次响应延迟 | 请求到用户可见首个有效回复，不以内部 reasoning chunk 冒充回复 |
-| 任务延迟 | 到最终状态的系统处理时间 P50/P95；人工/模拟用户等待另列 |
-| 成本 | 总费用 / 尝试数；总费用 / 成功数，后者包含失败尝试费用；零成功时不可记为 0 |
-| 用量 | 输入、输出、思考、缓存 Token、LLM/工具调用数，未知字段标记不可用 |
-| 工程检查 | lint、类型检查、测试与关键分支覆盖，覆盖率不替代行为断言 |
+| Task success rate (primary) | Runs meeting the task's scoring conditions divided by all valid attempts, reported separately for lookup, cancel, return and by difficulty |
+| Safety violations | Count and denominator of privilege escalation, unconfirmed writes, duplicate operations and policy breaches; hard scenarios must be zero |
+| Repeat stability | Repetitions per task, successes, and the share of tasks that succeeded every time; every result kept |
+| Tool reliability | Wrong arguments, execution errors, timeouts, retries, invalid or duplicate calls |
+| Human handoff | Recall on scenarios that should hand off, and the rate of unnecessary handoffs; scored only once the feature exists |
+| Recovery rate | Share of recoverable failures that recovered correctly with no duplicated side effect |
+| First-response latency | From request to the first useful reply the user can see; an internal reasoning chunk is not a reply |
+| Task latency | System processing time to the final state, P50 and P95; human and simulated-user waiting reported separately |
+| Cost | Total cost per attempt, and total cost per success, the latter including the cost of failed attempts; with zero successes it is not recorded as 0 |
+| Usage | Input, output, thinking and cached tokens, LLM and tool call counts; unknown fields marked unavailable |
+| Engineering checks | Lint, type checking, tests and coverage of key branches; coverage does not substitute for behavioural assertions |
 
-思考 Token 可能已包含在输出计费中，不能重复计价。Agent、模拟用户、裁判成本分开，另报告实验总费用。成本以 `scripts/analyze_eval.py` 为唯一权威口径，价格取自代码内的日期化快照。**Langfuse 面板不显示成本**：它收到的用量没有缓存明细，按全价折算会高估约 5 倍（实测 0.82 元 vs 真实 0.16 元），给它配价格表等于让面板报一个未经核验的数；详见 [M0.5 观测接入](M0.5_OBSERVABILITY.md)。面板上的 0 是已知缺口，已在 summary.json 与运行日志中标注为「非免费」，不得记为免费。
+Thinking tokens may already be included in output billing and must not be charged
+twice. Agent, simulated-user and judge costs are separate, with the experiment total
+reported as well. `scripts/analyze_eval.py` is the single authority for cost, using the
+dated snapshot in code. The Langfuse dashboard shows no cost: the usage it receives has
+no cache breakdown, and full-price arithmetic overstates cost about 5x (measured 0.82
+CNY against a real 0.16 CNY), so giving it a price table would make the dashboard report
+an unverified number. See [M0.5 observability](M0.5_OBSERVABILITY.md). The 0 in the
+dashboard is a known gap, marked as "not free" in summary.json and the run log, and must
+never be recorded as free.
 
-## 运行可比性
+## Comparability of runs
 
-- 固定运行器规格、区域、并发、数据、缓存处理、模型与模拟用户参数、超时和重试。
-- 交错运行基线与候选，记录全部运行和供应商异常。不能只拿候选当前延迟对比几个月前的网络环境。
-- 每次任务重置环境；不把同一任务重复运行当成独立任务扩大有效样本量。
-- 以任务为分组单位做配对分析和 bootstrap 置信区间，保留随机种子与统计脚本版本。
-- 固定重复次数和样本扩展规则，禁止无限重跑直到显著；服务故障重跑整组并保留原记录。
-- 本地与 AWS、不同硬件或缓存模式建立独立性能参照；质量差异和迁移差异分别说明。
-- 固定模型配置仍存在服务端随机性，temperature=0 不等于确定性。
+- Fix the runner spec, region, concurrency, data, cache handling, model and
+  simulated-user parameters, timeouts and retries.
+- Interleave baseline and candidate runs and record every run and provider anomaly. A
+  candidate's current latency cannot be compared against a network environment from
+  months ago.
+- Reset the environment per task, and never treat repeated runs of one task as extra
+  independent samples.
+- Use the task as the unit for paired analysis and bootstrap intervals, keeping the
+  random seed and the version of the statistics script.
+- Fix the repetition count and the rule for extending the sample. Re-running until
+  significance is forbidden. A service failure re-runs the whole group and keeps the
+  original record.
+- Local and AWS, different hardware and different cache modes each get their own
+  performance reference; quality differences and migration differences are explained
+  separately.
+- A fixed model configuration still has server-side randomness: temperature=0 is not
+  determinism.
 
-## 阈值与统计规则
+## Thresholds and statistics
 
-以下为设计起点，并非实测结果。M0 先用开发集估计波动和所需样本，再冻结正式协议；不能在看见候选结果后改阈值。记录质量绝对下限，不能仅证明“比很差的参照没有退步”。绝对下限须在 M0 任务盘点后以明确值写入运行配置；未冻结前门禁不可上线。
+These are a design starting point, not measurements. M0 first estimates variance and the
+required sample size on the dev set, then freezes the protocol. Thresholds are never
+changed after seeing a candidate's results. Record an absolute quality floor rather than
+only proving no regression against a poor reference. The floor is written into the run
+configuration as an explicit value after the M0 task inventory, and the gate does not go
+live before it is frozen.
 
-| 项目 | 初始约定 |
+| Item | Initial agreement |
 |---|---|
-| 硬性测试 | 所有适用权限、确认、事务、幂等、恢复断言通过；任何失败阻止发布 |
-| 质量非劣化 | 成功率差值的单侧 95% 下置信界不低于 -3 个百分点；分类结果不能被总平均掩盖 |
-| 成本/延迟保护 | 非目标成本及 P95 比值的单侧 95% 上置信界不超过 1.10 |
-| 成本/延迟优化 | 预声明目标点估计改善至少 10%，且 95% 区间支持真实改善 |
-| 质量优化 | 预声明成功率点估计改善至少 5 个百分点，且 95% 区间支持真实改善 |
-| 证据不足 | `INCONCLUSIVE`，不自动合并或发布 |
+| Hard tests | Every applicable permission, confirmation, transaction, idempotency and recovery assertion passes; any failure blocks release |
+| Quality non-regression | The one-sided 95% lower bound on the success-rate difference is not below -3 percentage points, and a breakdown is not hidden by the overall average |
+| Cost and latency protection | The one-sided 95% upper bound on the ratio of non-target cost and P95 does not exceed 1.10 |
+| Cost and latency optimization | A pre-declared target improves by at least 10% at the point estimate, with a 95% interval supporting a real improvement |
+| Quality optimization | A pre-declared success rate improves by at least 5 percentage points at the point estimate, with a 95% interval supporting a real improvement |
+| Insufficient evidence | `INCONCLUSIVE`; nothing is merged or released automatically |
 
-3 个百分点与 P95 的区间判断可能需要较大样本。30 道题或重复 3 次不能预先宣称足够。筛选与正式验收分开；按预注册方案追加样本，仍不足则如实报告。多候选模型先开发集筛选，在独立数据确认，避免事后挑最好看的显著结果。
+Interval judgements at 3 percentage points and on P95 may need a large sample. Thirty
+tasks or three repetitions cannot be declared sufficient in advance. Screening and
+formal acceptance are separate; extend the sample per a pre-registered plan and report
+honestly if it is still insufficient. Multiple candidates are screened on the dev set
+and confirmed on independent data, so the best-looking significant result cannot be
+picked after the fact.
 
-## 按改动类型放行
+## Release conditions by change type
 
-| 类型 | 条件 |
+| Type | Conditions |
 |---|---|
-| 新功能 | 新能力明确通过适用测试；已有业务和保护指标满足非劣化 |
-| 优化 | 至少一个预声明目标满足明确改善，所有硬性检查与保护指标通过 |
-| 修复 | 新增回归测试证明缺陷已修复，原有指标不实质退步 |
-| 维护/界面 | 相关行为验收和无退步证据；不要求伪造性能提升 |
+| Feature | The new capability passes the applicable tests, and existing business and protective metrics meet non-regression |
+| Optimization | At least one pre-declared target improves clearly, with all hard checks and protective metrics passing |
+| Fix | A new regression test proves the defect is fixed, and existing metrics do not materially regress |
+| Maintenance / UI | Behaviour acceptance and evidence of no regression; no fabricated performance improvement required |
 
-新功能带来的必要开销若超标，不得偷偷豁免；形成独立的权衡决策和新协议版本，再对两个参照重新运行。失败与不明确结果都长期保留。
+If the necessary overhead of a feature exceeds a threshold, it is not quietly exempted:
+it becomes an explicit trade-off decision and a new protocol version, after which both
+references are re-run. Failures and inconclusive results are kept indefinitely.
 
-## CI/CD 分层
+## CI/CD layers
 
-1. 每个 PR：Ruff、mypy、单元/API 测试，适用的 PostgreSQL 集成与权限测试，构建检查。
-2. 快速性能：固定模拟工具/模型回放，检查本地调度开销；不等于真实 Agent 能力评测。
-3. 真实模型评测：单独手动触发，绑定候选 commit、镜像和协议。模型/提示词/工具/编排行为变化必须完成此层才可通过发布门禁。
-4. 汇总检查：读取受信任的协议和基线，生成 PASS/FAIL/INCONCLUSIVE；必需检查不能因路径过滤缺失而被跳过。
-5. 发布：只使用报告绑定的已验证镜像摘要；合并产生新的运行内容时重新验证。部署成功还需要健康与 smoke 检查。
+1. Per PR: Ruff, mypy, unit and API tests, the applicable PostgreSQL integration and
+   permission tests, and a build check.
+2. Fast performance: fixed simulated tool and model replay to check local scheduling
+   overhead. This is not an evaluation of real agent capability.
+3. Real model evaluation: triggered manually, bound to a candidate commit, image and
+   protocol. Changes to the model, prompt, tools or orchestration must complete this
+   layer before a release gate can pass.
+4. Aggregation: read the trusted protocol and baselines and produce PASS / FAIL /
+   INCONCLUSIVE. A required check must not be skipped because a path filter excluded it.
+5. Release: only the verified image digest bound in the report. Re-verify when a merge
+   produces new run content. A successful deploy still needs health and smoke checks.
 
-GitHub branch/ruleset 的能力依账户方案核验；不支持时使用明确的发布流程约束，不能声称平台已经强制保护。协议、基线和评测器改动需专门审核，候选分支不能自己放宽标准。失败后禁止直接部署绕过门禁。
+GitHub branch and ruleset capabilities depend on the account plan and must be verified.
+Where they are unavailable, use an explicit release process rather than claiming the
+platform enforces protection. Changes to the protocol, baselines or evaluators need
+dedicated review, and a candidate branch cannot relax its own standards. Deploying
+directly after a failure to bypass a gate is forbidden.
 
-## 归档
+## Archiving
 
-M0 在本地生成 manifest、checksums、逐题 results、summary、运行日志及 Langfuse 会话号；AWS 阶段复制到 S3 并校验。**`baseline-v1` 已冻结**，落在 `evaluation/baselines/baseline-v1/`（与建议的 `artifacts/` 前缀不同，理由见 [M0.5（三）§5](M0.5_BASELINE.md)）；逐轮产物在 `evaluation/results/<run-id>/`。校验和分入库文件与本机原始轨迹两段，CI 每次校验前者。原始逐题轨迹尚未复制到 S3，摘要已记，丢失能发现但找不回来。
+M0 produces the manifest, checksums, per-task results, summary, run logs and the
+Langfuse session id locally; the AWS stage copies them to S3 and verifies them. The
+baselines are frozen under `evaluation/baselines/` (not the originally suggested
+`artifacts/` prefix; see [M0.5 part three §5](M0.5_BASELINE.md)), and per-run artifacts
+live in `evaluation/results/<run-id>/`. Checksums are split into committed files and
+local raw traces, and CI verifies the former. Raw per-task traces are not yet copied to
+S3: their digests are recorded, so loss would be detected but not recoverable.
 
-初版基线、当前发布和必要回滚镜像保留；临时构建清理规则不得误删它们。数据集或评估器错误通过新版本纠正，同时保留旧结果并注明失效原因，不悄悄改写历史。
+The first baseline, the current release and any needed rollback image are kept, and a
+temporary-build cleanup rule must not remove them. Dataset or evaluator errors are
+corrected in a new version while the old results are kept and marked invalid with the
+reason, never rewritten silently.

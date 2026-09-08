@@ -1,7 +1,9 @@
-"""成本口径：缓存与非缓存必须分开，缺价不能当成免费。
+"""Cost conventions: cached and uncached input are priced separately, and a missing price
+is not free.
 
-这两条都是"错了也不会报错"的账：把缓存按全价算只是高估，
-把缺价的角色按 0 累加则是**低报**——后者会直接误导选型。
+Both are accounting errors that raise nothing. Charging cached input at full price only
+overestimates; adding a role with no price as 0 underreports, and that misleads model
+selection directly.
 """
 
 from __future__ import annotations
@@ -33,7 +35,8 @@ class TestCacheIsPricedSeparately:
         assert all_cached == pytest.approx(full * price.cached_input / price.input)
 
     def test_cache_never_exceeds_prompt(self) -> None:
-        """服务端偶尔会报出比输入还多的命中数，不能因此把成本算成负的。"""
+        """The server sometimes reports more cache hits than input tokens, which must not
+        turn the cost negative."""
         price = price_for("deepseek-v4-pro")
         assert price is not None
         assert price.cached_input is not None
@@ -43,9 +46,11 @@ class TestCacheIsPricedSeparately:
 
 
 class TestUnreportedCacheIsNotZero:
-    """qwen3.6-plus 实测返回 `cached_tokens: null`——服务端没报，不是没命中。
+    """qwen3.6-plus was measured returning `cached_tokens: null`: the server did not report
+    a value, which is not the same as no cache hit.
 
-    混作一谈会让报告里的「命中率 0%」被读成「这个模型没有缓存收益」。
+    Conflating the two makes a reported "0% hit rate" read as "this model gains nothing from
+    caching".
     """
 
     def test_null_nested_detail_reads_as_unknown(self) -> None:
@@ -67,47 +72,54 @@ class TestUnreportedCacheIsNotZero:
 
 class TestMissingPriceIsNotFree:
     def test_unknown_model_returns_none_not_zero(self) -> None:
-        """返回 0 会被无声地累加进合计，返回 None 才逼调用方处理。"""
+        """Returning 0 is silently added to the total; returning None forces the caller to
+        handle it."""
         assert role_cost("some-model-we-never-priced", RoleUsage(prompt=10**6)) is None
 
     def test_every_frozen_stack_role_is_priced(self) -> None:
-        """评测栈三个角色都必须能折算，否则总成本永远只是个下界。
+        """All three roles of the evaluation stack must be convertible, or the total cost is
+        only ever a lower bound.
 
-        模拟用户此前不在快照里，实测它占三角色总成本的 40%——
-        「无法折算」在报告里的效果等同于按 0 记。
+        The simulated user was previously absent from the snapshot and was measured at 40% of
+        the three-role total. In a report, "cannot be converted" has the same effect as
+        counting it as 0.
         """
-        # 旧模拟用户也必须留价：复跑换型前的历史结论时要按它折算成本，
-        # 缺价会被静默当成 0，而它当年占三角色总成本的 40%。
+        # The previous simulated user keeps its price too: reproducing conclusions from
+        # before the switch converts costs with it, a missing price is silently treated as 0,
+        # and it accounted for 40% of the three-role total at the time.
         for model in (
             FROZEN_USER_SIMULATOR,
             PREVIOUS_USER_SIMULATOR,
             FROZEN_NL_JUDGE,
             "deepseek-v4-pro",
         ):
-            assert price_for(model) is not None, f"{model} 缺价"
+            assert price_for(model) is not None, f"{model} has no price"
 
 
 class TestReasoningIsInsideCompletion:
-    """推理 token 已包含在 completion_tokens 里，不能再单独加一次。
+    """Reasoning tokens are already inside completion_tokens and must not be added again.
 
-    2026-09-06 实测 qwen3.6-plus：prompt 32 + completion 2865 = total 2897，
-    reasoning 2709，2865 − 2709 = 156 正好是可见回复。
-    再加一遍会把模拟用户的成本高估约 1.9 倍——而它占三角色总成本的 40%。
+    Measured on qwen3.6-plus on 2026-09-06: prompt 32 + completion 2865 = total 2897, with
+    reasoning 2709, and 2865 - 2709 = 156 is exactly the visible reply.
+    Adding them again overestimates the simulated user's cost by about 1.9x, and that role is
+    40% of the three-role total.
     """
 
     def test_cost_uses_completion_tokens_only(self) -> None:
-        # 用 PREVIOUS_USER_SIMULATOR 而不是当前冻结型号：上面记录的那次实测
-        # 就是在 qwen3.6-plus 上做的，换了模型这些数字就不再对应任何观测。
+        # PREVIOUS_USER_SIMULATOR rather than the currently frozen model: the measurement
+        # recorded above was made on qwen3.6-plus, and with another model these numbers no
+        # longer correspond to any observation.
         price = price_for(PREVIOUS_USER_SIMULATOR)
         assert price is not None
-        # 同一次调用：completion 2865（其中推理 2709）
+        # The same call: completion 2865, of which 2709 is reasoning
         billed = price.cost(32, 2865)
         naive_double_count = price.cost(32, 2865 + 2709)
         assert billed < naive_double_count
         assert billed == pytest.approx(32 / 1e6 * 2.0 + 2865 / 1e6 * 12.0)
 
     def test_role_usage_does_not_add_reasoning_to_completion(self) -> None:
-        """RoleUsage.reasoning 只用于报告占比，绝不进成本公式。"""
+        """RoleUsage.reasoning is only for reporting a share and never enters the cost
+        formula."""
         usage = RoleUsage(calls=1, prompt=32, completion=2865, reasoning=2709)
         price = price_for(PREVIOUS_USER_SIMULATOR)
         assert price is not None

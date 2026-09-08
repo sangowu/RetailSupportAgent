@@ -1,11 +1,13 @@
-"""M0.2 模型能力探针。
+"""M0.2 model capability probes.
 
-目的不是"能不能聊天"，而是回答 docs/MODEL_EXPERIMENTS.md 能力检查表里的问题：
-工具调用链是否完整、流式是否给 usage、思考开关与预算是否**实际生效**、
-互斥规则是否真的被服务端拒绝。
+The question is not "can it chat" but the checklist in docs/MODEL_EXPERIMENTS.md: is
+the tool-call loop complete, does streaming report usage, do the thinking switch and
+budget actually take effect, and does the server really enforce the mutual-exclusion
+rule.
 
-核心纪律：HTTP 200 不等于参数生效。凡是声称"某档位生效"的结论，
-都必须有 usage 里的 `reasoning_tokens` 差异或服务端明确报错作为证据。
+Core discipline: HTTP 200 does not mean a parameter took effect. Any claim that a
+level "works" needs evidence, either a difference in `reasoning_tokens` or an explicit
+server error.
 """
 
 from __future__ import annotations
@@ -23,18 +25,19 @@ from retail_support_agent.config import Settings
 
 ProbeStatus = Literal["ok", "rejected", "error"]
 
-# 探针共用的极小提示词，控制成本；内容与 retail 业务同构但不涉及真实数据。
-TINY_PROMPT = "用一句话回答：订单状态查询需要哪一个参数？"
+# A tiny shared prompt to keep probe cost down; shaped like the retail domain but
+# touching no real data.
+TINY_PROMPT = "In one sentence: which parameter is required to look up an order status?"
 
 ORDER_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "get_order_details",
-        "description": "按订单号查询订单详情",
+        "description": "Look up order details by order id",
         "parameters": {
             "type": "object",
             "properties": {
-                "order_id": {"type": "string", "description": "订单号，形如 #W0000000"},
+                "order_id": {"type": "string", "description": "Order id, like #W0000000"},
             },
             "required": ["order_id"],
         },
@@ -44,7 +47,7 @@ ORDER_TOOL: dict[str, Any] = {
 
 @dataclass
 class ProbeOutcome:
-    """单个探针的结果。request 里只有业务参数，绝不含密钥。"""
+    """Result of one probe. `request` holds only business parameters, never a key."""
 
     name: str
     status: ProbeStatus
@@ -59,17 +62,19 @@ class ProbeOutcome:
 
 
 def build_client(settings: Settings) -> OpenAI:
-    """全项目唯一取出密钥明文的地方。"""
+    """The one place in the project that reads the key in plaintext."""
     return OpenAI(
         api_key=settings.dashscope_api_key.get_secret_value(),
         base_url=settings.base_url,
         timeout=120.0,
-        max_retries=0,  # 重试会掩盖真实的错误类型与限流情况，探针阶段必须关掉
+        # Retries would hide the real error type and rate-limit behaviour, which is
+        # exactly what a probe is measuring.
+        max_retries=0,
     )
 
 
 def summarize(completion: ChatCompletion) -> dict[str, Any]:
-    """抽取报告需要的字段；完整响应另存原始 JSON。"""
+    """Extract the fields the report needs; the full response is stored as raw JSON."""
     choice = completion.choices[0] if completion.choices else None
     message = choice.message if choice else None
     usage = completion.usage
@@ -97,7 +102,7 @@ def summarize(completion: ChatCompletion) -> dict[str, Any]:
 
 
 def describe_error(exc: Exception) -> dict[str, Any]:
-    """保存错误类型而不是吞掉；服务端拒绝本身就是有价值的证据。"""
+    """Record the error rather than swallow it: a server refusal is itself evidence."""
     info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)[:800]}
     if isinstance(exc, APIStatusError):
         info["http_status"] = exc.status_code
@@ -112,7 +117,7 @@ def _run(
     name: str,
     request: dict[str, Any],
 ) -> tuple[ProbeOutcome, ChatCompletion | None]:
-    """发一次非流式请求并封装结果。"""
+    """Send one non-streaming request and wrap the result."""
     started = time.monotonic()
     try:
         completion = client.chat.completions.create(**request)
@@ -128,7 +133,7 @@ def _run(
 
 
 def probe_basic(client: OpenAI, model: str) -> ProbeOutcome:
-    """账户能否调用该精确模型 ID，服务端返回的模型 ID 是什么。"""
+    """Whether the account can call this exact model id, and what id the server returns."""
     outcome, _ = _run(
         client,
         "basic",
@@ -151,13 +156,13 @@ def probe_basic(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_tool_call(client: OpenAI, model: str) -> ProbeOutcome:
-    """能否发起工具调用，参数是否为合法 JSON 且类型正确。"""
+    """Whether it emits a tool call with valid, correctly typed JSON arguments."""
     outcome, _ = _run(
         client,
         "tool_call",
         {
             "model": model,
-            "messages": [{"role": "user", "content": "帮我查订单 #W1234567 的状态。"}],
+            "messages": [{"role": "user", "content": "Check the status of order #W1234567."}],
             "tools": [ORDER_TOOL],
             "tool_choice": "auto",
             "max_completion_tokens": 256,
@@ -182,11 +187,12 @@ def probe_tool_call(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_tool_result_roundtrip(client: OpenAI, model: str) -> ProbeOutcome:
-    """把工具结果回传后能否继续对话——这是 Agent 闭环的最低要求。"""
+    """Whether the conversation continues after a tool result is sent back. This is the
+    minimum requirement for an agent loop."""
     request = {
         "model": model,
         "messages": [
-            {"role": "user", "content": "帮我查订单 #W1234567 的状态。"},
+            {"role": "user", "content": "Check the status of order #W1234567."},
             {
                 "role": "assistant",
                 "content": None,
@@ -220,10 +226,10 @@ def probe_tool_result_roundtrip(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_stream_usage(client: OpenAI, model: str) -> ProbeOutcome:
-    """流式是否回传 usage，工具调用能否增量返回。"""
+    """Whether streaming returns usage, and whether tool calls arrive incrementally."""
     request: dict[str, Any] = {
         "model": model,
-        "messages": [{"role": "user", "content": "帮我查订单 #W1234567 的状态。"}],
+        "messages": [{"role": "user", "content": "Check the status of order #W1234567."}],
         "tools": [ORDER_TOOL],
         "stream": True,
         "stream_options": {"include_usage": True},
@@ -264,7 +270,7 @@ def probe_stream_usage(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_sampling_params(client: OpenAI, model: str) -> ProbeOutcome:
-    """temperature / top_p / seed 是否被接受。被拒绝同样是有效结论。"""
+    """Whether temperature / top_p / seed are accepted. A refusal is also a result."""
     outcome, _ = _run(
         client,
         "sampling_params",
@@ -281,13 +287,19 @@ def probe_sampling_params(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_truncation(client: OpenAI, model: str) -> ProbeOutcome:
-    """输出上限是否真的截断，finish_reason 能否区分"说完了"和"被截断"。"""
+    """Whether the output cap truncates, and whether finish_reason distinguishes
+    "finished" from "truncated"."""
     outcome, _ = _run(
         client,
         "truncation",
         {
             "model": model,
-            "messages": [{"role": "user", "content": "详细介绍退货政策，越长越好。"}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Describe the return policy in as much detail as possible.",
+                }
+            ],
             "max_completion_tokens": 16,
         },
     )
@@ -300,7 +312,7 @@ def probe_truncation(client: OpenAI, model: str) -> ProbeOutcome:
 
 
 def probe_thinking_off(client: OpenAI, model: str) -> ProbeOutcome:
-    """关闭思考：能否关掉，关掉后 reasoning_tokens 是否归零。"""
+    """Whether thinking can be switched off, and whether reasoning_tokens then drops to zero."""
     outcome, _ = _run(
         client,
         "thinking_off",
@@ -316,23 +328,26 @@ def probe_thinking_off(client: OpenAI, model: str) -> ProbeOutcome:
         outcome.findings = {
             "accepted": True,
             "reasoning_tokens": reasoning,
-            # 只有真的为 0 或缺省才算关掉；非零说明参数被忽略
+            # Only zero or absent counts as off; a non-zero value means the parameter
+            # was ignored.
             "thinking_actually_off": reasoning in (0, None),
         }
     return outcome
 
 
-# 服务端在 max_completion_tokens 小于档位映射预算时会报错，并把预算数字写进消息里。
-# 这是唯一能从外部读出"某档位到底等于多少 token"的途径。
+# When max_completion_tokens is below the budget a level maps to, the server errors and
+# includes the budget in the message. That is the only way to read from outside how
+# many tokens a level actually means.
 _BUDGET_IN_ERROR = re.compile(r"thinking_budget \[(\d+)\]")
 
 
 def probe_effort_budget_mapping(client: OpenAI, model: str, level: str) -> ProbeOutcome:
-    """故意把输出上限压到很小，从服务端报错里读出该档位映射的思考预算。
+    """Deliberately set a tiny output cap and read the level's thinking budget out of
+    the server error.
 
-    被拒绝是**预期结果**：报错消息形如
-    "max_completion_tokens [512] must be greater than thinking_budget [8192]"，
-    其中的 8192 就是该档位的真实预算。不报错则说明该档位预算本身就很小。
+    A refusal is the expected result. The message looks like "max_completion_tokens
+    [512] must be greater than thinking_budget [8192]", where 8192 is the level's real
+    budget. No error means the level's budget is itself small.
     """
     outcome, _ = _run(
         client,
@@ -355,17 +370,19 @@ def probe_effort_budget_mapping(client: OpenAI, model: str, level: str) -> Probe
     outcome.findings = {
         "mapped_thinking_budget": mapped,
         "level_unsupported": unsupported,
-        # 小上限下就能跑通，说明该档位预算不大于 512
+        # Succeeding under a small cap means the level's budget is at most 512.
         "fits_in_512": outcome.status == "ok",
     }
     return outcome
 
 
 def probe_reasoning_effort(client: OpenAI, model: str, level: str) -> ProbeOutcome:
-    """逐档试 reasoning_effort，用实际 reasoning_tokens 判断是否真的换了档。
+    """Try each reasoning_effort level and use actual reasoning_tokens to tell whether
+    the level changed.
 
-    这里**不设** max_completion_tokens：上限若小于档位映射的预算会直接被拒，
-    那测到的是"总输出不够"而不是"该档位不支持"，两者必须区分。
+    max_completion_tokens is deliberately not set: a cap below the level's mapped
+    budget is rejected outright, which would measure "total output too small" rather
+    than "level unsupported". The two must not be confused.
     """
     outcome, _ = _run(
         client,
@@ -392,7 +409,7 @@ def probe_reasoning_effort(client: OpenAI, model: str, level: str) -> ProbeOutco
 
 
 def probe_thinking_budget(client: OpenAI, model: str, budget: int = 64) -> ProbeOutcome:
-    """thinking_budget 是否被接受，实际思考 token 是否受该上限约束。"""
+    """Whether thinking_budget is accepted and whether thinking tokens respect it."""
     outcome, _ = _run(
         client,
         f"thinking_budget_{budget}",
@@ -414,7 +431,8 @@ def probe_thinking_budget(client: OpenAI, model: str, budget: int = 64) -> Probe
 
 
 def probe_mutual_exclusion(client: OpenAI, model: str) -> ProbeOutcome:
-    """文档称 reasoning_effort 与 thinking_budget 互斥，这里验证服务端是否真的拒绝。"""
+    """The documentation calls reasoning_effort and thinking_budget mutually exclusive.
+    This checks whether the server actually refuses."""
     outcome, _ = _run(
         client,
         "thinking_mutual_exclusion",
@@ -430,14 +448,16 @@ def probe_mutual_exclusion(client: OpenAI, model: str) -> ProbeOutcome:
         },
     )
     findings: dict[str, Any] = {
-        # 被拒绝才说明互斥规则真实存在；接受了则说明其中一个被静默忽略
+        # Only a refusal proves the rule is real; acceptance means one of the two was
+        # silently ignored.
         "server_rejects_both": outcome.status == "rejected",
         "silently_accepted": outcome.status == "ok",
     }
     if outcome.response:
         reasoning = outcome.response["usage"]["reasoning_tokens"]
         findings["reasoning_tokens"] = reasoning
-        # reasoning_effort="low" 映射的预算远大于 64；据此判断哪个参数实际生效
+        # reasoning_effort="low" maps to a budget far above 64, which tells which
+        # parameter actually took effect.
         if reasoning is not None:
             findings["winner"] = "thinking_budget" if reasoning <= 64 else "reasoning_effort"
     outcome.findings = findings
