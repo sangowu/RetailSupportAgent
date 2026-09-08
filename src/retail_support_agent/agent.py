@@ -21,13 +21,14 @@ from typing import Annotated, Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from retail_support_agent.domain import HANDOFF_TOOLS, RetailDomain
+from retail_support_agent.domain import HANDOFF_TOOLS, WRITE_TOOLS, RetailDomain, ToolResult
 from retail_support_agent.guardrails import (
     Decision,
     ProposedCall,
     SessionState,
     WriteGuard,
 )
+from retail_support_agent.store import Store
 
 # 注意：这份提示词只用于**应用演示**。
 # 标准 τ²-bench 评测走上游自己的身份识别协议与 Agent 提示词，两者分别记录，
@@ -103,10 +104,19 @@ class RetailAgent:
         chat_fn: ChatFn,
         domain: RetailDomain,
         session: SessionState,
+        store: Store | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._chat = chat_fn
         self._domain = domain
         self._session = session
+        # store 为 None 时全部退化成无操作：数据库是能力，不是运行的前提。
+        # 没配库也要能起服务、能跑评测——评测回路里没有 PostgreSQL。
+        self._store = store
+        self._session_id = session_id
+        self._confirmation_id: int | None = None
+        if self._store is not None and self._session_id is not None:
+            self._store.ensure_session(self._session_id, session.user_id)
         self._guard = WriteGuard(domain.tool_names(), domain.order_owner)
         # 本轮已真正执行的工具。**必须按轮累计，不能只记最后一步**：
         # 一轮通常是 think(要调工具) -> act(执行) -> think(给出答复)，
@@ -202,6 +212,7 @@ class RetailAgent:
 
             if verdict.decision is Decision.NEEDS_CONFIRMATION:
                 self._session.pending = proposed
+                self._record_confirmation_request(proposed)
                 self._messages.append(
                     {
                         "role": "tool",
@@ -227,7 +238,7 @@ class RetailAgent:
                 continue
 
             self._session.tool_calls += 1
-            result = self._domain.execute(proposed.name, proposed.arguments)
+            result = self._execute(proposed)
             self._turn_tools.append(proposed.name)
             self._messages.append(result.as_tool_message(call["id"]))
 
@@ -247,12 +258,52 @@ class RetailAgent:
         """处理一条用户消息。同一会话必须串行调用。"""
         self._maybe_consume_confirmation(user_message)
         self._messages.append({"role": "user", "content": user_message})
+        self._journal("user", user_message, [])
         self._last = None
         self._turn_tools = []
         self._graph.invoke({"messages": []})
-        return self._last or TurnResult(
+        result = self._last or TurnResult(
             reply="（模型未给出回答）", status="answered", tool_calls=list(self._turn_tools)
         )
+        self._journal("assistant", result.reply, result.tool_calls)
+        return result
+
+    # ---- 落库（store 为 None 时全是无操作） -------------------------------
+
+    def _journal(self, role: str, content: str, tool_calls: list[str]) -> None:
+        """把一轮消息写进 messages 表。
+
+        序号由库里的最大值 +1 得来，`(session_id, seq)` 唯一——同一轮重发不会
+        插出第二条。落库失败不该让一次已经成功的对话失败，所以只在这里吞掉
+        重复，其他异常照常抛出（静默吞掉写库失败等于假装记了审计）。
+        """
+        if self._store is None or self._session_id is None:
+            return
+        seq = self._store.next_seq(self._session_id)
+        self._store.append_message(self._session_id, seq, role, content, tool_calls)
+
+    def _record_confirmation_request(self, proposed: ProposedCall) -> None:
+        if self._store is None or self._session_id is None:
+            return
+        self._store.open_confirmation(self._session_id, proposed)
+
+    def _execute(self, proposed: ProposedCall) -> ToolResult:
+        """执行一次工具调用；写操作走幂等路径。
+
+        读操作不记 operations：它没有副作用，重复执行也不会造成第二次改动，
+        为它写一行操作记录只会让审计表被读噪声淹没。
+        """
+        if self._store is None or self._session_id is None or proposed.name not in WRITE_TOOLS:
+            return self._domain.execute(proposed.name, proposed.arguments)
+
+        outcome = self._store.execute_once(
+            self._session_id,
+            proposed,
+            self._confirmation_id,
+            lambda: self._domain.execute(proposed.name, proposed.arguments).content,
+        )
+        # 重放时不再碰领域环境：那正是幂等要挡住的第二次改动。
+        return ToolResult(name=proposed.name, content=outcome.result, ok=True)
 
     def _maybe_consume_confirmation(self, user_message: str) -> None:
         """把用户的肯定答复登记为对**当前挂起那组参数**的确认。"""
@@ -261,6 +312,10 @@ class RetailAgent:
             return
         if _is_affirmative(user_message):
             self._session.confirm(pending)
+            if self._store is not None and self._session_id is not None:
+                # 指纹对不上时 confirm 返回 None——用户同意的是当时列给他看的
+                # 那组参数，模型换了参数就得重新问。
+                self._confirmation_id = self._store.confirm(self._session_id, pending.fingerprint)
         else:
             self._session.pending = None
 

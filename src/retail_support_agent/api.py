@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 
 from retail_support_agent.agent import RetailAgent
 from retail_support_agent.config import Settings
+from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.domain import RetailDomain
 from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
+from retail_support_agent.store import Store
 
 # M0.3 的固定演示身份，来自 τ²-bench 模拟数据，不是真实用户。
 # 选它是因为名下同时有 pending 订单（可取消）与 delivered 订单（可退货），
@@ -36,13 +38,37 @@ class ChatResponse(BaseModel):
     stop_reason: str | None = None
 
 
-class SessionRegistry:
-    """会话表。同一会话串行处理；M0 不宣称跨进程恢复能力。"""
+def make_store(settings: Settings) -> Store | None:
+    """配了 `RSA_DATABASE_URL` 就返回一个 Store，否则 None。
 
-    def __init__(self, settings: Settings, config: ModelConfig, user_id: str) -> None:
+    没配库服务照样起得来，行为退回 M0 的内存会话。**数据库是能力，不是启动的
+    前提条件**——评测回路里就没有 PostgreSQL，硬性依赖会让评测直接跑不起来。
+    """
+    if settings.database_url is None:
+        return None
+    engine = make_engine(settings.database_url.get_secret_value())
+    return Store(make_session_factory(engine))
+
+
+class SessionRegistry:
+    """会话表。同一会话串行处理。
+
+    配了数据库时，会话、消息、确认与写操作会落库（M1）；进程内仍保留 Agent
+    实例，因为领域环境本身还在内存里——**跨进程恢复对话是 M2 的主题**，
+    这里不宣称。
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        config: ModelConfig,
+        user_id: str,
+        store: Store | None = None,
+    ) -> None:
         self._settings = settings
         self._config = config
         self._user_id = user_id
+        self._store = store
         self._agents: dict[str, RetailAgent] = {}
 
     def get(self, session_id: str) -> RetailAgent:
@@ -51,7 +77,9 @@ class SessionRegistry:
             domain = RetailDomain()
             state = SessionState(user_id=self._user_id, limits=SessionLimits())
             chat_fn = make_chat_fn(self._settings, self._config)
-            self._agents[session_id] = RetailAgent(chat_fn, domain, state)
+            self._agents[session_id] = RetailAgent(
+                chat_fn, domain, state, store=self._store, session_id=session_id
+            )
         return self._agents[session_id]
 
     def reset(self, session_id: str) -> None:
@@ -79,9 +107,14 @@ def create_app(
     settings: Settings | None = None,
     config: ModelConfig | None = None,
     user_id: str = DEMO_USER_ID,
+    store: Store | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings()  # type: ignore[call-arg]
-    registry = SessionRegistry(resolved_settings, config or ModelConfig(), user_id)
+    # 显式传入的 store 优先：测试要指向自己那个库，不能去连 .env 里配的那个。
+    resolved_store = store if store is not None else make_store(resolved_settings)
+    registry = SessionRegistry(
+        resolved_settings, config or ModelConfig(), user_id, store=resolved_store
+    )
 
     app = FastAPI(
         title="RetailSupportAgent",
