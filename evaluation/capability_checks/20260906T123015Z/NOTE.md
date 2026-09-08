@@ -1,12 +1,16 @@
-# 已被取代的首次运行（保留作为证据，勿引用其结论）
+# Superseded first run (kept as evidence; do not cite its conclusions)
 
-本次运行的档位探针把 `max_completion_tokens` 设为 512，导致 `reasoning_effort=low/medium`
-被服务端以 "max_completion_tokens [512] must be greater than thinking_budget [8192/32768]"
-拒绝，**看起来像"该档位不支持"，实际是总输出上限不够**。
+This run set `max_completion_tokens` to 512 in the effort-level probes, so
+`reasoning_effort=low/medium` was rejected by the server with
+"max_completion_tokens [512] must be greater than thinking_budget [8192/32768]".
+That looks like "the model does not support those levels" but is in fact an insufficient
+total output limit.
 
-保留原因：
+Why it is kept:
 
-1. 它是 `docs/M0.2_MODEL_CAPABILITY.md` 第 4 节所述方法学缺陷的原始证据。
-2. 那两条报错正是 `qwen3.7-max-2026-06-08` 档位映射预算（low→8192、medium→32768）的唯一来源。
+1. It is the original evidence for the methodological defect described in section 4 of
+   `docs/M0.2_MODEL_CAPABILITY.md`.
+2. Those two errors are the only source for the effort-to-budget mapping of
+   `qwen3.7-max-2026-06-08` (low -> 8192, medium -> 32768).
 
-正式结论一律以 `20260906T123218Z/` 为准。
+Formal conclusions come from `20260906T123218Z/` only.

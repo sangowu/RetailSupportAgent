@@ -1,13 +1,15 @@
 [project]
 name = "retail-support-agent"
 version = "0.0.0"
-description = "零售客服 Agent：订单查询 / 取消订单 / 退货申请，以可复现评测证明业务正确性"
+description = "Retail support agent: order lookup / cancellation / return, with business correctness proven by reproducible evaluation"
 readme = "README.md"
-# 固定 3.12：上游 tau2 虽声明支持 <3.14，但其 import 链依赖 3.13 已移除的 audioop（PEP 594），
-# 在 3.13 上直接 ModuleNotFoundError。详见 docs/M0.3_BUSINESS_LOOP.md。
+# Pinned to 3.12: upstream tau2 declares support for <3.14, but its import chain pulls in
+# audioop, removed in 3.13 (PEP 594), so 3.13 raises ModuleNotFoundError immediately.
+# See docs/M0.3_BUSINESS_LOOP.md.
 requires-python = ">=3.12,<3.13"
-# M0.3 起这些都是运行时必需，不再分组延后。
-# Langfuse 属 bench 组：它只在跑评测时上报 trace，服务本身不依赖它。
+# From M0.3 these are required at runtime and are no longer deferred into a group.
+# Langfuse belongs to the bench group: it reports traces only during evaluation, and the
+# service itself does not depend on it.
 dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -29,9 +31,12 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
 ]
-# 基准环境：按 M0.1 固定的同一 commit 取用上游代码，不重写其工具与评分器。
-# 数据仍来自 third_party/ 下经 SHA256 校验的检出（TAU2_DATA_DIR 指向它）。
-# 单独成组：会拉入 litellm/pandas 等重依赖，只有实际跑领域环境或评测时才需要。
+# Benchmark environment: upstream code at the same commit pinned in M0.1, with its tools
+# and evaluators never rewritten.
+# The data still comes from the SHA256-verified checkout under third_party/ (TAU2_DATA_DIR
+# points at it).
+# A separate group: it pulls in heavy dependencies such as litellm and pandas, needed only
+# when actually running the domain environment or an evaluation.
 bench = [
     "langfuse>=4.15.1",
     "tau2",
@@ -54,8 +59,7 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "PTH", "RUF"]
-# 本项目文档与断言消息使用中文，全角标点属预期，不按"易混淆字符"处理
-ignore = ["RUF001", "RUF002", "RUF003"]
+ignore = []
 
 [tool.mypy]
 python_version = "3.12"
@@ -63,22 +67,26 @@ files = ["src", "scripts", "tests"]
 strict = true
 warn_unreachable = true
 
-# 上游 tau2 未提供 py.typed，按外部未标注库处理
+# Upstream tau2 ships no py.typed, so it is treated as an external untyped library
 [[tool.mypy.overrides]]
 module = ["tau2.*"]
 ignore_missing_imports = true
 
-# litellm 与 opentelemetry 同属 bench 组，CI 的 `uv sync --locked` 不安装它们。
-# 只写 ignore_missing_imports 不够：装了的机器读到真类型、没装的读到 Any，
-# 于是同一处 `# type: ignore` 在本地必需、在 CI 却成了「未使用的 ignore」而报错。
-# follow_imports = "skip" 让两边都按未标注库处理，使本地 `uv run mypy` 与 CI 严格等价。
+# litellm and opentelemetry are in the bench group, which CI's `uv sync --locked` does not
+# install.
+# ignore_missing_imports alone is not enough: a machine with them installed reads the real
+# types while one without reads Any, so the same `# type: ignore` is required locally and
+# reported as an unused ignore in CI.
+# follow_imports = "skip" makes both sides treat them as untyped, so a local `uv run mypy`
+# is strictly equivalent to CI.
 [[tool.mypy.overrides]]
 module = ["litellm.*", "opentelemetry.*"]
 follow_imports = "skip"
 ignore_missing_imports = true
 
-# gradio 自带的类型标注与运行时不符（如 Button.click 实际存在却未标注），
-# 跳过其类型信息，避免为迁就上游标注而在本项目里加一堆 type: ignore
+# gradio's bundled type annotations disagree with its runtime (Button.click exists but is
+# not annotated), so its type information is skipped rather than scattering type: ignore
+# comments through this project to accommodate upstream annotations
 [[tool.mypy.overrides]]
 module = ["gradio.*"]
 follow_imports = "skip"
@@ -89,5 +97,5 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 asyncio_mode = "auto"
 markers = [
-    "live_model: 需要真实模型 API 与计费，默认不在 CI 运行（M0.2 起使用）",
+    "live_model: needs a real model API and billing; not run in CI by default (used from M0.2)",
 ]

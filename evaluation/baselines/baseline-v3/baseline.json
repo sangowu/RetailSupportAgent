@@ -3,9 +3,9 @@
   "status": "current",
   "task_split": "full",
   "scope_note": "All 114 tasks, with this project's write-guarded agent as the subject under test. Same stack, model and seed as baseline-v2, so the two can be paired task by task. They are different subjects: their scores are presented side by side and never averaged together.",
-  "frozen_at": "2026-09-08T16:42:48.918640+00:00",
+  "frozen_at": "2026-09-08T19:00:55.356298+00:00",
   "code": {
-    "commit": "73ea9bc6327074a4fad69c9334f643e9f9f3bd42",
+    "commit": "e02177f2d61ae94a495af7d96f253bf68f5f3fbd",
     "dirty": true,
     "dirty_excludes": "evaluation/baselines"
   },

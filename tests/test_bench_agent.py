@@ -41,7 +41,7 @@ KNOWN = {
 
 def has_han(text: str) -> bool:
     """Whether the text contains Han characters. Code-point range, no dependency."""
-    return any("一" <= ch <= "鿿" for ch in text)
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def order_payload(order_id: str, user_id: str) -> str:

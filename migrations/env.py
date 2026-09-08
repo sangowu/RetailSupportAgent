@@ -1,7 +1,8 @@
-"""Alembic 环境。
+"""Alembic environment.
 
-连接串**只从环境变量取**（`RSA_DATABASE_URL`），不写进 alembic.ini——
-写进去迟早会带着口令进 Git。这条与项目里"密钥只从环境读"的规矩是同一条。
+The connection string is read only from the environment (`RSA_DATABASE_URL`), never from
+alembic.ini: putting it there eventually carries a password into Git. This is the same rule
+as "secrets are read only from the environment" elsewhere in the project.
 """
 
 from __future__ import annotations
@@ -26,8 +27,9 @@ def database_url() -> str:
     url = os.getenv("RSA_DATABASE_URL")
     if not url:
         raise SystemExit(
-            "未设置 RSA_DATABASE_URL。迁移不接受写在配置文件里的连接串——"
-            "那样口令迟早会进 Git。示例见 .env.example。"
+            "RSA_DATABASE_URL is not set. Migrations do not accept a connection string "
+            "written into a config file, because the password would end up in Git. "
+            "See .env.example."
         )
     return url
 

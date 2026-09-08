@@ -203,7 +203,7 @@ POSITIVES = (
     "sure",
 )
 
-_CLAUSE_BREAK = re.compile(r"[,;.!?\n—–:]")
+_CLAUSE_BREAK = re.compile(r"[,;.!?\n—–:]")  # noqa: RUF001 - dashes are clause breaks on purpose
 
 
 def is_affirmative(text: str) -> bool:

@@ -1,13 +1,15 @@
-"""M1：应用侧状态（会话、消息、确认、写操作、审计）
+"""M1: application state (sessions, messages, confirmations, write operations, audit).
 
 Revision ID: 0001_application_state
 Revises:
 Create Date: 2026-09-08
 
-**只建应用侧的表。** τ²-bench 的模拟订单数据不进数据库——那是基准的业务数据，
-搬进来等于自己重写官方评测预期（见 docs/M1_PERSISTENCE.md §1）。
+Application-side tables only. The simulated order data of tau2-bench stays out of the
+database: it is the benchmark's business data, and moving it here would amount to
+rewriting the official evaluation expectations (see docs/M1_PERSISTENCE.md section 1).
 
-`downgrade` 是真的能跑的：迁移只能上不能下，等于第一次上线失败就没有退路。
+`downgrade` really runs. A migration that only goes up leaves no way back when the first
+deployment fails.
 """
 
 from __future__ import annotations
@@ -53,7 +55,8 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
-        # 重发同一轮不会插出第二条——由唯一约束保证，不是应用层"先查有没有"
+        # Resending the same turn cannot insert a second row: the unique constraint
+        # guarantees it, not an application-level "check whether it exists"
         sa.UniqueConstraint("session_id", "seq", name="uq_messages_session_seq"),
     )
     op.create_index("ix_messages_session_id", "messages", ["session_id"])
@@ -80,8 +83,9 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_confirmations_fingerprint", "confirmations", ["fingerprint"])
-    # 部分唯一索引：一个会话同时最多一条 pending。只对 pending 生效，
-    # 否则会变成"一个会话一辈子只能有一条确认"。
+    # Partial unique index: at most one pending confirmation per session at a time. It
+    # applies only to pending rows; otherwise a session could ever hold just one
+    # confirmation.
     op.create_index(
         "uq_confirmations_one_pending_per_session",
         "confirmations",
@@ -113,7 +117,8 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
-        # 幂等就靠这一条：同一个键第二次插入直接冲突，那就是"已经执行过"
+        # Idempotency rests on this: a second insert of the same key conflicts, and the
+        # conflict means "already executed"
         sa.UniqueConstraint("idempotency_key", name="uq_operations_idempotency_key"),
         sa.CheckConstraint("status in ('succeeded', 'failed')", name="ck_operations_status"),
     )

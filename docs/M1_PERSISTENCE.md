@@ -1,124 +1,145 @@
-# M1：应用侧状态落到 PostgreSQL（迁移、事务、幂等）
+# M1: application state in PostgreSQL (migrations, transactions, idempotency)
 
-## 0. 为什么有这一步
+## 0. Why this step exists
 
-M0 的会话全在进程内存里：`SessionRegistry` 是一个 `dict[str, RetailAgent]`，
-重启即丢。这带来三个说不清的问题：
+M0 kept sessions in process memory: `SessionRegistry` was a `dict[str, RetailAgent]`,
+lost on restart. Three consequences:
 
-1. **重试会重复执行写操作。** 客户端超时重发同一条请求，Agent 会再取消一次订单。
-   M0.6 的护栏保证了"写操作必须先确认"，但没有保证"确认过的写操作只执行一次"。
-2. **确认状态没有落点。** 用户在第 3 轮确认的操作，进程一重启就无从查证。
-3. **审计无从谈起。** 谁在什么时候授权了哪一次写操作，现在只存在于日志文本里。
+1. **A retry executed the write twice.** A client timeout and resend made the agent
+   cancel the order again. The M0.6 guard guarantees that a write is confirmed first,
+   but not that a confirmed write runs only once.
+2. **Confirmations had nowhere to live.** An operation the user confirmed on turn 3
+   could not be verified after a restart.
+3. **There was no audit.** Who authorized which write action and when existed only in
+   log text.
 
-M1 只解决这三件事。
+M1 solves those three and nothing else.
 
-## 1. 变更卡
+## 1. Change card
 
-- **阶段与步骤**：M1
-- **类型**：新功能
-- **具体问题**：应用侧状态无持久化，重试会重复写，确认与授权无审计落点
-- **本次唯一主题**：应用侧状态落库 + 迁移 + 事务 + 幂等
-- **不修改的控制变量**：被测模型、模拟用户、判官、任务集、上游 commit、价格快照。
-  评测栈一个字节都不动——否则与 `baseline-v3` 的对比无从谈起。
-- **明确不做**：
-  - **不动 τ²-bench 的模拟订单数据。** 基准的业务数据留在上游的内存环境里。
-    把它搬进 PostgreSQL 等于自己重写官方评测预期，成绩立刻不可比。
-  - 不做认证（M3）、不做 LangGraph checkpoint（M2）、不做租户与计费。
-- **预期收益**：重试与并发不重复修改；失败整体回滚；每一次写操作都有授权链路可查
-- **可能代价**：每轮对话增加数据库往返；部署多一个依赖组件
+- **Stage**: M1
+- **Type**: feature
+- **Problem**: application state is not persisted, retries repeat writes, and
+  confirmation and authorization have no audit record
+- **Single theme**: application state in a database, with migrations, transactions and
+  idempotency
+- **Control variables not touched**: the model under test, the simulated user, the
+  judge, the task sets, the upstream commit, the price snapshot. Not one byte of the
+  evaluation stack changes, or the comparison against `baseline-v3` means nothing.
+- **Explicitly out of scope**:
+  - The τ²-bench simulated order data stays in upstream's in-memory environment. Moving
+    it into PostgreSQL would amount to rewriting the official evaluation expectations,
+    making scores incomparable immediately.
+  - No authentication (M3), no LangGraph checkpoints (M2), no tenancy or billing.
+- **Expected benefit**: retries and concurrency do not repeat a modification; a failure
+  rolls back as a whole; every write has a traceable authorization chain
+- **Possible cost**: one more database round trip per turn; one more component to deploy
 
-## 2. 落库范围（只做应用侧）
+## 2. What is persisted (application state only)
 
-| 表 | 记什么 | 关键约束 |
+| Table | Contents | Key constraint |
 |---|---|---|
-| `sessions` | 会话与其模拟身份 | — |
-| `messages` | 逐轮对话 | `(session_id, seq)` 唯一——重放不会插出第二条 |
-| `confirmations` | 待确认/已确认的写操作及其**参数指纹** | 每个会话同时最多一条 pending |
-| `operations` | 真正执行的写操作 | `idempotency_key` 唯一——幂等靠它，不靠应用层判断 |
-| `audit_events` | 授权依据与结果 | 外键指向 `operations` |
+| `sessions` | The session and its simulated identity | - |
+| `messages` | Conversation turns | `(session_id, seq)` unique, so a replay cannot insert a second row |
+| `confirmations` | Pending and resolved write actions with their argument fingerprint | At most one pending row per session |
+| `operations` | Write actions actually executed | `idempotency_key` unique; idempotency rests on it, not on application logic |
+| `audit_events` | Authorization basis and outcome | Foreign key to `operations` |
 
-不变量交给数据库，不交给应用代码：唯一约束、外键、条件更新。
-应用层的"先查一下有没有"在并发下必然漏，而唯一约束不会。
+Invariants belong to the database, not to application code: unique constraints, foreign
+keys, conditional updates. An application-level "check whether it exists" misses under
+concurrency; a unique constraint does not.
 
-## 3. 幂等的定义
+## 3. Definition of idempotency
 
-幂等键 = `sha256(session_id | 工具名 | 规范化参数 | confirmation_id)`。
+Key = `sha256(session_id | tool | canonical arguments | confirmation_id)`.
 
-- 同一个键第二次到达：**不执行**，直接返回第一次的结果。
-- 参数变了，键就变了，需要重新确认——与 M0.6 护栏的指纹是同一套口径。
-- 键的唯一性由 `operations.idempotency_key` 的唯一索引保证。
-  插入冲突就是"已经执行过"，不需要先 SELECT 再 INSERT。
+- The same key arriving a second time does not execute; the first result is returned.
+- Changed arguments change the key and require a new confirmation, using the same
+  fingerprint definition as the M0.6 guard.
+- Uniqueness is enforced by the unique index on `operations.idempotency_key`. An insert
+  conflict means "already executed", so no SELECT-then-INSERT is needed.
 
-## 4. 验收阈值（跑之前锁定）
+## 4. Acceptance thresholds (fixed before running)
 
-| 指标 | 阈值 | 不满足时 |
+| Metric | Threshold | If not met |
 |---|---|---|
-| 重复执行 | 同一幂等键重复 N 次，**写操作只发生 1 次** | FAIL |
-| 失败回滚 | 事务中途失败，`operations` 与业务效果**同时不存在** | FAIL |
-| 并发 | 同一幂等键并发提交，只有一个成功执行，另一个返回同一结果 | FAIL |
-| 评测成绩 | 与 `baseline-v3` 相比不退步（McNemar 不显著即可） | 解释来源 |
-| 迁移 | `alembic upgrade head` 与 `downgrade base` 都能跑通 | FAIL |
+| Repeated execution | One key repeated N times executes the write once | FAIL |
+| Failure rollback | A mid-transaction failure leaves neither the operation row nor the business effect | FAIL |
+| Concurrency | Concurrent submissions of one key execute once; the others return that result | FAIL |
+| Evaluation score | No regression against `baseline-v3` (McNemar not significant is enough) | Explain the cause |
+| Migrations | `alembic upgrade head` and `downgrade base` both run | FAIL |
 
-## 5. 结果
+## 5. Results
 
-验证环境：PostgreSQL 17（`compose.yaml`，只监听 127.0.0.1），
-`RSA_TEST_DATABASE_URL` 指向它。**不用 SQLite 顶替**——部分唯一索引、唯一冲突
-与事务回滚都是方言相关的行为，换个数据库测出来的绿色说明不了这件事。
+Verified against PostgreSQL 17 (`compose.yaml`, loopback only), with
+`RSA_TEST_DATABASE_URL` pointing at it. SQLite is not a substitute: partial unique
+indexes, unique conflicts and transaction rollback are dialect-specific, and a green run
+on another database would show nothing.
 
-### 5.1 四条验收阈值
+### 5.1 The four acceptance thresholds
 
-| 指标 | 阈值 | 实测 | 结论 |
+| Metric | Threshold | Measured | Result |
 |---|---|---|---|
-| 重复执行 | 同一幂等键重复 5 次，写操作只发生 1 次 | 执行 1 次，`operations` 1 行 | 通过 |
-| 失败回滚 | 事务中途失败，操作记录与业务效果同时不存在 | `operations` 与 `audit_events` 均为空 | 通过 |
-| 并发 | 同一幂等键 8 线程并发，只有一个执行 | 执行 1 次，其余 7 个取回同一结果 | 通过 |
-| 迁移 | `upgrade head` 与 `downgrade base` 都能跑通 | 在独立 schema 上跑通 | 通过 |
+| Repeated execution | One key repeated 5 times executes once | executed once, one `operations` row | pass |
+| Failure rollback | Neither the operation record nor the business effect remains | `operations` and `audit_events` both empty | pass |
+| Concurrency | 8 concurrent submissions of one key execute once | executed once; the other 7 returned that result | pass |
+| Migrations | `upgrade head` and `downgrade base` both run | ran in a separate schema | pass |
 
-14 条持久化用例全部执行（不是跳过），全套 340 个测试通过。
+All 14 persistence tests executed rather than skipped, and the full suite of 340 tests
+passed.
 
-### 5.2 并发那条走的是索引，不是应用层检查
+### 5.2 Concurrency is handled by the index, not the application check
 
-"只有一个执行"这个结果本身不足以说明是谁挡住的：前置查询也能在**串行**情况下
-得到同样的数字。所以单独验证了一次：把 `apply()` 拖慢到 0.4 秒，保证 8 个线程
-都在第一次提交之前通过前置查询。
+"Executed once" on its own does not say what prevented the second execution: a
+pre-check would produce the same number when the calls happen to be serialized. So it
+was verified separately: `apply()` was slowed to 0.4 seconds, guaranteeing all 8 threads
+pass the pre-check before the first commit.
 
-结果是 7 个重放线程**全部在 0.42 秒返回**——它们被唯一索引挂起，直到第一个
-事务提交才拿到冲突。若是被前置查询挡掉，它们会在 0.00 秒返回。
+All 7 replaying threads returned after 0.42 seconds, having been blocked by the unique
+index until the first transaction committed. Had the pre-check stopped them, they would
+have returned in 0.00 seconds.
 
-前置查询只是省一次冲突的快路径，**正确性由唯一索引负责**。
+The pre-check is only a fast path that avoids a conflict. Correctness comes from the
+unique index.
 
-### 5.3 失败不烧掉幂等键
+### 5.3 A failure does not burn the key
 
-单列一条用例：一次瞬时故障之后，同一个键必须还能再试。
+This has its own test: after a transient fault, the same key must still be usable.
 
-如果失败也占住了键，一次网络抖动就会让这个操作**永远**执行不了，而且表现成
-"已经执行过了"——查起来最费劲的那种。现在 `apply()` 抛异常时整个事务回滚，
-操作行跟着消失，键自然是空的。
+If a failure claimed the key, one network blip would make the operation permanently
+unexecutable while reporting "already done", which is the hardest failure to diagnose.
+With `apply()` raising, the whole transaction rolls back, the operation row disappears
+with it, and the key is free.
 
-### 5.4 第二次授权不是重试
+### 5.4 A second authorization is not a retry
 
-幂等键带上 `confirmation_id`。同一组参数**再次获得确认**是一次新的授权，
-应当能再执行一次——用户可能真的想再退一件一样的商品。不带的话，
-第二次合法请求会被当成重试静默吞掉，而用户会以为操作成功了。
+The idempotency key includes `confirmation_id`. Confirming the same arguments again is a
+new authorization and should run again: the user may genuinely want to return another
+identical item. Without it, the second legitimate request would be swallowed as a retry
+while the user believed it had succeeded.
 
-### 5.5 不配数据库也要能跑
+### 5.5 It must run without a database
 
-`RSA_DATABASE_URL` 没配时，`Store` 为 `None`，全部落库调用退化成无操作，
-行为回到 M0 的内存会话。
+With `RSA_DATABASE_URL` unset, `Store` is None, every persistence call is a no-op, and
+behaviour returns to M0's in-memory sessions.
 
-这不是"优雅降级"式的客套：**评测回路里就没有 PostgreSQL**，
-硬性依赖会让 τ²-bench 直接跑不起来，`baseline-v3` 的对比也就无从谈起。
+This is not a courtesy fallback: the evaluation loop has no PostgreSQL, so a hard
+dependency would stop τ²-bench from running at all and make the `baseline-v3` comparison
+impossible.
 
-### 5.6 踩到的坑
+### 5.6 What went wrong along the way
 
-`alembic.ini` 里写了中文注释，Windows 上 configparser 按本机 locale（GBK）读它，
-迁移用例直接 `UnicodeDecodeError`。现在这个文件只保留 ASCII，说明写在
-`migrations/env.py` 里。
+`alembic.ini` contained non-ASCII comments. On Windows, configparser reads that file with
+the machine's locale encoding (GBK), and the migration test failed with
+`UnicodeDecodeError`. The file is now ASCII-only, with the explanation in
+`migrations/env.py`.
 
-### 5.7 尚未验证
+### 5.7 Not verified
 
-- **评测成绩不退步**：`--guarded` 跑评测时不配数据库，落库路径不参与，
-  所以 `baseline-v3` 的成绩不受影响。真要证明"接库之后成绩不变"，
-  需要另跑一轮带库的全集——这一步没做，也没有把它算作已验证。
-- **跨进程恢复对话**：进程重启后 Agent 实例与领域环境仍会重建，
-  历史消息虽已落库但不会被重放。那是 M2（checkpoint）的主题。
+- **No regression in evaluation scores.** Evaluation runs without a database configured,
+  so the persistence path does not participate and `baseline-v3` is unaffected. Proving
+  that scores are unchanged with a database attached would require another full run,
+  which was not done and is not claimed.
+- **Resuming a conversation across processes.** After a restart the agent instance and
+  the domain environment are rebuilt, and although the message history is persisted it is
+  not replayed. That is M2's subject.

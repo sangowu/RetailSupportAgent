@@ -1,5 +1,5 @@
 {
-  "$comment": "回归集：暴露过的失败任务在此登记并版本化。M0.1 冻结时为空属正常，不是遗漏。",
+  "$comment": "Regression set: failures that have been exposed are registered here and versioned. Empty at the M0.1 freeze is expected, not an omission.",
   "version": "v0",
   "count": 0,
   "task_ids": [],
