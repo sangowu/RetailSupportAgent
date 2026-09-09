@@ -1,0 +1,72 @@
+# The demo stack as it runs on the instance.
+#
+# The repository root's compose.yaml is the development one: it builds the image from
+# source and binds to the loopback address. This one pulls a published image and listens on
+# every interface, because the machine it runs on is the boundary. tests/test_deploy_files.py
+# checks the two describe the same services, so they cannot drift apart unnoticed.
+#
+# DASHSCOPE_API_KEY comes from /opt/rsa/.env, written at boot from Parameter Store by
+# rsa-start. It has no default: a stack that starts without a key and fails on the first
+# message is worse than one that refuses to start.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: rsa
+      POSTGRES_PASSWORD: rsa_local_dev
+      POSTGRES_DB: rsa
+    volumes:
+      - rsa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rsa -d rsa"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: ${RSA_IMAGE:?RSA_IMAGE is required}
+    command: ["migrate"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+    depends_on:
+      db: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    image: ${RSA_IMAGE:?RSA_IMAGE is required}
+    command: ["api"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+    ports: ["8000:8000"]
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  ui:
+    image: ${RSA_IMAGE:?RSA_IMAGE is required}
+    command: ["ui"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      RSA_UI_HOST: "0.0.0.0"
+    ports: ["7860:7860"]
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+volumes:
+  rsa_pgdata:

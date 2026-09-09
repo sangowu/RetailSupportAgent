@@ -1,9 +1,11 @@
 [Unit]
 Description=Stop this instance when nobody is using the demo
-# Only meaningful while the stack is meant to be running. Without this the watcher would
-# also fire during a deliberate maintenance window with the stack down.
+# After, but deliberately not Requires. The watcher has to run when the stack is broken,
+# not only when it is healthy: an unreachable application is never counted as idle, so the
+# machine stays up for someone to look at, and the uptime cap is what eventually stops it.
+# Requiring rsa.service would tie the one thing that bounds the bill to the one thing that
+# just failed.
 After=rsa.service
-Requires=rsa.service
 
 [Service]
 Type=oneshot
