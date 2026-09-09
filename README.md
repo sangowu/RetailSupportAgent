@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 tested and rejected two cheaper thinking levels.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -15,6 +15,11 @@ The model is `deepseek-v4-pro` with thinking at effort=high.
 
 Costs are what each run actually spent, priced call by call at the rate in force when the
 call was made; both ran off peak. See [M5.1](docs/M5.1_MEASUREMENT.md).
+
+The same configuration repeated on 2026-09-09 scored 101/114, so the score's own spread is
+about one task. Disabling thinking costs a third less and answers in a quarter of the time
+at p95, and it was rejected: it gets six database outcomes wrong that the incumbent gets
+right every time. See [M5.2](docs/M5.2_THINKING_EFFORT.md).
 
 Paired McNemar exact test p = 0.3018, not significant: enforced confirmation did not
 lower the score. The measurable gain is that 168 unconfirmed writes became 0.
@@ -51,12 +56,13 @@ judge was not held constant; see
 13. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
 14. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
 15. [M5.1 cost priced by the run's clock, and latency](docs/M5.1_MEASUREMENT.md)
-16. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-17. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-18. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-19. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-20. [Local and AWS start/stop design](docs/OPERATIONS.md)
-21. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+16. [M5.2 how much thinking the task set needs](docs/M5.2_THINKING_EFFORT.md)
+17. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+18. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+19. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+20. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+21. [Local and AWS start/stop design](docs/OPERATIONS.md)
+22. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
