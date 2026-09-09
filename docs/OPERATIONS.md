@@ -75,6 +75,31 @@ Building the image needs `third_party/` to exist, because the demo imports the b
 retail domain at run time. Run `uv run python scripts/fetch_tau2.py` first; it verifies the
 checkout by SHA256, and the image copies only the retail domain out of it.
 
+## Starting and stopping a demo (from M6.5)
+
+Three commands. They find the instance by its tags, so they work from any machine with
+credentials, without Terraform's state.
+
+```
+uv run python scripts/demo.py status
+uv run python scripts/demo.py start
+uv run python scripts/demo.py stop
+```
+
+- **`start` waits for an answer, not for a state.** `running` means the hypervisor has the
+  machine; the demo answers about half a minute later. Measured at 29 and 35 seconds.
+- **`start` prints the current addresses.** This shape uses no Elastic IP, so they change
+  across every stop.
+- **`stop` asks the application whether it is busy**, using the same verdict the idle
+  watcher uses. It refuses while a write is awaiting confirmation, an approval is awaiting a
+  human, or a ticket is open, and names which.
+- **`stop --force` overrides** and prints what it overrode.
+- **Stopping loses nothing.** The volume, the database and the image stay; the next start
+  reads the same rows.
+
+Exit codes: 0 done or nothing to do, 1 could not be done, 2 refused because work is
+unfinished. A wrapper may retry on 1 and must not on 2.
+
 ## Stopping the instance when nobody is using it (from M6.3)
 
 M6.1 chose a shape whose idle cost is a stopped instance's disk. That number is only real
