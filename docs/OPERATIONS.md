@@ -5,6 +5,13 @@ Status: the three local start/stop scripts are implemented and verified by runni
 about AWS below is an operational contract to be implemented and verified, not a set of
 commands that work today.
 
+The AWS shape named below - ECS Fargate behind an ALB, RDS, CloudFront - is superseded by
+[M6.1](M6.1_DEPLOYMENT_SHAPE.md), which measured the candidates and chose a single
+instance that is stopped when idle. The sections "AWS technical target", "Separate base
+and demo layers" and "Free URL and HTTPS" are kept here unchanged until the step that
+builds the Terraform rewrites them, so that what was assumed and what was measured stay
+visible side by side. Read M6.1 first.
+
 ## Local start and stop
 
 | Script | Behaviour | Status |
