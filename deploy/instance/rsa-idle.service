@@ -1,0 +1,14 @@
+[Unit]
+Description=Stop this instance when nobody is using the demo
+# Only meaningful while the stack is meant to be running. Without this the watcher would
+# also fire during a deliberate maintenance window with the stack down.
+After=rsa.service
+Requires=rsa.service
+
+[Service]
+Type=oneshot
+# Runs as root because it ends by stopping the machine. It reads one local URL and runs
+# two commands; nothing here needs the network or a credential.
+ExecStart=/usr/bin/python3 /opt/rsa/idle_shutdown.py
+EnvironmentFile=-/etc/rsa-idle.env
+TimeoutStartSec=300

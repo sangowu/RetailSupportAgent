@@ -400,6 +400,21 @@ class Store:
             row = db.scalar(stmt)
             return int(row) if row is not None else None
 
+    def pending_confirmation_count(self) -> int:
+        """How many writes are waiting for someone to confirm them, in any session.
+
+        Used to decide whether the service is idle. A confirmation nobody has answered
+        looks exactly like an empty machine from outside, and is not one: the write was
+        proposed and the answer is still owed.
+        """
+        with self._sessions() as db:
+            stmt = (
+                select(func.count())
+                .select_from(ConfirmationRow)
+                .where(ConfirmationRow.state == "pending")
+            )
+            return int(db.scalar(stmt) or 0)
+
     def pending_confirmation(self, session_id: str) -> ConfirmationRow | None:
         with self._sessions() as db:
             stmt = select(ConfirmationRow).where(

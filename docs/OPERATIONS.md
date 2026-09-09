@@ -75,6 +75,48 @@ Building the image needs `third_party/` to exist, because the demo imports the b
 retail domain at run time. Run `uv run python scripts/fetch_tau2.py` first; it verifies the
 checkout by SHA256, and the image copies only the retail domain out of it.
 
+## Stopping the instance when nobody is using it (from M6.3)
+
+M6.1 chose a shape whose idle cost is a stopped instance's disk. That number is only real
+if something stops the instance, and `deploy/instance/` is that something.
+
+| File | |
+|---|---|
+| `idle_shutdown.py` | asks the application whether it is idle, and stops the stack and then the machine |
+| `rsa-idle.service` | runs it once, as root |
+| `rsa-idle.timer` | every minute, starting two minutes after boot |
+
+**Idle is what the application says it is, not what the CPU says.** A request blocked on a
+model call uses almost no CPU, and a write waiting for confirmation looks like an empty
+machine from outside. `GET /idle` answers with the verdict and, when it is not idle, what
+is holding it open: writes awaiting confirmation, approvals awaiting a human, open tickets,
+and time since the last request. The health and idle routes do not count as requests, or
+the watcher's own polling would keep the machine alive.
+
+Two independent reasons to stop, both configurable through `/etc/rsa-idle.env`:
+
+| Variable | Default | |
+|---|---|---|
+| `RSA_IDLE_MINUTES` | 15 | continuous idleness before stopping |
+| `RSA_MAX_UPTIME_MINUTES` | 240 | stop regardless, whatever the application says |
+| `RSA_IDLE_URL` | `http://127.0.0.1:8000/idle` | where to ask |
+| `RSA_IDLE_DRY_RUN` | unset | `1` logs the decision and changes nothing |
+
+The cap is what bounds the cost of the first reason being wrong: one session that never
+closes would otherwise keep a machine running until someone reads the bill. An application
+that does not answer is never treated as idle, so a broken service stays up for someone to
+look at, and the cap catches it.
+
+To see the current verdict without acting on it:
+
+```
+python3 /opt/rsa/idle_shutdown.py --check
+curl -s http://127.0.0.1:8000/idle
+```
+
+The instance is stopped, not terminated, so the disk, the database and the image survive
+and the next start is 41 seconds rather than 122.
+
 ## AWS technical target
 
 Region initially `eu-west-1`. Containers run on ECS Fargate with images in ECR;

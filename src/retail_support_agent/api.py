@@ -23,6 +23,7 @@ assignee works it in a session of their own bound to that ticket.
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -45,6 +46,11 @@ from retail_support_agent.domain import RetailDomain
 from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
 from retail_support_agent.store import Store, TicketSummary
+
+# Routes that do not count as someone using the service. The idle watcher polls these
+# once a minute; if its own polling reset the activity clock the answer would always be
+# "busy" and the machine would never stop.
+_QUIET_ROUTES = frozenset({"/health", "/idle"})
 
 # Fixed demo identity from the τ²-bench simulated data, not a real user. Chosen
 # because it owns both a pending order (cancellable) and a delivered order
@@ -447,6 +453,20 @@ def create_app(
                 detail=f"Session {session_id} is being handled by another process.",
             ) from exc
 
+    app.state.last_activity = time.monotonic()
+
+    @app.middleware("http")
+    async def record_activity(request: Request, call_next: Any) -> Any:
+        """Stamp the time of the last request that means somebody is here.
+
+        A monotonic clock, not a wall clock: this value is only ever compared with
+        itself, and a machine whose time is corrected would otherwise appear to have
+        been idle for hours or for a negative number of seconds.
+        """
+        if request.url.path not in _QUIET_ROUTES:
+            app.state.last_activity = time.monotonic()
+        return await call_next(request)
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -463,6 +483,55 @@ def create_app(
         if resolved_auth is None:
             body["demo_user_id"] = user_id
         return body
+
+    @app.get("/idle")
+    def idle() -> dict[str, Any]:
+        """Whether this service considers itself unused, and what is holding it open.
+
+        The machine cannot answer this. A request blocked on a model call uses almost no
+        CPU, and a confirmation nobody has answered looks like an empty machine from
+        outside. So the application answers it, and the watcher on the instance acts.
+
+        Authentication is deliberately not required. The caller is a process on the same
+        machine, and the answer contains counts rather than anyone's data. Requiring a
+        token would mean putting one on the instance to shut the instance down.
+        """
+        seconds_since_request = time.monotonic() - app.state.last_activity
+
+        confirmations = 0
+        approvals = 0
+        open_tickets = 0
+        if resolved_store is not None:
+            confirmations = resolved_store.pending_confirmation_count()
+            approvals = len(resolved_store.pending_approvals())
+            open_tickets = len(resolved_store.tickets(open_only=True))
+
+        # Each holding reason is named. A watcher that can only see a boolean cannot be
+        # diagnosed when it does the wrong thing, and "why is this still running" is the
+        # first question anyone asks.
+        holding: list[str] = []
+        if confirmations:
+            holding.append(f"{confirmations} write(s) waiting for confirmation")
+        if approvals:
+            holding.append(f"{approvals} approval(s) waiting for a human")
+        if open_tickets:
+            holding.append(f"{open_tickets} open ticket(s)")
+
+        return {
+            # Idle time is time since the last request, and only counts while nothing
+            # else is unfinished. Anything that closes a holding reason is itself a
+            # request, so the clock restarts from that request rather than from the past.
+            "idle_seconds": 0.0 if holding else round(seconds_since_request, 1),
+            "seconds_since_request": round(seconds_since_request, 1),
+            "holding": holding,
+            # Reported, not a holding reason: SessionRegistry never releases a session,
+            # so this count does not fall back to zero on its own. See M6.3 section 1.1.1.
+            "active_sessions": registry.active_sessions(),
+            "pending_confirmations": confirmations,
+            "pending_approvals": approvals,
+            "open_tickets": open_tickets,
+            "persistent": resolved_store is not None,
+        }
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(request: ChatRequest, identity: CurrentIdentity) -> ChatResponse:
