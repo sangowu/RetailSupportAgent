@@ -1,0 +1,57 @@
+{
+  "model": "deepseek-v4-pro",
+  "steps": [
+    {
+      "turn": 1,
+      "thinking": false,
+      "history_has_reasoning": false,
+      "history_assistant_turns": 0,
+      "status": "ok",
+      "returned_reasoning_content": false,
+      "reasoning_chars": 0,
+      "finish_reason": "tool_calls",
+      "emitted_tool_call": true,
+      "usage": {
+        "prompt_tokens": 288,
+        "completion_tokens": 48,
+        "reasoning_tokens": null
+      }
+    },
+    {
+      "turn": 2,
+      "thinking": true,
+      "history_has_reasoning": false,
+      "history_assistant_turns": 1,
+      "status": "ok",
+      "returned_reasoning_content": true,
+      "reasoning_chars": 902,
+      "finish_reason": "stop",
+      "emitted_tool_call": false,
+      "usage": {
+        "prompt_tokens": 455,
+        "completion_tokens": 309,
+        "reasoning_tokens": 186
+      }
+    },
+    {
+      "turn": 3,
+      "thinking": false,
+      "history_has_reasoning": true,
+      "history_assistant_turns": 2,
+      "status": "ok",
+      "returned_reasoning_content": false,
+      "reasoning_chars": 0,
+      "finish_reason": "stop",
+      "emitted_tool_call": false,
+      "usage": {
+        "prompt_tokens": 515,
+        "completion_tokens": 5,
+        "reasoning_tokens": null
+      }
+    }
+  ],
+  "mixed_modes_accepted": true,
+  "probed_at": "2026-09-09T13:12:14.684937+00:00",
+  "base_url": "https://api.deepseek.com",
+  "question": "may a tools-carrying conversation mix thinking-enabled and thinking-disabled turns, given that historical reasoning_content must be returned in full"
+}

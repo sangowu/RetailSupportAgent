@@ -69,6 +69,73 @@ UNKNOWN_OWNER_REASON = (
 )
 
 
+# ---------------------------------------------------------------------------
+# M5.3: which turns are worth thinking about
+# ---------------------------------------------------------------------------
+#
+# M5.2 measured what disabling thinking costs on this task set: of the ten tasks it lost
+# that the incumbent always passes, six failed the database check and four stated a wrong
+# count of items over a tool result. The triggers below are those two failures and
+# nothing else. They are deliberately small and readable: a trigger that cannot be
+# explained cannot be defended when it fires on the wrong turn.
+
+# "there are 11 t-shirt options available" - the measured failure, where the tool result
+# was in the conversation and the counting was not done. Also covers the plain
+# "N options" form without the "there are".
+_QUANTITY_CLAIM = re.compile(
+    r"\bthere (?:are|were|is|was)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve)\b"
+    r"|\b\d+\s+(?:options|variants|items|choices|products|results|orders|matches)\b",
+    re.IGNORECASE,
+)
+
+TRIGGER_WRITE = "write"
+TRIGGER_QUANTITY = "quantity"
+TRIGGER_AFTER_REFUSAL = "after_refusal"
+
+
+def thinking_trigger(text: str, tool_names: list[str], after_refusal: bool) -> str | None:
+    """Why this turn should be redone with thinking, or None to keep it as it is.
+
+    Order matters only for the label: a turn that trips two triggers is still one re-run.
+    """
+    if any(name in WRITE_TOOLS for name in tool_names):
+        return TRIGGER_WRITE
+    if text and _QUANTITY_CLAIM.search(text):
+        return TRIGGER_QUANTITY
+    if after_refusal:
+        return TRIGGER_AFTER_REFUSAL
+    return None
+
+
+def _sum_usage(first: Any, second: Any) -> dict[str, Any] | None:
+    """Add up two attempts' usage records.
+
+    The discarded attempt really happened and really cost money. Keeping only the second
+    would hide the price of the routing inside the routing's own saving, which is the one
+    result this step must not be able to fake.
+    """
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return second if isinstance(second, dict) else first
+    merged = dict(second)
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens"):
+        left, right = first.get(key), second.get(key)
+        if isinstance(left, int) and isinstance(right, int):
+            merged[key] = left + right
+    for group, field in (
+        ("prompt_tokens_details", "cached_tokens"),
+        ("completion_tokens_details", "reasoning_tokens"),
+    ):
+        left_group, right_group = first.get(group), second.get(group)
+        if isinstance(left_group, dict) and isinstance(right_group, dict):
+            left_value, right_value = left_group.get(field), right_group.get(field)
+            if isinstance(left_value, int) and isinstance(right_value, int):
+                merged_group = dict(right_group)
+                merged_group[field] = left_value + right_value
+                merged[group] = merged_group
+    return merged
+
+
 def _clean(raw: Any) -> str:
     """An upstream tool result may be a pydantic model or already a string."""
     if isinstance(raw, str):
@@ -96,6 +163,11 @@ class GuardState:
         self.call_names: dict[str, str] = {}
         self.confirmed: set[str] = set()
         self.pending: ProposedCall | None = None
+        # M5.3 routing: whether the previous turn was refused by the guard, and one
+        # record per re-run. Both are reported; a router that cannot be audited is a
+        # router whose cost cannot be attributed.
+        self.last_turn_refused: bool = False
+        self.routing: list[dict[str, Any]] = []
         # Record of what the guard blocked in this task, used to classify regressions.
         self.interventions: list[dict[str, str]] = []
 
@@ -256,6 +328,7 @@ def build_agent_class() -> Any:
     module level: that would force any caller who only wants `guardrails` to prepare a
     data directory first.
     """
+    import tau2.agent.llm_agent as llm_agent_module
     from tau2.agent.llm_agent import LLMAgent, LLMAgentState
     from tau2.data_model.message import (
         AssistantMessage,
@@ -283,9 +356,62 @@ def build_agent_class() -> Any:
         never sent; an explanation goes to the user instead.
         """
 
-        def __init__(self, tools: Any, domain_policy: str, llm: str, llm_args: Any = None) -> None:
+        def __init__(
+            self,
+            tools: Any,
+            domain_policy: str,
+            llm: str,
+            llm_args: Any = None,
+            boost_args: dict[str, Any] | None = None,
+        ) -> None:
             super().__init__(tools=tools, domain_policy=domain_policy, llm=llm, llm_args=llm_args)
             self._known_tools = {t.name for t in tools}
+            # M5.3: the arguments for a turn worth thinking about. None means no routing
+            # at all, which is the benchmark path M5.2 measured and the default.
+            self._boost_args = boost_args
+
+        def _rerun_with_thinking(self, state: Any, first: Any, trigger: str) -> Any:
+            """Run the same turn again with thinking on, and keep the second answer.
+
+            `_generate_next_message` appends the incoming message to the conversation, so
+            it cannot be called twice for one turn. The second attempt therefore calls
+            the model directly with the state the first attempt already prepared.
+
+            The kept message carries the price of both attempts. Anything else would let
+            the routing charge for one call and be paid for two.
+            """
+            assert self._boost_args is not None
+            # Resolved through the module rather than imported, which is how upstream
+            # itself reaches it: one name for a test to patch, and no second copy that
+            # could drift from the call the first attempt made.
+            second = llm_agent_module.generate(
+                model=self.llm,
+                tools=self.tools,
+                messages=state.system_messages + state.messages,
+                call_name="agent_response",
+                **self._boost_args,
+            )
+            changed = (second.content or "") != (first.content or "") or [
+                (c.name, c.arguments) for c in (second.tool_calls or [])
+            ] != [(c.name, c.arguments) for c in (first.tool_calls or [])]
+            state.guard.routing.append(
+                {
+                    "trigger": trigger,
+                    "changed": changed,
+                    "first_tools": [c.name for c in (first.tool_calls or [])],
+                    "second_tools": [c.name for c in (second.tool_calls or [])],
+                }
+            )
+            second.cost = (first.cost or 0.0) + (second.cost or 0.0)
+            first_time = first.generation_time_seconds or 0.0
+            second_time = second.generation_time_seconds or 0.0
+            second.generation_time_seconds = first_time + second_time
+            second.usage = _sum_usage(first.usage, second.usage)
+            if isinstance(first.raw_data, dict) and isinstance(second.raw_data, dict):
+                merged = dict(second.raw_data)
+                merged["usage"] = _sum_usage(first.raw_data.get("usage"), merged.get("usage"))
+                second.raw_data = merged
+            return second
 
         def get_init_state(self, message_history: Any = None) -> Any:
             base = super().get_init_state(message_history)
@@ -309,8 +435,19 @@ def build_agent_class() -> Any:
                     guard.confirmed.add(guard.pending.fingerprint)
                 guard.pending = None
 
-            # 2) Let upstream generate as usual.
+            # 2) Let upstream generate as usual. Under M5.3 routing the configured
+            #    arguments are the cheap mode, and a turn that trips a trigger is run
+            #    again with thinking before anything else looks at it.
             assistant = self._generate_next_message(message, state)
+            if self._boost_args is not None:
+                trigger = thinking_trigger(
+                    assistant.content or "",
+                    [call.name for call in (assistant.tool_calls or [])],
+                    guard.last_turn_refused,
+                )
+                if trigger is not None:
+                    assistant = self._rerun_with_thinking(state, assistant, trigger)
+            guard.last_turn_refused = False
 
             # 3) Judge every call before it goes out.
             calls = list(assistant.tool_calls or [])
@@ -336,6 +473,8 @@ def build_agent_class() -> Any:
                     guard.call_names[call.id] = call.name
                 state.messages.append(assistant)
                 return assistant, state
+
+            guard.last_turn_refused = True
 
             # If any call in a message is blocked, the message carries no tool calls at
             # all: upstream requires a turn to be either text or tool calls, and
@@ -369,11 +508,15 @@ def _incoming_tool_messages(message: Any, multi_cls: Any, single_cls: Any) -> li
     return []
 
 
-def register(force: bool = False) -> str:
+def register(force: bool = False, boost_args: dict[str, Any] | None = None) -> str:
     """Register the guarded agent with the upstream registry and return its name.
 
     Upstream raises on duplicate registration, so this is idempotent: a script may
     call it more than once in the same process.
+
+    `boost_args` turns on M5.3 routing: the run's own arguments become the cheap mode,
+    and these are used for the turns a trigger picks out. Left None, the agent is exactly
+    the subject M5.2 measured, and re-registering with routing needs `force`.
     """
     from tau2.registry import registry
 
@@ -384,7 +527,13 @@ def register(force: bool = False) -> str:
 
     def factory(tools: Any, domain_policy: str, llm: str, llm_args: Any = None, **_: Any) -> Any:
         # The factory is also passed task / audio arguments this agent does not use.
-        return agent_class(tools=tools, domain_policy=domain_policy, llm=llm, llm_args=llm_args)
+        return agent_class(
+            tools=tools,
+            domain_policy=domain_policy,
+            llm=llm,
+            llm_args=llm_args,
+            boost_args=boost_args,
+        )
 
     registry.register_agent_factory(factory, AGENT_NAME)
     return AGENT_NAME
