@@ -1,0 +1,90 @@
+{
+  "run_id": "20260909T134021Z",
+  "run_at": "2026-09-09T13:43:41.185821+00:00",
+  "wall_seconds": 196.7,
+  "local_utc_offset_seconds": 3600,
+  "task_ids": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "6",
+    "7"
+  ],
+  "completed_task_ids": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "6",
+    "7"
+  ],
+  "stopped_early": false,
+  "num_trials": 1,
+  "agent_under_test": "guarded",
+  "stack": {
+    "agent_model": "deepseek-v4-pro",
+    "agent_extra": {},
+    "user_simulator": "glm-5.3-flash",
+    "user_simulator_independent_endpoint": true,
+    "user_simulator_base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "nl_judge": "qwen3.7-flash-2026-07-15",
+    "agent_temperature": 0.0,
+    "agent_thinking_enabled": false,
+    "agent_thinking_effort": "high",
+    "agent_thinking_routed": true,
+    "echo_reasoning_content": true,
+    "agent_args_sent": {
+      "temperature": 0.0,
+      "extra_body": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    },
+    "user_simulator_thinking_effort": "high",
+    "agent_independent_endpoint": true,
+    "agent_base_url": "https://api.deepseek.com",
+    "nl_judge_independent_endpoint": true,
+    "nl_judge_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "nl_judge_thinking_disabled": true,
+    "nl_judge_response_format": "json_schema",
+    "frozen_stack_temperature": 0.0,
+    "user_thinking_disabled": false,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "warnings": [
+      "The simulated user glm-5.3-flash is in the same glm family as candidate glm-5.2: same-origin models may favour their own style, and any reading of that candidate's score must state this risk",
+      "The NL-assertion judge qwen3.7-flash-2026-07-15 is in the same qwen3.7 family as candidate qwen3.7-max-2026-06-08: same-origin models may favour their own style, and any reading of that candidate's score must state this risk"
+    ]
+  },
+  "observability": {
+    "langfuse_enabled": true,
+    "langfuse_callback": "langfuse_otel",
+    "langfuse_host": "https://cloud.langfuse.com",
+    "langfuse_cost_currency": "CNY",
+    "langfuse_cost_reported": false,
+    "langfuse_cost_note": "litellm 1.82.6's langfuse_otel does not send cost_details, and the usage Langfuse receives has no cache breakdown, so computing cost there overstates it about 5x. Cost comes from scripts/analyze_eval.py",
+    "langfuse_session_id": "20260909T134021Z_deepseek-v4-pro_dev_guarded",
+    "langfuse_flushed": true
+  },
+  "judge_usage": {
+    "judge_calls": 2,
+    "prompt_tokens": 12729,
+    "completion_tokens": 225,
+    "cached_tokens": 0,
+    "reasoning_tokens": 0
+  },
+  "results": {
+    "agent_cost_reported_by_upstream": 0.4993404,
+    "simulation_count": 6,
+    "expected_count": 6,
+    "scored_count": 6,
+    "incomplete": false,
+    "unscored_task_ids": [],
+    "avg_reward": 1.0,
+    "pass_count": 6,
+    "termination_reasons": {
+      "TerminationReason.USER_STOP": 6
+    }
+  }
+}

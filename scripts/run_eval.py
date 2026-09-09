@@ -216,6 +216,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--route-thinking",
+        action="store_true",
+        help=(
+            "M5.3: choose the thinking mode per turn. The run starts each turn with "
+            "thinking disabled and repeats it with thinking when the turn proposes a "
+            "write, states a count over a tool result, or follows a refusal. Requires "
+            "--guarded; a re-run turn is charged and timed for both attempts"
+        ),
+    )
+    parser.add_argument(
         "--guarded",
         action="store_true",
         help=(
@@ -226,6 +236,14 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if args.route_thinking and not args.guarded:
+        print(
+            "--route-thinking needs --guarded: the router lives in this project's agent, "
+            "and upstream's agent has no turn to re-run.",
+            file=sys.stderr,
+        )
+        return 2
 
     task_ids = select_tasks(args.split, args.limit, args.sample, args.pilot)
     if args.dry_run:
@@ -259,8 +277,11 @@ def main() -> int:
         stack = EvalStack(
             settings=settings,
             agent_model=args.model,
-            agent_thinking_enabled=not args.no_thinking,
+            # M5.3 routing starts every turn cheap, so the run's own mode is thinking
+            # off; the boosted arguments come from agent_thinking_effort separately.
+            agent_thinking_enabled=not (args.no_thinking or args.route_thinking),
             agent_thinking_effort=args.thinking,
+            route_thinking=args.route_thinking,
             echo_reasoning=not args.no_reasoning_echo,
             user_thinking_disabled=args.user_no_thinking,
         )
@@ -349,6 +370,7 @@ def main() -> int:
             seed=args.seed,
             save_to=str(run_dir / save_name),
             guarded=args.guarded,
+            route_thinking=args.route_thinking,
         )
         if len(phases) > 1:
             print(f"\nphase {index}/{len(phases)}: {len(phase_ids)} tasks", flush=True)

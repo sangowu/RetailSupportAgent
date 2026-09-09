@@ -201,6 +201,10 @@ class EvalStack:
     # thinking" into a checkable record.
     agent_thinking_enabled: bool = True
     agent_thinking_effort: str = THINKING_EFFORT
+    # M5.3: whether the thinking mode is chosen per turn. Recorded in the manifest
+    # because a routed run and a fixed-mode run are different subjects, and a score
+    # that does not say which one it came from cannot be compared with anything.
+    route_thinking: bool = False
     # Whether to send historical reasoning_content back (DeepSeek documents this is
     # required when the request carries tools). A switch rather than hard-coded: it
     # adds roughly 7600 characters per conversation to the request, and whether that
@@ -370,6 +374,25 @@ class EvalStack:
         args.update(self.agent_extra)
         return args
 
+    def boosted_agent_args(self) -> dict[str, Any]:
+        """Call arguments for a turn M5.3 routing decides is worth thinking about.
+
+        Everything except the thinking switch matches `agent_args`, so a re-run differs
+        from the first attempt in exactly one parameter. Temperature is dropped because
+        DeepSeek's thinking mode rejects the sampling parameters outright.
+        """
+        routing = self._agent_routing()
+        is_dashscope = "dashscope" in str(routing["api_base"])
+        thinking = ThinkingConfig(enabled=True, effort=self.agent_thinking_effort)
+        args: dict[str, Any] = {**routing}
+        if not thinking.ignores_temperature(not is_dashscope):
+            args["temperature"] = AGENT_TEMPERATURE
+        args["extra_body"] = (
+            thinking.as_extra_body() if is_dashscope else thinking.as_deepseek_extra_body()
+        )
+        args.update(self.agent_extra)
+        return args
+
     def frozen_args(self) -> dict[str, Any]:
         """Call arguments for the simulated user."""
         routing = self._user_routing()
@@ -428,6 +451,7 @@ class EvalStack:
             "agent_temperature": AGENT_TEMPERATURE,
             "agent_thinking_enabled": self.agent_thinking_enabled,
             "agent_thinking_effort": self.agent_thinking_effort,
+            "agent_thinking_routed": self.route_thinking,
             "echo_reasoning_content": self.echo_reasoning,
             # Allow-list the non-secret fields. Excluding api_key by deny-list would be
             # unsafe: a new upstream secret field would land in the manifest verbatim.
@@ -905,6 +929,7 @@ def build_run_config(
     seed: int,
     save_to: str | None,
     guarded: bool = False,
+    route_thinking: bool = False,
 ) -> Any:
     """Build the upstream run configuration. Task sets come from the M0.1 frozen lists."""
     # Prices must be registered before any call happens, or upstream's
@@ -924,7 +949,12 @@ def build_run_config(
     if guarded:
         from retail_support_agent.bench_agent import register
 
-        agent_name = register()
+        # M5.3: with routing on, the run's own arguments are the cheap mode and the
+        # agent holds a second set for the turns a trigger picks out. force=True because
+        # the registry keeps the first registration, and a process that registered the
+        # unrouted agent earlier would otherwise run the wrong subject in silence.
+        boost = stack.boosted_agent_args() if route_thinking else None
+        agent_name = register(force=route_thinking, boost_args=boost)
 
     from tau2.data_model.simulation import TextRunConfig
 
