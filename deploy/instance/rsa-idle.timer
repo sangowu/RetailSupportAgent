@@ -1,0 +1,15 @@
+[Unit]
+Description=Check once a minute whether this instance is still needed
+
+[Timer]
+# The first check waits two minutes after boot. The stack takes about 25 seconds to
+# answer (M6.2), and a watcher that ran before it was up would read "did not answer",
+# which is not idle either, but there is no reason to log a failure every boot.
+OnBootSec=2min
+OnUnitActiveSec=1min
+# A minute of jitter costs nothing here and keeps the poll off a round tick.
+AccuracySec=15s
+Unit=rsa-idle.service
+
+[Install]
+WantedBy=timers.target
