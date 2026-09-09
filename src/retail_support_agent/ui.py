@@ -10,6 +10,7 @@ must not be buried in conversation text.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import gradio as gr
@@ -89,8 +90,19 @@ def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
 
 
 def main() -> None:
-    """Binds to localhost only; no share link, no public registration."""
-    build_demo().launch(server_name="127.0.0.1", server_port=7860, share=False)
+    """Binds to localhost by default; no share link, no public registration.
+
+    The address is configurable because inside a container 127.0.0.1 is unreachable from
+    outside it, and a demo has to be reachable to be a demo. The default is unchanged, so
+    running this on a developer's machine still listens on the loopback address only.
+    Exposing it takes an explicit `RSA_UI_HOST=0.0.0.0`, which is a decision someone makes
+    rather than one they inherit.
+    """
+    build_demo().launch(
+        server_name=os.getenv("RSA_UI_HOST", "127.0.0.1"),
+        server_port=int(os.getenv("RSA_UI_PORT", "7860")),
+        share=False,
+    )
 
 
 if __name__ == "__main__":

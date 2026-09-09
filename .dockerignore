@@ -1,0 +1,23 @@
+# The build context is deliberately small: a large context is slow to send and easy to
+# leak secrets through.
+.git
+.venv
+.local
+.env
+.env.*
+__pycache__
+**/__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+evaluation/
+docs/
+node_modules
+
+# third_party/ is a 888 MB verified checkout of the benchmark. The running demo needs one
+# domain out of it, so everything is excluded and that one path is added back. The other
+# domains and upstream's 604 MB of stored results are not runtime data.
+third_party/**
+!third_party/tau2-bench/data/tau2/domains/retail/**
+!third_party/tau2-bench/data/tau2/user_simulator/**
