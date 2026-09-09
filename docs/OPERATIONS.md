@@ -40,6 +40,41 @@ The Windows scripts control only processes and containers confirmed to belong to
 project and never terminate a global Python by fuzzy name. Background processes hide
 their window, and a failed start reports the log location and what was cleaned up.
 
+## The whole stack in containers (from M6.2)
+
+The PowerShell scripts above run the application from a virtual environment on the
+developer's machine, one process at a time. `compose.yaml` now also runs the whole stack -
+PostgreSQL, migrations, the API and the demo UI - from one image built by `Dockerfile`.
+This is the form the AWS demo runs in, so a problem found here is found before it is found
+on an instance.
+
+```
+docker compose up -d --wait      # build if needed, start, wait for every health check
+docker compose down              # stop, keeping the database volume
+docker compose down -v           # stop and delete the data
+```
+
+- **The model key is read from the environment and has no default.** A stack that starts
+  without a key and fails on the first message is worse than one that refuses to start.
+- **Nothing is reachable from outside the machine** unless `RSA_BIND` is set to `0.0.0.0`.
+  The default is the loopback address, the same as the local scripts.
+- **Migrations are their own service** that runs once and exits, so two API containers
+  starting together cannot run them at the same time.
+- **`--wait` means health checks, not process starts.** Both servers are polled until they
+  answer.
+
+The repository's test suite can be run against the image's dependency set, which is what
+shows that packaging changed no behaviour:
+
+```
+docker build --target test -t rsa-test:local .
+docker run --rm -v "$PWD":/repo -w /repo   -e TAU2_DATA_DIR=/repo/third_party/tau2-bench/data   rsa-test:local /app/.venv/bin/python -m pytest -q
+```
+
+Building the image needs `third_party/` to exist, because the demo imports the benchmark's
+retail domain at run time. Run `uv run python scripts/fetch_tau2.py` first; it verifies the
+checkout by SHA256, and the image copies only the retail domain out of it.
+
 ## AWS technical target
 
 Region initially `eu-west-1`. Containers run on ECS Fargate with images in ECR;

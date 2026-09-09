@@ -4,3 +4,7 @@
 # Do not diff the lockfile or raw evaluation results; they would drown a PR
 uv.lock -diff
 evaluation/results/** -diff
+
+# Shell scripts must keep LF whatever a checkout does. A CRLF shebang makes a container
+# entrypoint fail with "no such file or directory", which names the wrong problem.
+*.sh text eol=lf

@@ -1706,6 +1706,9 @@ bench = [
     { name = "langfuse" },
     { name = "tau2" },
 ]
+demo = [
+    { name = "tau2" },
+]
 dev = [
     { name = "httpx" },
     { name = "mypy" },
@@ -1734,6 +1737,7 @@ bench = [
     { name = "langfuse", specifier = ">=4.15.1" },
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench?rev=fc0055dc4e0a316c3f83133267fbd6faaa770992" },
 ]
+demo = [{ name = "tau2", git = "https://github.com/sierra-research/tau2-bench?rev=fc0055dc4e0a316c3f83133267fbd6faaa770992" }]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.13" },

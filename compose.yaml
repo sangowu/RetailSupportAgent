@@ -1,10 +1,11 @@
-# PostgreSQL for local development. It listens on the loopback address only: nothing
-# outside this machine can connect.
+# The whole stack: PostgreSQL, migrations, the API and the demo UI.
 #
-# The password is written here deliberately. It is the password of a local development
-# database, not a credential of any real environment, and moving it into .env would make
-# "which database am I connected to" less obvious. Real connection strings go through the
-# RSA_DATABASE_URL environment variable and never enter Git.
+# The same file runs on a developer's machine and on the demo instance. The only
+# difference is RSA_BIND: it defaults to the loopback address, so nothing here is reachable
+# from outside the machine unless someone sets it to 0.0.0.0 on purpose.
+#
+# The model key is read from the environment and has no default. A stack that starts
+# without a key and fails on the first message is worse than one that refuses to start.
 services:
   db:
     image: postgres:17-alpine
@@ -14,7 +15,7 @@ services:
       POSTGRES_PASSWORD: rsa_local_dev
       POSTGRES_DB: rsa
     ports:
-      - "127.0.0.1:55432:5432"
+      - "${RSA_BIND:-127.0.0.1}:55432:5432"
     volumes:
       - rsa_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,6 +26,67 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  # Migrations are a service that runs once and exits, not something the API does on the
+  # way up. Two API containers starting together would otherwise race each other.
+  migrate:
+    image: retail-support-agent:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rsa-migrate
+    command: ["migrate"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: retail-support-agent:local
+    container_name: rsa-api
+    command: ["api"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+    ports:
+      - "${RSA_BIND:-127.0.0.1}:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  ui:
+    image: retail-support-agent:local
+    container_name: rsa-ui
+    command: ["ui"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      # Inside a container the loopback address is reachable only from the container.
+      RSA_UI_HOST: "0.0.0.0"
+    ports:
+      - "${RSA_BIND:-127.0.0.1}:7860:7860"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
 
 volumes:
   rsa_pgdata:

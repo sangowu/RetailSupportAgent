@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements. Nothing is deployed.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements and M6.2 packaged the application and timed its start. Nothing is deployed.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -61,12 +61,13 @@ judge was not held constant; see
 16. [M5.2 how much thinking the task set needs](docs/M5.2_THINKING_EFFORT.md)
 17. [M5.3 routing thinking per turn, and why it stops](docs/M5.3_THINKING_ROUTING.md)
 18. [M6.1 choosing the AWS deployment shape](docs/M6.1_DEPLOYMENT_SHAPE.md)
-19. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-20. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-21. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-22. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-23. [Local and AWS start/stop design](docs/OPERATIONS.md)
-24. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+19. [M6.2 packaging the application, and whether it starts in time](docs/M6.2_CONTAINER_AND_START.md)
+20. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+21. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+22. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+23. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+24. [Local and AWS start/stop design](docs/OPERATIONS.md)
+25. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
