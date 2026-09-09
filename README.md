@@ -4,14 +4,17 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
-| Subject under test | Full set (114 tasks) | Unconfirmed writes | Cost per task |
-|---|---|---|---|
-| upstream `llm_agent` (`baseline-v2`) | 97/114 = 0.8509 | 168 | 0.0855 CNY |
-| this project's guarded agent (`baseline-v3`) | 102/114 = 0.8947 | **0** | 0.0954 CNY |
+| Subject under test | Full set (114 tasks) | Unconfirmed writes | Cost per task | Per successful task |
+|---|---|---|---|---|
+| upstream `llm_agent` (`baseline-v2`) | 97/114 = 0.8509 | 168 | 0.0855 CNY | 0.1004 CNY |
+| this project's guarded agent (`baseline-v3`) | 102/114 = 0.8947 | **0** | 0.0954 CNY | 0.1066 CNY |
+
+Costs are what each run actually spent, priced call by call at the rate in force when the
+call was made; both ran off peak. See [M5.1](docs/M5.1_MEASUREMENT.md).
 
 Paired McNemar exact test p = 0.3018, not significant: enforced confirmation did not
 lower the score. The measurable gain is that 168 unconfirmed writes became 0.
@@ -47,12 +50,13 @@ judge was not held constant; see
 12. [M2 cross-process recovery](docs/M2_RECOVERY.md)
 13. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
 14. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
-15. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-16. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-17. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-18. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-19. [Local and AWS start/stop design](docs/OPERATIONS.md)
-20. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+15. [M5.1 cost priced by the run's clock, and latency](docs/M5.1_MEASUREMENT.md)
+16. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+17. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+18. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+19. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+20. [Local and AWS start/stop design](docs/OPERATIONS.md)
+21. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
@@ -61,7 +65,8 @@ Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 M0 established the evaluation protocol, the minimal business loop, and the model and
 thinking-parameter experiments, and froze the baselines. M1 added application-state
 persistence, M2 made a session survive a restart, M3 established who is calling and what
-they may do, and M4 turned a handoff into a case a human owns and decides. Each step
+they may do, and M4 turned a handoff into a case a human owns and decides. M5.1 made
+cost and latency measurable before anything is optimized against them. Each step
 changes one theme and reports its effect against the current baseline and the previous
 passing version. The roadmap is not an instruction to build
 everything at once.

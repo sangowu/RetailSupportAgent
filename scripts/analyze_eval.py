@@ -31,7 +31,9 @@ import argparse
 import collections
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +44,28 @@ from retail_support_agent.evaluation import FROZEN_USER_SIMULATOR  # noqa: E402
 from retail_support_agent.pricing import (  # noqa: E402
     DASHSCOPE_PRICES,
     PRICE_SNAPSHOT_DATE,
+    Tier,
     cache_ratio_is_known,
     price_for,
 )
 from retail_support_agent.results_io import load_simulations  # noqa: E402
+from retail_support_agent.run_metrics import (  # noqa: E402
+    LatencyProfile,
+    ModelCall,
+    RunClock,
+    cached_tokens_of,
+    latency_profile,
+    model_calls,
+    passed_count,
+    per_successful_task,
+    price_varies_with_time,
+    recover_clock,
+    reference_moment,
+    rewards_by_task,
+    run_cost,
+    run_started_at,
+    usage_of,
+)
 
 RESULTS_ROOT = REPO / "evaluation" / "results"
 
@@ -84,16 +104,12 @@ def latest_run() -> Path:
     return runs[-1]
 
 
-def _usage_of(message: dict[str, Any]) -> dict[str, Any] | None:
-    """Prefer the full response in raw_data: it carries cache and reasoning detail that
-    upstream's usage field does not."""
-    raw = message.get("raw_data")
-    if isinstance(raw, dict):
-        raw_usage = raw.get("usage")
-        if isinstance(raw_usage, dict):
-            return dict(raw_usage)
-    usage = message.get("usage")
-    return dict(usage) if isinstance(usage, dict) else None
+# Reading a usage record is shared with the cost and latency measurements in
+# run_metrics, which price the same calls one at a time. Two copies of "which field
+# holds the cache hits" would drift, and the drift would show up as a cost difference
+# nobody could explain.
+_usage_of = usage_of
+_cached_tokens = cached_tokens_of
 
 
 def _detail(usage: dict[str, Any], group: str, key: str) -> int:
@@ -101,23 +117,6 @@ def _detail(usage: dict[str, Any], group: str, key: str) -> int:
     if not isinstance(details, dict):
         return 0
     return int(details.get(key) or 0)
-
-
-def _cached_tokens(usage: dict[str, Any]) -> int | None:
-    """Cache hits, or None when the server did not report the field at all.
-
-    Three field names can appear: the flat field added by our patch, OpenAI's nested
-    detail, and DeepSeek's prompt_cache_hit_tokens. Only if all are absent is it
-    counted as unreported.
-    """
-    for key in ("cached_tokens", "prompt_cache_hit_tokens"):
-        value = usage.get(key)
-        if value is not None:
-            return int(value)
-    details = usage.get("prompt_tokens_details")
-    if isinstance(details, dict) and details.get("cached_tokens") is not None:
-        return int(details["cached_tokens"])
-    return None
 
 
 def token_breakdown(simulations: list[dict[str, Any]]) -> dict[str, RoleUsage]:
@@ -153,9 +152,9 @@ def token_breakdown(simulations: list[dict[str, Any]]) -> dict[str, RoleUsage]:
     return dict(roles)
 
 
-def format_cost(model: str, usage: RoleUsage) -> str:
+def format_cost(model: str, usage: RoleUsage, moment: datetime | None = None) -> str:
     """A model with an unknown cache rate gets a range, not a falsely precise number."""
-    price = price_for(model)
+    price = price_for(model, moment)
     if price is None:
         return f"{model} is not in the price snapshot; cost cannot be computed"
     high = price.cost(usage.prompt, usage.completion, usage.cached)
@@ -189,16 +188,104 @@ def print_usage_table(roles: dict[str, RoleUsage]) -> None:
             )
 
 
-def role_cost(model: str, usage: RoleUsage) -> float | None:
+def role_cost(model: str, usage: RoleUsage, moment: datetime | None = None) -> float | None:
     """Cost for this role, or None when the model is not in the price snapshot. None
     must not be treated as zero."""
-    price = price_for(model)
+    price = price_for(model, moment)
     if price is None:
         return None
     return price.cost(usage.prompt, usage.completion, usage.cached)
 
 
-def print_judge_cost(summary: dict[str, Any], judge_model: str) -> float | None:
+def describe_clock(clock: RunClock, started: datetime | None) -> str:
+    """Say which clock the costs below were priced by, in one line."""
+    start = f"started {started:%Y-%m-%d %H:%M}Z" if started else "start time unknown"
+    if clock.offset is None:
+        return (
+            f"{start}; the run's clock could not be recovered ({clock.note}), so every "
+            "call is priced at the tier of the run's start"
+        )
+    hours = clock.offset.total_seconds() / 3600
+    where = "recorded by the run" if clock.source == "recorded" else "recovered from the run id"
+    tail = f". Note: {clock.note}" if clock.note else ""
+    return f"{start}; timestamps are UTC{hours:+.2f}h, {where}{tail}"
+
+
+def format_run_cost(model: str, calls: Sequence[ModelCall], started: datetime | None) -> str:
+    """What these calls cost, each priced at the moment it was made."""
+    cost = run_cost(model, calls, fallback=started)
+    if not cost.known:
+        return f"{model} is not in the price snapshot; cost cannot be computed"
+    if cache_ratio_is_known(model) or not any(call.cached for call in calls):
+        text = f"{cost.total:.4f} CNY"
+    else:
+        low = run_cost(model, calls, fallback=started, floor=True)
+        text = (
+            f"{low.total:.4f} - {cost.total:.4f} CNY (cache-hit rate unpublished, so only a range)"
+        )
+    tiers = cost.tiers_used
+    if len(tiers) > 1:
+        split = ", ".join(f"{cost.by_tier[tier]} calls at {tier}" for tier in tiers)
+        text += f"; this run crossed a rate boundary ({split})"
+    elif tiers:
+        text += f"; all calls at the {tiers[0]} rate"
+    if cost.undated_calls:
+        text += (
+            f"; {cost.undated_calls} calls carry no usable timestamp and were priced at "
+            "the run's start"
+        )
+    return text
+
+
+def print_normalized_cost(model: str, calls: Sequence[ModelCall]) -> None:
+    """The same tokens at one fixed rate, which is the figure a comparison between two
+    configurations needs. Actual spend answers a different question and both are named."""
+    if not price_varies_with_time(model):
+        return
+    peak = run_cost(model, calls, tier_moment=reference_moment(Tier.PEAK))
+    off_peak = run_cost(model, calls, tier_moment=reference_moment(Tier.OFF_PEAK))
+    if not (peak.known and off_peak.known):
+        return
+    print(
+        f"    the same tokens cost {peak.total:.4f} CNY at peak and "
+        f"{off_peak.total:.4f} CNY off peak. Actual spend is above; comparisons between "
+        "configurations use one stated tier"
+    )
+
+
+def print_latency(profile: LatencyProfile) -> None:
+    print("\nLatency (system side is the agent's own model call)")
+    if profile.per_call is None:
+        print("  no per-call generation time in these results, so agent latency is unknown")
+    else:
+        d = profile.per_call
+        print(
+            f"  agent model call   {d.count:>5} calls   p50 {d.p50:6.2f}s   "
+            f"p95 {d.p95:6.2f}s   max {d.maximum:6.2f}s   mean {d.mean:6.2f}s"
+        )
+    if profile.calls_without_timing:
+        print(
+            f"  ({profile.calls_without_timing} calls recorded no generation time and are "
+            "excluded rather than counted as zero)"
+        )
+    if profile.per_task is not None:
+        d = profile.per_task
+        print(
+            f"  task wall clock    {d.count:>5} tasks   p50 {d.p50:6.0f}s   "
+            f"p95 {d.p95:6.0f}s   max {d.maximum:6.0f}s   mean {d.mean:6.0f}s"
+        )
+    share = profile.model_share
+    if share is not None:
+        print(f"  {share:.0%} of task wall time is inside the agent's own model calls")
+    print(
+        "  Task wall clock is not latency: it also contains the simulated user's model "
+        "calls and the tools, and it is inflated by the run's concurrency."
+    )
+
+
+def print_judge_cost(
+    summary: dict[str, Any], judge_model: str, moment: datetime | None = None
+) -> float | None:
     judge_usage = summary.get("judge_usage")
     if not judge_usage:
         print(
@@ -210,7 +297,7 @@ def print_judge_cost(summary: dict[str, Any], judge_model: str) -> float | None:
     prompt = int(judge_usage.get("prompt_tokens", 0))
     completion = int(judge_usage.get("completion_tokens", 0))
     cached = int(judge_usage.get("cached_tokens", 0))
-    price = price_for(judge_model)
+    price = price_for(judge_model, moment)
     cost = price.cost(prompt, completion, cached) if price else None
     tail = f"about {cost:.4f} CNY" if cost is not None else "price unavailable"
     print(
@@ -324,6 +411,12 @@ def main() -> int:
     user_model = str(stack.get("user_simulator", FROZEN_USER_SIMULATOR))
     judge_model = str(stack.get("nl_judge", "unknown"))
 
+    started = run_started_at(summary)
+    clock = recover_clock(summary, simulations)
+    calls = model_calls(simulations, clock)
+    agent_calls = [call for call in calls if call.role == "assistant"]
+    user_calls = [call for call in calls if call.role == "user"]
+
     roles = token_breakdown(simulations)
     count = len(simulations)
     rewards = [
@@ -331,10 +424,9 @@ def main() -> int:
         for sim in simulations
         if (sim.get("reward_info") or {}).get("reward") is not None
     ]
-    durations = [float(sim.get("duration") or 0) for sim in simulations]
-
     print(f"run directory: {run_dir.name}")
     print(f"model under test: {agent_model}    simulations: {count}")
+    print(f"clock: {describe_clock(clock, started)}")
 
     # With tasks missing, no average is printed by default. Upstream drops
     # infrastructure failures from the denominator, so losing 5 of 40 tasks yields 0.886
@@ -364,10 +456,9 @@ def main() -> int:
         if missing > 0:
             label = f"average reward (over the {len(rewards)} scored tasks only, not the run)"
         print(f"{label}: {avg:.4f}    passed: {sum(1 for r in rewards if r >= 1.0)}/{len(rewards)}")
-    if durations:
-        print(f"average duration: {sum(durations) / len(durations):.0f}s per task")
-
     print_scope_breakdown(simulations)
+
+    print_latency(latency_profile(agent_calls, simulations))
 
     print_usage_table(roles)
 
@@ -378,14 +469,19 @@ def main() -> int:
         f"\nper task (agent side): input {agent.prompt / count:.0f} tok "
         f"({agent.cache_hit_rate:.0%} cache hits), output {agent.completion / count:.0f} tok"
     )
-    print(f"agent cost: {format_cost(agent_model, agent)} (price snapshot {PRICE_SNAPSHOT_DATE})")
+    print(
+        f"agent cost: {format_run_cost(agent_model, agent_calls, started)} "
+        f"(price snapshot {PRICE_SNAPSHOT_DATE})"
+    )
+    print_normalized_cost(agent_model, agent_calls)
 
     # Cross-check against upstream litellm accounting. Two independent paths: litellm
     # sums per call, this script computes from total tokens. Registering CNY rather than
     # converting to USD is what makes exact equality possible here; a mismatch means one
     # of them is wrong, not that rounding differs.
     upstream = summary.get("results", {}).get("agent_cost_reported_by_upstream")
-    ours = role_cost(agent_model, agent)
+    agent_spend = run_cost(agent_model, agent_calls, fallback=started)
+    ours = agent_spend.total if agent_spend.known else None
     if isinstance(upstream, int | float) and ours is not None:
         if upstream == 0:
             print(
@@ -397,26 +493,47 @@ def main() -> int:
                 f"    matches upstream litellm accounting ({upstream:.6f} CNY); cache and "
                 "reasoning conventions agree"
             )
+        elif list(run_dir.glob("resume*.json")):
+            # A resume writes its simulations into this directory but never rewrites
+            # summary.json, so the upstream figure there covers the first pass only while
+            # this script covers every simulation on disk. Two different denominators is
+            # not a disagreement about price.
+            print(
+                f"    upstream litellm says {upstream:.6f} CNY, over the first pass only: "
+                "this run was resumed, and the resumed tasks are counted here but not in "
+                "summary.json. The two are not comparable"
+            )
+        elif len(agent_spend.tiers_used) > 1:
+            # litellm is handed the price table once, at run start, so it charges the
+            # whole run at the tier it started in. Per-call pricing is the more accurate
+            # of the two here, and the difference is the boundary, not an error.
+            print(
+                f"    upstream litellm says {upstream:.6f} CNY, charging every call at the "
+                "tier the run started in; this run crossed a rate boundary, so the "
+                f"{ours:.6f} CNY above is the closer figure"
+            )
         else:
             print(
                 f"    [mismatch] upstream litellm says {upstream:.6f} CNY, this script "
                 f"computes {ours:.6f} CNY. The two must be exactly equal; find out why "
                 "before citing any cost figure"
             )
-    print(f"simulated user: {format_cost(user_model, user)}")
+    print(f"simulated user: {format_run_cost(user_model, user_calls, started)}")
     if user.reasoning and user.completion:
         print(
             f"    {user.reasoning / user.completion:.0%} of the simulated user's output is "
             "reasoning tokens, billed at the output rate, which was previously not counted"
         )
-    judge_cost = print_judge_cost(summary, judge_model)
+    judge_cost = print_judge_cost(summary, judge_model, started)
 
     # Total across the three roles. If any role cannot be computed, only a lower bound is
     # given and said so: adding an unavailable price as 0 is exactly the false accounting
     # this project's documentation warns about.
+    agent_total = run_cost(agent_model, agent_calls, fallback=started)
+    user_total = run_cost(user_model, user_calls, fallback=started)
     parts: dict[str, float | None] = {
-        "agent": role_cost(agent_model, agent),
-        "simulated user": role_cost(user_model, user),
+        "agent": agent_total.total if agent_total.known else None,
+        "simulated user": user_total.total if user_total.known else None,
         "judge": judge_cost,
     }
     unknown = [name for name, value in parts.items() if value is None]
@@ -430,6 +547,17 @@ def main() -> int:
         )
     else:
         print(f"\nthree-role total: {total:.4f} CNY ({share})    {total / count:.4f} CNY per task")
+
+    # Cost per successful task, which is the figure the change report template asks for.
+    # Total divided by task count rewards a configuration for failing quickly; dividing
+    # by the tasks that passed is what makes a cheaper-but-worse candidate look worse.
+    passes = passed_count(rewards_by_task(simulations))
+    per_success = per_successful_task(total, passes)
+    prefix = ">= " if unknown else ""
+    if per_success is None:
+        print("    no task passed, so cost per successful task is undefined, not zero")
+    else:
+        print(f"    {prefix}{per_success:.4f} CNY per successful task ({passes} passed)")
 
     if args.project and count:
         scale = args.project / count
@@ -449,13 +577,13 @@ def main() -> int:
                 completion=int(agent.completion * scale),
                 cached=int(agent.cached * scale),
             )
-            merged = role_cost(model, projected)
+            merged = role_cost(model, projected, started)
             tail = (
                 f"    with the stack {merged + stack_cost * scale:.2f} CNY"
                 if merged is not None and not unknown
                 else ""
             )
-            print(f"  {model:<26}{format_cost(model, projected)}{tail}")
+            print(f"  {model:<26}{format_cost(model, projected, started)}{tail}")
         print(
             f"  evaluation stack (simulated user + judge) scaled linearly from this run: "
             f"{stack_cost * scale:.2f} CNY"

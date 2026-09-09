@@ -43,6 +43,12 @@ OUTPUT_ROOT = REPO / "evaluation" / "results"
 DATA_DIR = REPO / "third_party" / "tau2-bench" / "data"
 
 
+def local_utc_offset_seconds() -> float:
+    """How far ahead of UTC this machine's naive timestamps are."""
+    offset = datetime.now().astimezone().utcoffset()
+    return round(offset.total_seconds()) if offset is not None else 0.0
+
+
 def select_tasks(split: str, limit: int | None, sample: int | None, pilot: bool) -> list[str]:
     """Tasks always come from the M0.1 frozen lists, sliced in a fixed order for
     reproducibility.
@@ -386,6 +392,10 @@ def main() -> int:
         "run_id": run_id,
         "run_at": datetime.now(UTC).isoformat(),
         "wall_seconds": round(elapsed, 1),
+        # Message timestamps in the raw results are naive local time from this machine.
+        # Recording the offset is what lets a later analysis place them on a timeline
+        # without guessing, which matters because DeepSeek's rate depends on the hour.
+        "local_utc_offset_seconds": local_utc_offset_seconds(),
         "task_ids": task_ids,
         "completed_task_ids": completed_ids,
         "stopped_early": stopped_early,
