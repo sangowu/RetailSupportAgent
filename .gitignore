@@ -37,3 +37,14 @@ evaluation/results/**/*.json/
 Thumbs.db
 .idea/
 .vscode/
+
+# Terraform. State names live resources and can hold values that were passed to it; plans
+# and .tfvars carry the same. The provider cache is large and machine-specific.
+# .terraform.lock.hcl is deliberately NOT here: it pins provider versions and hashes,
+# and belongs in version control for the same reason uv.lock does.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.auto.tfvars
+terraform.tfvars

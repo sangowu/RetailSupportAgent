@@ -1,0 +1,55 @@
+#!/bin/bash
+# Rendered by Terraform and run once, when the instance is first created.
+#
+# It installs Docker, drops the files from deploy/instance/ onto the machine, and enables
+# the two units. Everything that has to happen on every boot is in those units, not here:
+# cloud-init runs user data once per instance, and a restart would otherwise come up empty.
+#
+# The files arrive base64-encoded so that nothing has to survive nested quoting. Measured
+# the hard way in M6.2 and M6.3, twice.
+set -eux
+
+dnf install -y docker
+mkdir -p /usr/libexec/docker/cli-plugins
+curl -sSL -o /usr/libexec/docker/cli-plugins/docker-compose \
+  "${compose_plugin_url}"
+chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+systemctl enable --now docker
+
+mkdir -p /opt/rsa
+echo '${compose_yaml}' | base64 -d > /opt/rsa/compose.yaml
+echo '${rsa_start}' | base64 -d > /usr/local/bin/rsa-start
+chmod +x /usr/local/bin/rsa-start
+echo '${rsa_service}' | base64 -d > /etc/systemd/system/rsa.service
+echo '${idle_shutdown}' | base64 -d > /opt/rsa/idle_shutdown.py
+echo '${rsa_idle_service}' | base64 -d > /etc/systemd/system/rsa-idle.service
+echo '${rsa_idle_timer}' | base64 -d > /etc/systemd/system/rsa-idle.timer
+
+# What the units read. No secret here: the model key is fetched from Parameter Store at
+# boot, and this file only says where to look.
+cat > /etc/rsa-demo.env <<'ENVFILE'
+RSA_REGION=${region}
+RSA_REGISTRY=${registry}
+RSA_IMAGE=${image}
+RSA_MODEL_KEY_PARAMETER=${model_key_parameter}
+ENVFILE
+chmod 600 /etc/rsa-demo.env
+
+cat > /etc/rsa-idle.env <<'ENVFILE'
+RSA_IDLE_MINUTES=${idle_minutes}
+RSA_MAX_UPTIME_MINUTES=${max_uptime_minutes}
+ENVFILE
+
+systemctl daemon-reload
+
+# The watcher first, and its failure is not tolerated. If the stack cannot start, the
+# machine must still be able to stop itself; enabling this afterwards meant that a failed
+# first boot left nothing to stop the instance and it billed until someone noticed.
+# Measured the hard way: the first Terraform-built instance came up with no timer at all.
+systemctl enable --now rsa-idle.timer
+
+# The stack second, and its failure is survivable. `|| true` because a machine that boots
+# without the demo is a machine someone can log in to and diagnose; one whose cloud-init
+# aborted half way through is not.
+systemctl enable rsa.service
+systemctl start rsa.service || true

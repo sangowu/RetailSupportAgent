@@ -30,6 +30,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.8",
+    # Reading the compose files in tests/test_deploy_files.py. Available transitively
+    # through other packages, declared here because a test that depends on it should say so.
+    "pyyaml>=6.0",
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

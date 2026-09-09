@@ -1,0 +1,20 @@
+[Unit]
+Description=RetailSupportAgent demo stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Which region, which registry, which image tag, and where the model key is kept. Written
+# by cloud-init; it names the key's location and never holds the key.
+EnvironmentFile=/etc/rsa-demo.env
+ExecStart=/usr/local/bin/rsa-start
+ExecStop=/usr/bin/docker compose -f /opt/rsa/compose.yaml down
+# The first boot pulls a 722 MB image over a fresh Docker install. M6.2 measured the whole
+# thing at 122 seconds; this leaves room for a slow pull rather than failing the unit.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
