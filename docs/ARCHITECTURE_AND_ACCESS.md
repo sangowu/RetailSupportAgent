@@ -1,135 +1,147 @@
-# Architecture, data flow and permissions
+# Architecture and access control
 
-## Logical boundaries
+This guide describes the implemented application. Historical design proposals and
+stage-specific results are retained in the linked reports. The system operates on
+simulated retail data and does not integrate with a production order or payment service.
+
+## Components and request flow
 
 ```text
-Gradio / API client
-  -> FastAPI: identity, session, request validation
-  -> LangGraph: understand the request, ask for missing details, choose tools, confirm,
-     stop or hand off
-  -> business tools: permissions, resource ownership, policy, state, argument validation
-  -> business data layer: query or transactional modification
-  -> tool result -> the agent reports the actual outcome
+Gradio UI / API client
+  -> FastAPI: authentication, session ownership and request validation
+  -> LangGraph agent: model calls, tool proposals and conversation state
+  -> WriteGuard: permissions, order ownership, approval and confirmation checks
+  -> RetailDomain: pinned tau2-bench tools, policy and simulated data
+  -> tool result: response to the agent and user
+
+PostgreSQL: application state, operation records, approvals and audit events
 ```
 
-M0 connects to an isolated Retail simulation. Application persistence and the standard
-benchmark keep separate execution adapters. They share the protocol and reusable logic,
-but migrating a database is never a reason to rewrite the official evaluation
-expectations.
+The application uses one agent. FastAPI coordinates sessions and enforces access at the
+API boundary. The agent proposes tool calls; backend checks determine whether a call may
+execute. The model cannot grant permissions or substitute its own assertion for explicit
+confirmation. The UI presents streaming responses, interaction states and case-management
+controls.
 
-## Application state and storage (from M1)
+`RetailDomain` wraps the pinned upstream tool implementations and policy. Each session
+uses an isolated simulated retail environment. The application and benchmark have
+separate execution adapters, allowing project-specific controls to be tested without
+modifying upstream evaluation expectations.
 
-Create the minimum tables the business actually needs rather than building a general
-platform in advance:
+## Persistence and recovery
 
-- identities / role_memberships: Cognito subject to internal user, roles, organization
-  scope. Implemented in M3 without the organization scope, which needs more than one
-  simulated organization to mean anything.
-- tickets / assignments: tickets and who they are assigned to. Implemented in M4, with
-  assignment kept as history so who could reach a customer's orders, and when, stays
-  readable after a reassignment.
-- conversations / tasks: session and task state, claiming, failure information.
-- confirmations / approvals: the action, an argument digest, who requested and who
-  confirmed, validity, state. Confirmations in M1, approvals in M4; both bind to the
-  argument fingerprint, and an approval expires (`RSA_APPROVAL_TTL_SECONDS`, 30 minutes
-  by default).
-- operations / audit_events: idempotency key, business outcome, authorization basis,
-  trace id.
-- Simulated order tables: M1 states the migration mapping explicitly and keeps the
-  original fixture and a reset entry point.
-- LangGraph checkpoint tables: use the verified official persistence implementation,
-  separate from business authorization records.
+When `RSA_DATABASE_URL` is configured, SQLAlchemy and Alembic manage these application
+records in PostgreSQL:
 
-Foreign keys, unique constraints, transactions and conditional updates carry the
-business invariants. Organization scope is decided by trusted backend context; a client
-cannot select an arbitrary tenant. The first version may have a single simulated
-organization, with no tenant registration or billing system.
+| Tables | Responsibility |
+|---|---|
+| `identities`, `role_memberships` | Map authenticated subjects to retail identities and roles |
+| `sessions`, `session_claims` | Session ownership, execution counters and worker leases |
+| `messages` | Persist visible conversation turns |
+| `confirmations` | Track confirmation of a specific tool and argument fingerprint |
+| `operations`, `audit_events` | Record idempotency keys, operation results and audit events |
+| `tickets`, `ticket_assignments` | Track cases, current assignments and assignment history |
+| `approvals` | Record escalation requests, decisions and expiry |
 
-## Permission rules v0.1 (drafted by the developer)
+Retail orders remain in the per-session upstream simulation. Recovery reconstructs that
+environment by replaying successful recorded operations against the pinned initial data.
+It also restores visible messages, confirmations and execution limits. The implementation
+uses this application-level recovery mechanism; it does not persist the graph through a
+separate LangGraph checkpoint store.
 
-Implemented in M3 and completed in M4: roles are stored in `role_memberships` and never
-read from a token claim; an `auditor` role was added to make the intersection rule
-testable; and from [M4](M4_HANDOFF.md) an `agent` may act on the orders of a customer
-whose ticket is currently assigned to them, while a `supervisor` assigns cases and decides
-escalations but cannot work one - an approver who performs the action is not an approver.
+Without a database URL, the service operates with in-memory sessions. Database constraints,
+transactions and conditional updates enforce the invariants of the persistent application
+records. Organization-level tenancy is not implemented.
 
-| Role | Read | Modify | Manage |
+## Authentication and permissions
+
+With `RSA_AUTH_ISSUER` and `RSA_AUTH_AUDIENCE` configured, the API verifies the token and
+maps its subject to an application identity. Roles are read from the database rather than
+from token group claims. Application routes require authentication; `/health` and `/idle`
+remain operational exceptions. When authentication is disabled, a fixed local demo
+identity is used.
+
+The current permission definitions are in `src/retail_support_agent/auth.py`:
+
+| Role | Order access | Case management | Additional permissions |
 |---|---|---|---|
-| Customer | Their own orders and tickets | Confirmed, policy-compliant cancel or return on their own orders | None |
-| Agent | Tickets assigned to them and the related orders | Operations the customer confirmed that comply with policy | May request escalation; cannot grant themselves permissions |
-| Supervisor | Team tickets, related orders and audit within the same organization | Approve escalation requests within policy | Assign and reassign tickets; cannot confirm on a customer's behalf |
+| `customer` | Read and confirmed writes for their own retail identity | No case-management permissions | None |
+| `agent` | Own orders and orders associated with currently assigned cases; writes remain guarded | Read and work assigned cases | Can request approval while working a case |
+| `supervisor` | Order permissions remain subject to resource checks | Read, assign and reassign cases; decide escalations; cannot work cases | Audit access and reset-all permission |
+| `auditor` | None | None | Read-only audit access |
+| `demo` | Fixed simulated identity for local operation | None | Reset-all permission; not a provisioned Cognito role |
 
-Application roles are granted by an administrator through controlled initialization; a
-client cannot choose the supervisor role at registration. Account lifecycle, IAM
-operations permissions and support business roles are separate: a business supervisor
-cannot manage AWS keys or evaluation baselines.
+API permissions and resource ownership are independent checks. A valid token does not
+grant access to another account's conversation. An agent's access to a customer's orders
+requires a current ticket assignment. Audit access is permission-based across application
+sessions; it is not protected by an organization boundary in this single-organization demo.
 
-The tool set is the intersection of what the account is authorized to do and what the
-current task requires. The LLM recognizing a task cannot widen that authorization.
-Hiding a tool is only an aid; the real check happens on every backend call.
+Roles are provisioned through administrative configuration and scripts, not a public
+registration route. Business roles do not grant AWS infrastructure permissions. UI
+visibility improves usability but does not replace backend enforcement.
 
-## Confirmation and escalation rules
+## Confirmation, approval and handoff
 
-- A write such as a cancellation or return first states the order, items and arguments
-  and obtains the customer's confirmation. Changing an argument expires that confirmation.
-- Preconditions such as order status and quantity follow the pinned Retail policy
-  exactly, with no added exceptions by amount.
-- A handoff record is created when the customer asks for a human, when the agent cannot
-  resolve the request within its allowed tools and steps, or when business information
-  conflicts.
-- Reassigning a ticket to another agent is a supervisor action; an agent cannot widen
-  their own data visibility.
-- Escalation approval is for a human to review and decide what happens next. It does not
-  grant the ability to breach policy, and after a refusal the original action does not
-  proceed.
-- Even after approval, the action re-checks the current order state, the customer's
-  confirmation, resource ownership and the current role. A pending confirmation or
-  approval is valid for 30 minutes by default, configurable and covered by tests; once
-  expired it must be confirmed again.
-- No automatic approval rule for large refunds, because the MVP does not move real money.
+A write proposal identifies a tool and its exact arguments. Confirmation is bound to that
+fingerprint; changing the arguments requires confirmation of the new proposal. The current
+confirmation model does not have a time-based expiry field.
 
-## Concurrency, idempotency and recovery
+When an agent acts through an assigned case, the write additionally requires a supervisor's
+approval for the same argument fingerprint. Approval validity is controlled by
+`RSA_APPROVAL_TTL_SECONDS`, defaulting to 1,800 seconds. Approval does not bypass tool
+policy, order ownership or the separate confirmation requirement. The confirmation is
+collected in the active session; an agent works in a separate session from the customer's
+conversation.
 
-- A confirmation produces a concrete operation id. A retry of the same operation reuses
-  it; changed arguments require a new confirmation and a new operation.
-- One session is processed serially. Different sessions may run concurrently within
-  limits and never share mutable in-memory context.
-- The business write and the operation record commit in the same transaction. If the
-  response is lost, the idempotency record returns the original result.
-- If an external write API is ever called, exactly-once depends on that API's idempotency
-  mechanism or on reconciliation. A local transaction does not provide it.
-- A checkpoint does not replace a business transaction. Re-entering a node during
-  recovery must consult the idempotency state.
-- M2 defines worker claiming with a persistent task table, using leases or an equivalent,
-  so a restart or a second instance does not claim the same work twice. A timeout may
-  reclaim work, but the operation's outcome must be re-verified.
-- Automatic retries apply only to errors known to be retryable. Argument, permission and
-  policy errors are not retried, and every loop has a bound.
+A handoff creates a ticket and suspends the customer's session. A supervisor assigns the
+case, and the assignee works it under their own authenticated subject. Self-assignment and
+self-approval restrictions enforce separation between case work and approval decisions.
+Resolving the ticket allows the customer to resume the original conversation.
 
-## Logging and sensitive information
+The application reloads permissions, assignment context and approval validity when
+processing subsequent turns. A pending or approved request cannot grant permissions that
+the caller no longer holds. The upstream retail policy remains authoritative for order
+state and operation preconditions.
 
-Langfuse records agent and tool performance, PostgreSQL holds the durable business
-audit, and CloudWatch holds runtime errors. They are correlated by request_id, task_id,
-operation_id and trace_id.
+## Concurrency and idempotency
 
-Logs must never contain an API key, JWT, password or session cookie. Only simulated
-customer data is used, and identity fields are recorded to the minimum necessary.
-Reasoning content follows the provider's conversation protocol, and the display and
-archival policy distinguishes what the protocol requires from unnecessary logging.
+A session is processed serially, with database-backed leases preventing competing workers
+from processing it simultaneously. Expired leases can be reclaimed. Recovery preserves
+execution counters and session age rather than resetting the configured limits.
 
-## Failure scenarios that must be verified
+An operation's idempotency key identifies the session, proposed action and confirmation.
+A duplicate completed operation returns its recorded result. Operation and audit records
+are committed transactionally. The simulated business state is reconstructed from those
+records after restart; this is not a distributed transaction with an external order system.
 
-Cross-user reads; forged roles; expired, wrong-issuer or wrong-audience credentials;
-duplicate submissions; concurrent cancellation; state changing after confirmation; an
-approver losing their permission; an operation succeeding while the response is lost; a
-database failure mid-transaction; a model timeout; a process restart during approval;
-a data reset affecting another account. Tests are implemented per stage, and any
-capability not yet implemented is marked as not covered.
+Any future external write integration would require its own idempotency or reconciliation
+contract. A local transaction cannot guarantee exactly-once execution in another service.
+Concurrent-user capacity and deployment-level load limits have not been measured.
 
-Covered so far: duplicate submission and a database failure mid-transaction in
-[M1](M1_PERSISTENCE.md); a process restart mid-session in [M2](M2_RECOVERY.md);
-cross-user reads, forged roles, and expired, wrong-issuer or wrong-audience credentials
-in [M3](M3_AUTH.md); an approver losing their permission, an expired approval, and a
-refused escalation in [M4](M4_HANDOFF.md). A process restart during approval is covered by
-M2's recovery plus M4's re-read of every decision, and is listed among M4's limits rather
-than claimed.
+## Audit and observability
+
+PostgreSQL stores the application audit trail. `GET /session/{session_id}/audit` requires
+`audit:read`; the deployed UI does not yet provide an audit-viewing page. The configured
+demo accounts include a supervisor with audit permission but no dedicated auditor account.
+
+Langfuse is used for evaluation tracing; the application service does not currently depend
+on it. Runtime diagnostics are available through container logs and the instance's systemd
+journal. This guide does not claim a deployed CloudWatch logging pipeline.
+
+Credentials, tokens and passwords must not be included in logs or reports. Evaluation and
+demo data are simulated. Preserve the configuration and raw evidence needed to reproduce
+reported results without publishing credentials.
+
+## Verification coverage and limits
+
+Stage reports document database rollback and duplicate-submission checks in
+[M1](M1_PERSISTENCE.md), session recovery in [M2](M2_RECOVERY.md), authentication and
+cross-user access checks in [M3](M3_AUTH.md), and assignment, approval and expiry checks in
+[M4](M4_HANDOFF.md). UI behavior has handler-level tests and API-backed exercises; a
+complete browser acceptance workflow remains outstanding.
+
+Approval expiry has database and API coverage. A process restart during an approval flow
+has not been established by a dedicated end-to-end test. Cross-schema rollback, concurrent
+load and high-availability behavior are also outside the verified scope. See
+[operations](OPERATIONS.md) for deployment-specific limitations and
+[evaluation gates](EVALUATION_AND_GATES.md) for acceptance criteria.
