@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -95,6 +95,28 @@ class TurnResult:
     tool_calls: list[str] = field(default_factory=list)
     pending_confirmation: str | None = None
     stop_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class TurnEvent:
+    """One step of a turn, as it finishes (M7.1).
+
+    A turn is not one thing that takes eighteen seconds. It is a model call, a tool, a
+    guard decision and another model call, and every one of those is worth seeing. The
+    final event carries the whole result, so this is a view of a turn rather than a
+    second account of it.
+    """
+
+    kind: Literal["thinking", "tool", "held", "approval", "refused", "reply"]
+    tool: str | None = None
+    detail: str = ""
+    # Set on "reply" and nowhere else.
+    result: TurnResult | None = None
+
+
+def _pending_tool(session: SessionState) -> str | None:
+    """Which call the guard is holding, if any."""
+    return session.pending.name if session.pending is not None else None
 
 
 @dataclass
@@ -391,6 +413,92 @@ class RetailAgent:
             status="waiting_for_human",
             tool_calls=[],
         )
+
+    # ---- watching a turn happen (M7.1) ----------------------------------
+
+    def stream(self, user_message: str) -> Iterator[TurnEvent]:
+        """Handle one user message, reporting each step as it finishes.
+
+        The same turn `send` runs, driven a node at a time instead of in one call, so a
+        caller can show the work while it happens rather than a blank panel until it is
+        over. The last event carries the whole `TurnResult`, so a caller that ignores
+        every other event behaves exactly like a caller of `send`.
+
+        `send` is deliberately not written in terms of this. It is on the benchmark's
+        import path, and putting the measured path through new code would owe a full
+        re-run to show a baseline did not move. The two are held together by a test that
+        runs one conversation both ways and compares the results and the database
+        (M7.1 section 1.4).
+
+        Events are derived from what the nodes left behind rather than emitted by them,
+        for the same reason: the nodes are the measured path and this adds nothing to it.
+        """
+        waiting = self._waiting_for_human()
+        if waiting is not None:
+            self._journal("user", user_message, [])
+            self._journal("assistant", waiting.reply, [])
+            yield TurnEvent(kind="reply", result=waiting)
+            return
+
+        self._maybe_consume_confirmation(user_message)
+        self._messages.append({"role": "user", "content": user_message})
+        self._journal("user", user_message, [])
+        self._last = None
+        self._turn_tools = []
+
+        # Before the first model call, not after it. The point of this route is that
+        # something appears immediately, and the first model call is the longest silence
+        # in the turn.
+        yield TurnEvent(kind="thinking")
+
+        ran = 0
+        for chunk in self._graph.stream({"messages": []}):
+            node = next(iter(chunk), "")
+            if node != "act":
+                continue
+            yield from self._events_after_act(ran)
+            ran = len(self._turn_tools)
+            # The model is about to be asked to explain what the tools returned. Only
+            # when the turn continues: a held write ends it, and announcing a call that
+            # will not happen would be a lie about the state.
+            if chunk[node].get("status") == "tool_executed":
+                yield TurnEvent(kind="thinking")
+
+        result = self._last or TurnResult(
+            reply="(the model returned no answer)",
+            status="answered",
+            tool_calls=list(self._turn_tools),
+        )
+        self._journal("assistant", result.reply, result.tool_calls)
+        self._save_progress()
+        yield TurnEvent(kind="reply", result=result)
+
+    def _events_after_act(self, ran: int) -> Iterator[TurnEvent]:
+        """What the act node just did, read from what it left behind.
+
+        Tools that ran are appended to `_turn_tools`, so anything past `ran` is new. A
+        guard decision that ended the turn is in `_last`; a refusal that did not end it
+        is there too, because the node records one before continuing to the next call.
+        """
+        for name in self._turn_tools[ran:]:
+            yield TurnEvent(kind="tool", tool=name)
+
+        if self._last is None:
+            return
+        if self._last.status == "needs_confirmation":
+            yield TurnEvent(
+                kind="held",
+                tool=_pending_tool(self._session),
+                detail=self._last.pending_confirmation or "",
+            )
+        elif self._last.status == "needs_approval":
+            yield TurnEvent(
+                kind="approval",
+                tool=_pending_tool(self._session),
+                detail=self._last.pending_confirmation or "",
+            )
+        elif self._last.status == "denied":
+            yield TurnEvent(kind="refused", detail=self._last.reply)
 
     def send(self, user_message: str) -> TurnResult:
         """Handle one user message. Calls for one session must be serialized."""

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -34,7 +35,9 @@ from retail_support_agent.client import (
     Account,
     Api,
     ApiError,
+    Event,
     ForbiddenError,
+    Reply,
     UnauthenticatedError,
 )
 from retail_support_agent.cognito import Cognito, SignInError, Tokens
@@ -45,6 +48,36 @@ STATUS_LABELS = {
     "denied": "✗ denied",
     "stopped": "■ session stopped",
 }
+
+# What the note area says while a turn is running. The status line is the only place the
+# page reports state, so leaving the previous turn's status there would be a lie for as
+# long as this one takes.
+WORKING = "**Working…**"
+
+# One line per step, in the assistant's bubble, replaced by the answer when it arrives.
+# Rendered as an assistant message rather than beside the box, because the work belongs
+# to the turn the reader is watching and moves up with it.
+STEP_LABELS = {
+    "thinking": "asking the model…",
+    "tool": "ran {tool}",
+    "held": "⚠ held {tool} for your confirmation",
+    "approval": "⚠ {tool} is waiting for a supervisor",
+    "refused": "✗ refused",
+}
+
+
+def _describe(event: Event) -> str:
+    """One progress event, as a line somebody reads."""
+    template = STEP_LABELS.get(event.kind, event.kind)
+    line = template.format(tool=event.tool or "a tool")
+    return f"{line} · {event.detail}" if event.kind == "refused" and event.detail else line
+
+
+def _progress(steps: list[str]) -> dict[str, Any]:
+    """The assistant's bubble while the turn is running."""
+    shown = "\n".join(f"- {step}" for step in steps) if steps else "- working…"
+    return {"role": "assistant", "content": shown}
+
 
 INTRO = """### RetailSupportAgent
 
@@ -217,24 +250,61 @@ def build_demo() -> gr.Blocks:
 
         def respond(
             message: str, history: list[dict[str, Any]], visitor: Visitor
-        ) -> tuple[Any, ...]:
+        ) -> Iterator[tuple[Any, ...]]:
+            """One turn, rendered while it happens (M7.1).
+
+            A generator rather than a function. The turn takes as long as it took before;
+            what changes is that the model call, each tool and each guard decision appear
+            as they finish, instead of a blank panel and then everything at once.
+            """
             if not visitor.signed_in:
-                return _signed_out("**Sign in first.**")
+                yield _signed_out("**Sign in first.**")
+                return
             if not message.strip():
-                return _stay(visitor, history, "", "")
+                yield _stay(visitor, history, "", "")
+                return
+
+            asked = [*history, {"role": "user", "content": message}]
+            steps: list[str] = []
+            # Before anything is sent. The first model call is the longest silence in a
+            # turn, so the message has to be on the page before it starts.
+            yield _stay(visitor, [*asked, _progress(steps)], "", WORKING)
+
             try:
-                visitor, reply = retrying(
-                    visitor, cognito, lambda token: api.chat(token, visitor.session_id, message)
+                visitor, events = retrying(
+                    visitor,
+                    cognito,
+                    lambda token: api.chat_stream(token, visitor.session_id, message),
                 )
             except UnauthenticatedError as exc:
-                # The token expired and could not be renewed. Back to the form, with the
-                # conversation cleared: it belonged to a session this visitor can no
-                # longer prove is theirs.
-                return _signed_out(f"**Signed out.** {exc}")
+                yield _signed_out(f"**Signed out.** {exc}")
+                return
             except ApiError as exc:
-                # A refusal or a failure, not a reason to sign anyone out. The message is
-                # the service's own, which for a 403 names the permission that was missing.
-                return _stay(visitor, history, "", f"**✗ {exc}**")
+                yield _stay(visitor, history, "", f"**✗ {exc}**")
+                return
+
+            reply: Reply | None = None
+            try:
+                for event in events:
+                    if event.reply is not None:
+                        reply = event.reply
+                        break
+                    steps.append(_describe(event))
+                    yield _stay(visitor, [*asked, _progress(steps)], "", WORKING)
+            except ApiError as exc:
+                # Mid-turn. The message stays on the page: it was sent, the turn ran, and
+                # pretending otherwise would hide a write that may have happened.
+                yield _stay(visitor, [*asked, _progress(steps)], "", f"**✗ {exc}**")
+                return
+
+            if reply is None:
+                yield _stay(
+                    visitor,
+                    [*asked, _progress(steps)],
+                    "",
+                    "**✗ The turn ended without an answer.**",
+                )
+                return
 
             label = STATUS_LABELS.get(reply.status, reply.status)
             note = f"**Status: {label}**"
@@ -242,12 +312,12 @@ def build_demo() -> gr.Blocks:
                 note += f" · tools called: {', '.join(reply.tool_calls)}"
             if reply.stop_reason:
                 note += f" · {reply.stop_reason}"
-            updated = [
-                *history,
-                {"role": "user", "content": message},
-                {"role": "assistant", "content": reply.reply},
-            ]
-            return _stay(visitor, updated, "", note)
+            yield _stay(
+                visitor,
+                [*asked, {"role": "assistant", "content": reply.reply}],
+                "",
+                note,
+            )
 
         def start_over(visitor: Visitor) -> tuple[Any, ...]:
             """A new conversation under the same account.
