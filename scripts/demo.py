@@ -4,6 +4,8 @@
     uv run python scripts/demo.py start
     uv run python scripts/demo.py stop
     uv run python scripts/demo.py restart
+    uv run python scripts/demo.py archive
+    uv run python scripts/demo.py restore latest
 
 M6.4's Terraform builds the environment; this drives it. The instance is found by its tags
 rather than by an id from Terraform's state, so this works from a machine that has not
@@ -25,6 +27,12 @@ the same machine, the same volume and the same certificate.
 own idle watcher uses (M6.3). An operator and the watcher disagreeing about "busy" would
 mean one of them is wrong.
 
+**`archive` is rarely the thing to run.** Every stop archives on its own way down, so this
+is for the moment before a teardown, when the operator wants the last write in the archive
+rather than in the volume they are about to delete. What this tool does add is the check:
+`status` prints the newest archive and its age, and an age that keeps growing is the only
+way a silently failing archive is ever noticed.
+
 Reads credentials the way the AWS CLI does. No key is printed, and no key is needed: this
 talks to EC2 and to the demo's own health routes.
 """
@@ -33,12 +41,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 PROJECT_TAG = "Project=RetailSupportAgent"
@@ -56,6 +66,18 @@ IMAGE_PARAMETER = "/rsa/demo/image"
 # What a restart runs on the instance. `rsa.service` is a oneshot whose ExecStop brings the
 # stack down and whose ExecStart re-reads the parameter, so this is the whole of a rollback.
 RESTART_COMMAND = "systemctl restart rsa.service"
+
+# Where the database goes on the way down, and what puts it there and takes it back. The
+# bucket is read from the instance's own tag, so this tool needs neither Terraform's state
+# nor a second place that says which bucket this environment archives to.
+ARCHIVE_PREFIX = "archives/"
+ARCHIVE_COMMAND = "/usr/local/bin/rsa-archive"
+RESTORE_COMMAND = "/usr/local/bin/rsa-restore"
+
+# What may be passed to the restore script. It is interpolated into a shell command that
+# runs as root on the instance, so it is checked here rather than trusted: an operator who
+# pastes something unexpected should get a refusal, not a command.
+ARCHIVE_KEY = re.compile(r"^archives/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 # M6.1's rule is 120 seconds from the start command to a page that answers. This is the
 # patience before giving up, not the expectation: M6.2 measured 41 seconds.
@@ -82,6 +104,9 @@ class Instance:
     # because it is what a stopped instance visibly lacks, and because a name that has not
     # caught up yet is a thing an operator needs to see.
     domain: str | None = None
+    # Which bucket this environment's archives are in. Tagged rather than looked up, for
+    # the same reason the domain is: one environment, one source of truth, found by tag.
+    bucket: str | None = None
 
     @property
     def url(self) -> str | None:
@@ -95,6 +120,32 @@ class Busy:
     reachable: bool
     holding: tuple[str, ...] = ()
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class Archive:
+    """One database archive in the bucket."""
+
+    key: str
+    written: datetime
+    size: int
+
+    def age(self, now: datetime) -> str:
+        """How old it is, in the unit an operator would use out loud.
+
+        The age, not the timestamp, is the thing being read. Whether the newest archive is
+        four hours or four weeks old is the difference between an environment nobody has
+        used and one whose archiving has quietly stopped, and a UTC timestamp makes the
+        reader do that subtraction themselves.
+        """
+        seconds = max(0.0, (now - self.written).total_seconds())
+        if seconds < 90:
+            return f"{seconds:.0f}s ago"
+        if seconds < 5400:
+            return f"{seconds / 60:.0f}m ago"
+        if seconds < 172800:
+            return f"{seconds / 3600:.0f}h ago"
+        return f"{seconds / 86400:.0f}d ago"
 
 
 # ---- talking to AWS --------------------------------------------------------
@@ -151,6 +202,7 @@ def find_instance(region: str) -> Instance | None:
         state=str(one["State"]["Name"]),
         public_ip=one.get("PublicIpAddress") or None,
         domain=tags.get("Domain") or None,
+        bucket=tags.get("ArchiveBucket") or None,
     )
 
 
@@ -185,12 +237,44 @@ def configured_image(region: str) -> str | None:
     return str(data) if data else None
 
 
-def run_on_instance(region: str, instance_id: str, command: str, deadline: float) -> None:
+def newest_archive(region: str, bucket: str) -> Archive | None:
+    """The most recent database archive, or None when nothing has been archived yet.
+
+    None rather than an error, for the same reason as `configured_image`: an environment
+    that has never stopped has no archive, and that is a fact rather than a fault.
+    """
+    try:
+        data = aws(
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            bucket,
+            "--prefix",
+            ARCHIVE_PREFIX,
+            "--query",
+            "sort_by(Contents, &LastModified)[-1].{Key:Key,LastModified:LastModified,Size:Size}",
+            region=region,
+        )
+    except DemoError:
+        return None
+    if not data or not data.get("Key"):
+        return None
+    return Archive(
+        key=str(data["Key"]),
+        written=datetime.fromisoformat(str(data["LastModified"]).replace("Z", "+00:00")),
+        size=int(data.get("Size", 0)),
+    )
+
+
+def run_on_instance(region: str, instance_id: str, command: str, deadline: float) -> str:
     """Run one shell command on the instance and wait for it to finish.
 
     Through Systems Manager, so this needs no key on the machine and no port open to it.
     Waiting matters: the restart is what changes the version, and polling the application
     before it has begun would read the old one and call it done.
+
+    Returns what the command printed, which is how `archive` and `restore` learn which
+    object the instance actually wrote or read.
     """
     sent = aws(
         "ssm",
@@ -218,7 +302,7 @@ def run_on_instance(region: str, instance_id: str, command: str, deadline: float
         )
         status = str(got.get("Status", ""))
         if status == "Success":
-            return
+            return str(got.get("StandardOutputContent", "")).strip()
         if status in ("Cancelled", "TimedOut", "Failed"):
             detail = str(got.get("StandardErrorContent", "")).strip().splitlines()
             raise DemoError(
@@ -367,6 +451,66 @@ def plan_restart(instance: Instance | None, busy: Busy | None, *, force: bool) -
     return Plan(True, f"restarting {instance.id}")
 
 
+def plan_archive(instance: Instance | None) -> Plan:
+    """Whether archiving now makes sense.
+
+    Nothing about being busy is asked. A dump is one consistent read and blocks no writer,
+    so refusing to archive a busy demo would refuse exactly when the history is worth most.
+    """
+    if instance is None:
+        return Plan(False, "There is no demo environment.", 1)
+    if instance.state != "running":
+        return Plan(
+            False,
+            f"{instance.id} is {instance.state}; there is nothing running to dump. "
+            "The last stop archived on its way down.",
+            1,
+        )
+    if not instance.bucket:
+        return Plan(
+            False,
+            f"{instance.id} has no ArchiveBucket tag, so there is nowhere to write. "
+            "Apply the current Terraform.",
+            1,
+        )
+    return Plan(True, f"archiving the database on {instance.id}")
+
+
+def plan_restore(instance: Instance | None, busy: Busy | None, *, force: bool) -> Plan:
+    """Whether restoring now is allowed.
+
+    The same rule as a stop and a restart, and one more reason than either: this replaces
+    the database the application is reading. Work that a session is in the middle of would
+    not merely be lost, it would be overwritten by a different account's history.
+    """
+    if instance is None:
+        return Plan(False, "There is no demo environment.", 1)
+    if instance.state != "running":
+        return Plan(
+            False,
+            f"{instance.id} is {instance.state}; `start` it first, so there is a database "
+            "to restore into.",
+            1,
+        )
+    if not instance.bucket:
+        return Plan(False, f"{instance.id} has no ArchiveBucket tag; apply the Terraform.", 1)
+
+    if force:
+        note = "; ".join(busy.holding) if busy and busy.holding else "nothing reported"
+        return Plan(True, f"restoring onto {instance.id} anyway, overriding: {note}")
+    if busy is None or not busy.reachable:
+        detail = busy.detail if busy else "not asked"
+        return Plan(
+            False,
+            f"{instance.id} is running but did not say whether it is busy ({detail}). "
+            "Look at it, then use --force.",
+            1,
+        )
+    if busy.holding:
+        return Plan(False, "not restoring, work is unfinished: " + "; ".join(busy.holding), 2)
+    return Plan(True, f"restoring onto {instance.id}")
+
+
 # ---- the commands ----------------------------------------------------------
 
 
@@ -412,6 +556,19 @@ def command_status(region: str) -> int:
     print(f"{instance.id}  {instance.state}")
     if instance.url:
         print(f"  {instance.url}")
+
+    # Before the early return, deliberately. An archive is written on every stop and
+    # nothing on the machine is left to report a failure, so an age that keeps growing
+    # across stops is what a silently broken archive looks like from here - and a stopped
+    # instance is this environment's normal state, so reporting it only while running
+    # would hide it exactly when somebody is about to tear the environment down.
+    if instance.bucket:
+        archive = newest_archive(region, instance.bucket)
+        if archive is None:
+            print("  archive:    none yet; the next stop writes one")
+        else:
+            print(f"  archive:    {archive.key}  {archive.age(datetime.now(UTC))}")
+
     if instance.state != "running":
         return 0
     if not instance.url:
@@ -434,6 +591,7 @@ def command_status(region: str) -> int:
     print(f"  configured: {configured or 'no version parameter; built before M6.8'}")
     if running and configured and running != configured:
         print("  the configured version is not the one running; `restart` picks it up")
+
     return 0
 
 
@@ -472,12 +630,14 @@ def command_stop(region: str, *, force: bool) -> int:
 
     assert instance is not None
     # A plain stop is a graceful one: EC2 sends the machine an ACPI shutdown, systemd stops
-    # rsa.service, and its ExecStop runs `docker compose down` so PostgreSQL closes its
-    # files. Nothing here has to stop the containers itself.
+    # rsa.service, and its ExecStop archives the database and then runs `docker compose
+    # down` so PostgreSQL closes its files. Nothing here has to stop the containers itself,
+    # and nothing here has to archive: a stop that only this tool archived would leave the
+    # idle watcher's own stops, which are most of them, with no archive at all.
     aws("ec2", "stop-instances", "--instance-ids", instance.id, region=region)
     print(
-        "stopping; the volume, the database and the image stay. "
-        "Starting again takes about a minute."
+        "stopping; the database is archived on the way down, and the volume, the database "
+        "and the image stay. Starting again takes about a minute."
     )
     return 0
 
@@ -513,12 +673,70 @@ def command_restart(region: str, deadline: float, *, force: bool) -> int:
     return 0
 
 
+def command_archive(region: str, deadline: float) -> int:
+    """Write the database to the bucket now, rather than waiting for the next stop.
+
+    What this is for is the minute before a teardown: `archive`, check the age in
+    `status`, then destroy.
+    """
+    instance = find_instance(region)
+    plan = plan_archive(instance)
+    print(plan.message)
+    if not plan.act:
+        return plan.exit_code
+
+    assert instance is not None and instance.bucket
+    started = time.monotonic()
+    key = run_on_instance(region, instance.id, ARCHIVE_COMMAND, deadline)
+    written = newest_archive(region, instance.bucket)
+    print(
+        f"wrote s3://{instance.bucket}/{key or ARCHIVE_PREFIX} in {time.monotonic() - started:.0f}s"
+    )
+    if written is not None:
+        print(f"  {written.size} bytes, {written.age(datetime.now(UTC))}")
+    return 0
+
+
+def command_restore(region: str, archive: str, deadline: float, *, force: bool) -> int:
+    """Put an archive back, on the instance that is running.
+
+    The instance does the work: the dump never travels through this machine, and the
+    bucket does not have to be readable from wherever an operator happens to be.
+    """
+    if archive != "latest" and not ARCHIVE_KEY.match(archive):
+        raise DemoError(
+            f"{archive!r} is not an archive key. Pass `latest`, or a key as `status` "
+            f"prints it, beginning {ARCHIVE_PREFIX}."
+        )
+
+    instance = find_instance(region)
+    busy = ask_busy(instance.url) if instance and instance.url else None
+    plan = plan_restore(instance, busy, force=force)
+    print(plan.message)
+    if not plan.act:
+        return plan.exit_code
+
+    assert instance is not None and instance.domain
+    print(f"  from {archive}")
+    started = time.monotonic()
+    key = run_on_instance(region, instance.id, f"{RESTORE_COMMAND} {archive}", deadline)
+    # The API and the UI are stopped for the restore and started again by the script, so
+    # this waits for the same thing a start waits for: the demo answering on its name.
+    ready = wait_until_answering(region, instance.id, instance.domain, deadline)
+    print(f"restored {key or archive} in {time.monotonic() - started:.0f}s")
+    print(f"  {ready.url}")
+    print("Everyone signed in was signed out: the UI holds its sessions in memory.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="Start, stop and inspect the AWS demo")
+    parser = argparse.ArgumentParser(
+        description="Start, stop, restart, archive and inspect the AWS demo"
+    )
     parser.add_argument("--region", default=DEFAULT_REGION)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -551,6 +769,31 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds to wait for the new version to answer before giving up",
     )
 
+    archive = sub.add_parser("archive", help="write the database to the bucket now")
+    archive.add_argument(
+        "--deadline",
+        type=float,
+        default=START_DEADLINE_SECONDS,
+        help="seconds to wait for the dump before giving up",
+    )
+    restore = sub.add_parser("restore", help="put an archive back into the running database")
+    restore.add_argument(
+        "archive",
+        help="`latest`, or an archive key as `status` prints it. Named rather than "
+        "defaulted: this replaces the database.",
+    )
+    restore.add_argument(
+        "--force",
+        action="store_true",
+        help="restore even though the application reports work, or did not answer",
+    )
+    restore.add_argument(
+        "--deadline",
+        type=float,
+        default=START_DEADLINE_SECONDS,
+        help="seconds to wait for the demo to answer again before giving up",
+    )
+
     args = parser.parse_args(argv)
     try:
         if args.command == "status":
@@ -559,6 +802,10 @@ def main(argv: list[str] | None = None) -> int:
             return command_start(args.region, args.deadline)
         if args.command == "restart":
             return command_restart(args.region, args.deadline, force=args.force)
+        if args.command == "archive":
+            return command_archive(args.region, args.deadline)
+        if args.command == "restore":
+            return command_restore(args.region, args.archive, args.deadline, force=args.force)
         return command_stop(args.region, force=args.force)
     except DemoError as exc:
         print(str(exc), file=sys.stderr)

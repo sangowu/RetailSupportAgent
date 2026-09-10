@@ -176,9 +176,14 @@ stack definition and cannot be started.
 ## Destroying it
 
 ```bash
+uv run python scripts/demo.py archive      # the last write, before the volume goes
 terraform -chdir=deploy/terraform/demo destroy -var="state_bucket=$BUCKET" -var="image_tag=m6.4"
 uv run python scripts/aws_inventory.py     # confirm, do not assume
 ```
+
+The archive first, from M6.9. A stop archives on its own way down, and a termination runs
+the same shutdown path, but that is not a thing to find out afterwards about the only copy
+of the demo's record of who did what.
 
 The base layer is not destroyed by that. Its bucket is not a Terraform resource at all, so
 no `destroy` can reach the archives; removing them is an explicit `aws s3 rm`.

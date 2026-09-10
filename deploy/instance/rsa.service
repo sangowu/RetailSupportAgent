@@ -11,10 +11,17 @@ RemainAfterExit=yes
 # by cloud-init; it names the key's location and never holds the key.
 EnvironmentFile=/etc/rsa-demo.env
 ExecStart=/usr/local/bin/rsa-start
-ExecStop=/usr/bin/docker compose -f /opt/rsa/compose.yaml down
+# Archives the database, then brings the stack down. It has to be one script rather than
+# two ExecStop lines, because systemd stops at the first that fails and a failed archive
+# must not leave the containers running (M6.9).
+ExecStop=/usr/local/bin/rsa-stop
 # The first boot pulls a 722 MB image over a fresh Docker install. M6.2 measured the whole
 # thing at 122 seconds; this leaves room for a slow pull rather than failing the unit.
 TimeoutStartSec=900
+# The archive is bounded at 120s inside rsa-stop; this is that plus room for the stack to
+# come down. Well inside the four minutes EC2 allows a graceful shutdown before it pulls
+# the power, so a stop that hits this still stops.
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target

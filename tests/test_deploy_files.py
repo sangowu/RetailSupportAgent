@@ -9,6 +9,8 @@ every file it is given, and shell scripts that a Linux shell can actually run.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import re
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,13 @@ SERVICES = ("db", "migrate", "seed", "api", "ui")
 # Caddy runs only on the instance: development reaches the UI on the loopback address and
 # has nothing to get a certificate for.
 INSTANCE_ONLY = ("caddy",)
+
+
+def number(pattern: str, text: str) -> int:
+    """The one number a pattern names, or a failure that says the pattern found nothing."""
+    found = re.search(pattern, text)
+    assert found is not None, pattern
+    return int(found.group(1))
 
 
 def load(path: Path) -> dict:
@@ -190,7 +199,15 @@ class TestTheCloudInitTemplate:
 class TestTheShellScripts:
     @pytest.mark.parametrize(
         "name",
-        ("rsa-start.sh", "update-dns.sh", "cloud-init.sh.tftpl", "../../docker/entrypoint.sh"),
+        (
+            "rsa-start.sh",
+            "update-dns.sh",
+            "archive.sh",
+            "restore.sh",
+            "rsa-stop.sh",
+            "cloud-init.sh.tftpl",
+            "../../docker/entrypoint.sh",
+        ),
     )
     def test_no_carriage_returns(self, name: str) -> None:
         """A CRLF shebang fails as 'no such file or directory', naming the wrong problem.
@@ -257,6 +274,138 @@ class TestAVersionBringsItsOwnStack:
         interpolates the image."""
         text = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
         assert "RSA_IMAGE=%s" in text
+
+
+class TestUserDataStillFits:
+    """EC2 caps user data at 16 KB, and nine base64 blobs now go into it.
+
+    This was roomy until M6.9 added three scripts. Past the limit, the failure is an apply
+    that refuses with a size nothing in the repository mentions, hours after the file that
+    caused it was written.
+    """
+
+    LIMIT = 16384
+
+    def rendered(self) -> bytes:
+        """The template with every file blob substituted, as Terraform would render it."""
+        text = TEMPLATE.read_text(encoding="utf-8")
+        for name, path in re.findall(
+            r'(\w+)\s*=\s*filebase64\("\$\{path\.module\}/\.\./\.\./instance/([^"]+)"\)',
+            DEMO_TF.read_text(encoding="utf-8"),
+        ):
+            blob = base64.b64encode((INSTANCE / path).read_bytes()).decode("ascii")
+            text = text.replace(f"${{{name}}}", blob)
+        # Everything else is a short value; a placeholder of its own length is close
+        # enough for a limit this far from the measurement.
+        return re.sub(r"\$\{\w+\}", "placeholder-value-x", text).encode("utf-8")
+
+    def test_it_fits_inside_the_limit(self) -> None:
+        assert len(gzip.compress(self.rendered())) < self.LIMIT
+
+    def test_there_is_still_room_for_another_script(self) -> None:
+        """Failing at the limit itself would fail on the change that has no room left,
+        which is a change too late to be useful."""
+        assert len(gzip.compress(self.rendered())) < self.LIMIT * 0.9
+
+
+class TestArchivingOnTheWayDown:
+    """The database outlives the machine, or the audit trail is not a record (M6.9)."""
+
+    def test_the_unit_archives_before_it_stops_the_stack(self) -> None:
+        """`docker compose down` is what stops PostgreSQL, so the dump has to come first
+        and both have to be one command: systemd stops at the first ExecStop that fails."""
+        unit = (INSTANCE / "rsa.service").read_text(encoding="utf-8")
+        assert "ExecStop=/usr/local/bin/rsa-stop" in unit
+        assert "docker compose" not in unit
+
+        stop = "\n".join(
+            line
+            for line in (INSTANCE / "rsa-stop.sh").read_text(encoding="utf-8").splitlines()
+            if not line.startswith("#")
+        )
+        assert stop.index("rsa-archive") < stop.index("docker compose")
+
+    def test_a_failed_archive_does_not_block_the_stop(self) -> None:
+        """A machine that will not shut down bills by the hour, which is the failure M6.1's
+        whole shape exists to avoid. A missed archive costs one idle period."""
+        stop = (INSTANCE / "rsa-stop.sh").read_text(encoding="utf-8")
+        directives = [line for line in stop.splitlines() if line.startswith("set ")]
+        assert directives == ["set -u"]
+        assert "if ! timeout" in stop
+
+    def test_the_stop_is_bounded_and_the_unit_waits_that_long(self) -> None:
+        unit = (INSTANCE / "rsa.service").read_text(encoding="utf-8")
+        stop = (INSTANCE / "rsa-stop.sh").read_text(encoding="utf-8")
+        timeout = number(r"TimeoutStopSec=(\d+)", unit)
+        archive = number(r"RSA_ARCHIVE_TIMEOUT_SECONDS:-(\d+)", stop)
+        assert archive < timeout
+        # EC2 allows about four minutes of graceful shutdown before it pulls the power.
+        assert timeout <= 240
+
+    def test_the_dump_is_written_whole_before_it_is_uploaded(self) -> None:
+        """Streaming into S3 uploads a truncated dump as a complete object when the dump
+        fails half way, and a truncated archive that lists fine is the failure this whole
+        step exists to prevent."""
+        text = (INSTANCE / "archive.sh").read_text(encoding="utf-8")
+        assert "set -euo pipefail" in text
+        assert text.index('test -s "$TMP/dump.sql.gz"') < text.index("aws s3 cp")
+
+    def test_the_archive_goes_where_the_role_can_write(self) -> None:
+        """M6.4 scoped the instance role to one prefix, so the demo cannot reach the
+        Terraform state sitting in the same bucket."""
+        text = (INSTANCE / "archive.sh").read_text(encoding="utf-8")
+        assert 'PREFIX="${RSA_ARCHIVE_PREFIX:-archives}"' in text
+        assert "RSA_ARCHIVE_BUCKET:?" in text
+        assert "RSA_ARCHIVE_BUCKET=${archive_bucket}" in TEMPLATE.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("name", ("archive.sh", "restore.sh"))
+    def test_each_script_brings_its_own_environment(self, name: str) -> None:
+        """Two callers, one with the unit's environment and one without.
+
+        ExecStop inherits `EnvironmentFile`; a Systems Manager session, which is how
+        `demo.py archive` and `demo.py restore` reach the machine, inherits nothing. Found
+        by running it: `docker compose` refused to interpolate the stack definition and
+        failed on a variable the unit would have supplied.
+        """
+        text = (INSTANCE / name).read_text(encoding="utf-8")
+        assert ". /etc/rsa-demo.env" in text
+        assert "set -a" in text
+
+    def test_the_whole_database_is_dumped(self) -> None:
+        """Not a subset: choosing which tables matter is a decision that has to stay right
+        forever, and the whole thing is a few hundred kilobytes."""
+        text = (INSTANCE / "archive.sh").read_text(encoding="utf-8")
+        assert "--table" not in text
+        assert "--exclude-table" not in text
+        assert "--clean" in text and "--if-exists" in text
+
+
+class TestRestoringIt:
+    def test_it_restores_in_one_transaction(self) -> None:
+        """The outcome is the archive or the database that was already there. A
+        half-applied restore leaves a schema that matches neither."""
+        text = (INSTANCE / "restore.sh").read_text(encoding="utf-8")
+        assert "--single-transaction" in text
+        assert "ON_ERROR_STOP=1" in text
+
+    def test_nothing_writes_while_the_database_is_replaced(self) -> None:
+        text = (INSTANCE / "restore.sh").read_text(encoding="utf-8")
+        assert text.index("stop api ui") < text.index("gunzip -c")
+
+    def test_the_writers_come_back_whatever_happens(self) -> None:
+        """A restore that fails and leaves the demo with no API is worse than the state it
+        was trying to fix."""
+        text = (INSTANCE / "restore.sh").read_text(encoding="utf-8")
+        assert "trap finish EXIT" in text
+        assert "start api ui" in text
+
+    def test_a_corrupt_download_is_refused_before_it_is_applied(self) -> None:
+        text = (INSTANCE / "restore.sh").read_text(encoding="utf-8")
+        assert text.index("gzip -t") < text.index("stop api ui")
+
+    def test_it_refuses_when_there_is_nothing_to_restore(self) -> None:
+        text = (INSTANCE / "restore.sh").read_text(encoding="utf-8")
+        assert '[ "$KEY" = "None" ]' in text
 
 
 class TestWhatTheInternetCanReach:

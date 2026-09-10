@@ -8,10 +8,12 @@ refusing to stop on silence, and not pretending a starting machine is a running 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import sys
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -30,9 +32,12 @@ Busy = demo.Busy
 
 
 def at(
-    state: str, ip: str | None = "203.0.113.7", domain: str | None = "rsa.example.test"
+    state: str,
+    ip: str | None = "203.0.113.7",
+    domain: str | None = "rsa.example.test",
+    bucket: str | None = "rsa-demo-state",
 ) -> Instance:
-    return Instance(id="i-0abc", state=state, public_ip=ip, domain=domain)
+    return Instance(id="i-0abc", state=state, public_ip=ip, domain=domain, bucket=bucket)
 
 
 class Answer:
@@ -238,6 +243,163 @@ class TestWhichVersionIsRunning:
 
         monkeypatch.setattr(urllib.request, "urlopen", refuse)
         assert demo.running_image("https://rsa.example.test") is None
+
+
+class TestArchiving:
+    """A dump blocks no writer, so being busy is not a reason to refuse one."""
+
+    def test_a_running_instance_is_archived(self) -> None:
+        assert demo.plan_archive(at("running")).act
+
+    def test_being_busy_is_not_even_asked_about(self) -> None:
+        """The opposite of a stop. Refusing here would refuse exactly when the history is
+        worth most, and pg_dump reads one consistent snapshot without holding anyone up.
+
+        Checked on the signature, because a `busy` argument this ignored today is one
+        somebody starts honouring tomorrow."""
+        assert list(inspect.signature(demo.plan_archive).parameters) == ["instance"]
+
+    def test_a_stopped_instance_has_nothing_to_dump(self) -> None:
+        plan = demo.plan_archive(at("stopped", ip=None))
+        assert not plan.act
+        assert "archived on its way down" in plan.message
+
+    def test_an_instance_without_the_tag_has_nowhere_to_write(self) -> None:
+        plan = demo.plan_archive(at("running", bucket=None))
+        assert not plan.act
+        assert "ArchiveBucket" in plan.message
+
+    def test_no_environment_is_reported_not_crashed(self) -> None:
+        assert not demo.plan_archive(None).act
+
+
+class TestRestoring:
+    """Restoring replaces the database the application is reading, so it refuses on work
+    for the same reason a stop does, and one more: the work would be overwritten rather
+    than merely lost."""
+
+    def test_an_idle_instance_is_restored_onto(self) -> None:
+        assert demo.plan_restore(at("running"), IDLE, force=False).act
+
+    def test_unfinished_work_stops_the_restore(self) -> None:
+        plan = demo.plan_restore(at("running"), WORKING, force=False)
+        assert not plan.act
+        assert "confirmation" in plan.message
+        assert plan.exit_code == 2
+
+    def test_silence_is_not_permission(self) -> None:
+        plan = demo.plan_restore(at("running"), SILENT, force=False)
+        assert not plan.act
+        assert "--force" in plan.message
+
+    def test_force_overrides_and_says_what_it_overrode(self) -> None:
+        plan = demo.plan_restore(at("running"), WORKING, force=True)
+        assert plan.act
+        assert "confirmation" in plan.message
+
+    def test_a_stopped_instance_is_pointed_at_start_first(self) -> None:
+        plan = demo.plan_restore(at("stopped", ip=None), None, force=False)
+        assert not plan.act
+        assert "start" in plan.message
+
+    @pytest.mark.parametrize(
+        "given",
+        [
+            "archives/../../base/terraform.tfstate",
+            "archives/x.sql.gz; rm -rf /",
+            "archives/$(whoami).sql.gz",
+            "/etc/passwd",
+            "latest ; reboot",
+            "",
+        ],
+    )
+    def test_an_unexpected_key_is_refused_rather_than_run(self, given: str) -> None:
+        """It is interpolated into a command that runs as root on the instance. An
+        operator who pastes something unexpected should get a refusal, not a command."""
+        with pytest.raises(demo.DemoError):
+            demo.command_restore("eu-west-1", given, 1.0, force=False)
+
+    @pytest.mark.parametrize("given", ["latest", "archives/rsa-20260910T101500Z.sql.gz"])
+    def test_the_two_shapes_an_operator_types_are_accepted(
+        self, given: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(demo, "find_instance", lambda _region: None)
+        # Refused for having no environment, which is past the argument check.
+        assert demo.command_restore("eu-west-1", given, 1.0, force=False) == 1
+
+
+class TestStatusReportsTheArchive:
+    def test_it_is_reported_for_a_stopped_instance_too(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A stopped instance is this environment's normal state, and the minute before a
+        teardown is exactly when the age is worth reading. Found by running it: the first
+        version returned early and printed nothing."""
+        monkeypatch.setattr(demo, "find_instance", lambda _region: at("stopped", ip=None))
+        monkeypatch.setattr(
+            demo,
+            "newest_archive",
+            lambda _region, _bucket: demo.Archive(
+                key="archives/rsa-20260910T104028Z.sql.gz",
+                written=datetime.now(UTC) - timedelta(hours=3),
+                size=3507,
+            ),
+        )
+        assert demo.command_status("eu-west-1") == 0
+        printed = capsys.readouterr().out
+        assert "archives/rsa-20260910T104028Z.sql.gz" in printed
+        assert "3h ago" in printed
+
+
+class TestTheAgeOfTheNewestArchive:
+    """The age is the only signal a silently failing archive gives. Nothing on the machine
+    can report one: it is stopping when the archive runs."""
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [(12, "12s ago"), (600, "10m ago"), (7200, "2h ago"), (259200, "3d ago")],
+    )
+    def test_it_is_said_in_the_unit_somebody_would_use(self, seconds: float, expected: str) -> None:
+        now = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+        archive = demo.Archive(
+            key="archives/x.sql.gz", written=now - timedelta(seconds=seconds), size=1
+        )
+        assert archive.age(now) == expected
+
+    def test_a_clock_that_disagrees_does_not_produce_a_negative_age(self) -> None:
+        """S3's timestamp and this machine's clock are two clocks. An archive from the
+        future should read as new, not as a negative number nobody can act on."""
+        now = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+        archive = demo.Archive(key="archives/x.sql.gz", written=now + timedelta(seconds=30), size=1)
+        assert archive.age(now) == "0s ago"
+
+    def test_an_environment_that_has_never_stopped_has_no_archive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(demo, "aws", lambda *a, **k: None)
+        assert demo.newest_archive("eu-west-1", "a-bucket") is None
+
+    def test_the_newest_is_read_by_the_query_not_by_this_tool(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Listing every object and sorting here would page through a bucket that also
+        holds the Terraform state."""
+        seen: dict[str, tuple[str, ...]] = {}
+
+        def capture(*args: str, **_kwargs: object) -> dict[str, object]:
+            seen["args"] = args
+            return {
+                "Key": "archives/rsa-20260910T101500Z.sql.gz",
+                "LastModified": "2026-09-10T10:15:00+00:00",
+                "Size": 481920,
+            }
+
+        monkeypatch.setattr(demo, "aws", capture)
+        archive = demo.newest_archive("eu-west-1", "a-bucket")
+        assert archive is not None
+        assert archive.size == 481920
+        assert "sort_by(Contents, &LastModified)[-1]" in " ".join(seen["args"])
+        assert demo.ARCHIVE_PREFIX in seen["args"]
 
 
 class TestUrls:
