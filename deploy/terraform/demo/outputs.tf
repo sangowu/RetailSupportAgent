@@ -12,13 +12,12 @@ output "public_ip" {
   value       = aws_instance.demo.public_ip
 }
 
-output "urls" {
-  description = "Where the demo answers, for as long as it is running"
-  value = {
-    api  = "http://${aws_instance.demo.public_ip}:8000"
-    ui   = "http://${aws_instance.demo.public_ip}:7860"
-    idle = "http://${aws_instance.demo.public_ip}:8000/idle"
-  }
+output "url" {
+  description = <<-EOT
+    Where the demo answers. Unlike the address, this does not change across a stop: the
+    instance rewrites its own A record at every boot.
+  EOT
+  value       = "https://${trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")}"
 }
 
 output "image" {

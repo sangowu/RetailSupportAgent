@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, and M6.5 gave it start and stop commands. The demo environment exists and is stopped, which costs its 10 GiB volume.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, and M6.6 put it behind one name over TLS. The demo environment exists and is stopped, which costs its volume and its hosted zone.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -65,12 +65,13 @@ judge was not held constant; see
 20. [M6.3 deciding nobody is using this, and turning it off](docs/M6.3_IDLE_SHUTDOWN.md)
 21. [M6.4 the demo environment as code](docs/M6.4_TERRAFORM.md)
 22. [M6.5 two commands an operator actually runs](docs/M6.5_START_STOP.md)
-23. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-24. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-25. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-26. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-27. [Local and AWS start/stop design](docs/OPERATIONS.md)
-28. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+23. [M6.6 a name that survives a stop, and a certificate](docs/M6.6_HTTPS.md)
+24. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+25. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+26. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+27. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+28. [Local and AWS start/stop design](docs/OPERATIONS.md)
+29. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 

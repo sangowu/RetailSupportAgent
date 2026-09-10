@@ -41,8 +41,9 @@ PROJECT_TAG = "Project=RetailSupportAgent"
 LAYER_TAG = "Layer=demo"
 DEFAULT_REGION = "eu-west-1"
 
-API_PORT = 8000
-UI_PORT = 7860
+# Everything now goes through Caddy on one name. The application's own ports are not
+# published at all, so /chat, /tickets and /approvals are unreachable from outside.
+DEFAULT_SCHEME = "https"
 
 # M6.1's rule is 120 seconds from the start command to a page that answers. This is the
 # patience before giving up, not the expectation: M6.2 measured 41 seconds.
@@ -65,14 +66,14 @@ class Instance:
     id: str
     state: str
     public_ip: str | None
+    # The name is stable across stops; the address is not. The address is still carried
+    # because it is what a stopped instance visibly lacks, and because a name that has not
+    # caught up yet is a thing an operator needs to see.
+    domain: str | None = None
 
     @property
-    def api_url(self) -> str | None:
-        return f"http://{self.public_ip}:{API_PORT}" if self.public_ip else None
-
-    @property
-    def ui_url(self) -> str | None:
-        return f"http://{self.public_ip}:{UI_PORT}" if self.public_ip else None
+    def url(self) -> str | None:
+        return f"{DEFAULT_SCHEME}://{self.domain}" if self.domain else None
 
 
 @dataclass(frozen=True)
@@ -132,10 +133,12 @@ def find_instance(region: str) -> Instance | None:
             "This tool acts on one environment; remove the extra one or narrow the tags."
         )
     one = found[0]
+    tags = {str(t["Key"]): str(t["Value"]) for t in one.get("Tags", [])}
     return Instance(
         id=str(one["InstanceId"]),
         state=str(one["State"]["Name"]),
         public_ip=one.get("PublicIpAddress") or None,
+        domain=tags.get("Domain") or None,
     )
 
 
@@ -164,14 +167,16 @@ def answers(url: str, expect: str | None = None) -> bool:
     return expect is None or expect in body
 
 
-def ask_busy(api_url: str) -> Busy:
+def ask_busy(base_url: str) -> Busy:
     """What the application says about being in the middle of something.
 
     Any failure is 'do not know', which section 1.3 of M6.5 treats as a reason not to stop
     on this tool's own initiative.
     """
     try:
-        with urllib.request.urlopen(f"{api_url}/idle", timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+            f"{base_url}/idle", timeout=REQUEST_TIMEOUT_SECONDS
+        ) as response:
             body = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
         return Busy(reachable=False, detail=f"{type(exc).__name__}: {exc}")
@@ -235,26 +240,25 @@ def plan_stop(instance: Instance | None, busy: Busy | None, *, force: bool) -> P
 # ---- the commands ----------------------------------------------------------
 
 
-def wait_until_answering(region: str, instance_id: str, deadline: float) -> Instance:
-    """Poll until both ports reply, or give up.
+def wait_until_answering(region: str, instance_id: str, domain: str, deadline: float) -> Instance:
+    """Poll the name until the demo answers through it, or give up.
 
-    The address is read on every pass rather than once: it is assigned during the start and
-    is not there when the first call is made.
+    The name, not the address: the instance rewrites its own A record at boot, and until
+    that has happened and resolved, the demo is not reachable the way anyone will reach it.
+    Waiting on the address instead would declare victory while the link in someone's
+    calendar still pointed at last week's machine.
     """
     started = time.monotonic()
+    url = f"{DEFAULT_SCHEME}://{domain}"
     while True:
-        address = public_ip(region, instance_id)
-        if address:
-            api = f"http://{address}:{API_PORT}"
-            if answers(f"{api}/health", expect='"status":"ok"') and answers(
-                f"http://{address}:{UI_PORT}/"
-            ):
-                return Instance(instance_id, "running", address)
+        if answers(f"{url}/health", expect='"status":"ok"') and answers(f"{url}/"):
+            return Instance(instance_id, "running", public_ip(region, instance_id), domain)
         waited = time.monotonic() - started
         if waited > deadline:
             raise DemoError(
-                f"{instance_id} did not answer within {deadline:.0f}s. "
-                "It may still be starting; `status` again in a minute, "
+                f"{domain} did not answer within {deadline:.0f}s. "
+                "The instance may still be starting, the name may not have caught up, or "
+                "the certificate may not have been issued yet; `status` again in a minute, "
                 "or look at it with Session Manager."
             )
         time.sleep(POLL_SECONDS)
@@ -266,11 +270,14 @@ def command_status(region: str) -> int:
         print("no demo environment (nothing tagged Layer=demo)")
         return 0
     print(f"{instance.id}  {instance.state}")
-    if instance.state != "running" or not instance.api_url:
+    if instance.url:
+        print(f"  {instance.url}")
+    if instance.state != "running":
         return 0
-    print(f"  api  {instance.api_url}")
-    print(f"  ui   {instance.ui_url}")
-    busy = ask_busy(instance.api_url)
+    if not instance.url:
+        print("  no Domain tag on the instance; it was not built by the current Terraform")
+        return 1
+    busy = ask_busy(instance.url)
     if not busy.reachable:
         print(f"  the application did not answer ({busy.detail})")
     elif busy.holding:
@@ -290,19 +297,24 @@ def command_start(region: str, deadline: float) -> int:
         return plan.exit_code
 
     assert instance is not None
+    if not instance.domain:
+        raise DemoError(
+            f"{instance.id} has no Domain tag, so there is no name to wait on. "
+            "Apply the current Terraform."
+        )
+
     aws("ec2", "start-instances", "--instance-ids", instance.id, region=region)
     started = time.monotonic()
-    ready = wait_until_answering(region, instance.id, deadline)
+    ready = wait_until_answering(region, instance.id, instance.domain, deadline)
     print(f"ready in {time.monotonic() - started:.0f}s")
-    print(f"  api  {ready.api_url}")
-    print(f"  ui   {ready.ui_url}")
+    print(f"  {ready.url}")
     print("It stops itself once nobody has used it for fifteen minutes.")
     return 0
 
 
 def command_stop(region: str, *, force: bool) -> int:
     instance = find_instance(region)
-    busy = ask_busy(instance.api_url) if instance and instance.api_url else None
+    busy = ask_busy(instance.url) if instance and instance.url else None
     plan = plan_stop(instance, busy, force=force)
     print(plan.message)
     if not plan.act:
