@@ -1,10 +1,9 @@
-"""Start, stop and inspect the AWS demo environment.
-
-Three commands for the two things an operator does, plus the one they do first.
+"""Start, stop, restart and inspect the AWS demo environment.
 
     uv run python scripts/demo.py status
     uv run python scripts/demo.py start
     uv run python scripts/demo.py stop
+    uv run python scripts/demo.py restart
 
 M6.4's Terraform builds the environment; this drives it. The instance is found by its tags
 rather than by an id from Terraform's state, so this works from a machine that has not
@@ -16,6 +15,11 @@ Two decisions are worth knowing about before reading:
 **`start` waits for an answer, not for a state.** `running` means the hypervisor has the
 machine. M6.2 measured 41 more seconds before the API and the UI reply, and a command that
 returns early hands someone a broken link.
+
+**`restart` is what a rollback is.** Which image runs is a Parameter Store value, not
+something baked into the instance, so changing the version is `terraform apply` followed by
+this. The stack comes down, the parameter is read again, and the new version comes up on
+the same machine, the same volume and the same certificate.
 
 **`stop` asks the application whether it is busy**, using the same verdict the instance's
 own idle watcher uses (M6.3). An operator and the watcher disagreeing about "busy" would
@@ -44,6 +48,14 @@ DEFAULT_REGION = "eu-west-1"
 # Everything now goes through Caddy on one name. The application's own ports are not
 # published at all, so /chat, /tickets and /approvals are unreachable from outside.
 DEFAULT_SCHEME = "https"
+
+# Which version the environment is configured to run. The instance reads this at every
+# start; this tool reads it to say whether what is running is what was asked for.
+IMAGE_PARAMETER = "/rsa/demo/image"
+
+# What a restart runs on the instance. `rsa.service` is a oneshot whose ExecStop brings the
+# stack down and whose ExecStart re-reads the parameter, so this is the whole of a rollback.
+RESTART_COMMAND = "systemctl restart rsa.service"
 
 # M6.1's rule is 120 seconds from the start command to a page that answers. This is the
 # patience before giving up, not the expectation: M6.2 measured 41 seconds.
@@ -152,6 +164,71 @@ def public_ip(region: str, instance_id: str) -> str | None:
     return data["Reservations"][0]["Instances"][0].get("PublicIpAddress") or None
 
 
+def configured_image(region: str) -> str | None:
+    """Which version the environment is set to run, or None when nothing has set it.
+
+    None rather than an error: an environment built before M6.8 has no such parameter, and
+    saying so is more use than a failure that reads like a broken tool.
+    """
+    try:
+        data = aws(
+            "ssm",
+            "get-parameter",
+            "--name",
+            IMAGE_PARAMETER,
+            "--query",
+            "Parameter.Value",
+            region=region,
+        )
+    except DemoError:
+        return None
+    return str(data) if data else None
+
+
+def run_on_instance(region: str, instance_id: str, command: str, deadline: float) -> None:
+    """Run one shell command on the instance and wait for it to finish.
+
+    Through Systems Manager, so this needs no key on the machine and no port open to it.
+    Waiting matters: the restart is what changes the version, and polling the application
+    before it has begun would read the old one and call it done.
+    """
+    sent = aws(
+        "ssm",
+        "send-command",
+        "--instance-ids",
+        instance_id,
+        "--document-name",
+        "AWS-RunShellScript",
+        "--parameters",
+        json.dumps({"commands": [command]}),
+        region=region,
+    )
+    command_id = str(sent["Command"]["CommandId"])
+    started = time.monotonic()
+    while True:
+        time.sleep(POLL_SECONDS)
+        got = aws(
+            "ssm",
+            "get-command-invocation",
+            "--command-id",
+            command_id,
+            "--instance-id",
+            instance_id,
+            region=region,
+        )
+        status = str(got.get("Status", ""))
+        if status == "Success":
+            return
+        if status in ("Cancelled", "TimedOut", "Failed"):
+            detail = str(got.get("StandardErrorContent", "")).strip().splitlines()
+            raise DemoError(
+                f"{command} did not succeed on {instance_id} ({status}): "
+                f"{detail[-1] if detail else 'no message'}"
+            )
+        if time.monotonic() - started > deadline:
+            raise DemoError(f"{command} was still {status} after {deadline:.0f}s.")
+
+
 # ---- talking to the demo ---------------------------------------------------
 
 
@@ -165,6 +242,23 @@ def answers(url: str, expect: str | None = None) -> bool:
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return expect is None or expect in body
+
+
+def running_image(base_url: str) -> str | None:
+    """Which image is answering, or None when it cannot be read.
+
+    Read from the thing that is running rather than inferred from what was last applied.
+    Without it a rollback is something someone believes happened.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"{base_url}/health", timeout=REQUEST_TIMEOUT_SECONDS
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    image = body.get("image")
+    return str(image) if image and image != "unknown" else None
 
 
 def ask_busy(base_url: str) -> Busy:
@@ -237,10 +331,52 @@ def plan_stop(instance: Instance | None, busy: Busy | None, *, force: bool) -> P
     return Plan(True, f"stopping {instance.id}")
 
 
+def plan_restart(instance: Instance | None, busy: Busy | None, *, force: bool) -> Plan:
+    """Whether restarting now is allowed.
+
+    The same rule as stopping, and for the same reason: a restart takes the stack down, so
+    a confirmation nobody has answered is lost by it exactly as a stop would lose it. The
+    difference is what a stopped instance means. Stopping one is a no-op; restarting one is
+    a request the operator got wrong, because the version is read at start and starting it
+    is what they want.
+    """
+    if instance is None:
+        return Plan(False, "There is no demo environment.", 1)
+    if instance.state == "stopped":
+        return Plan(
+            False,
+            f"{instance.id} is stopped; `start` reads the configured version anyway.",
+            1,
+        )
+    if instance.state not in STOPPABLE:
+        return Plan(False, f"{instance.id} is {instance.state}; wait for it to settle", 1)
+
+    if force:
+        note = "; ".join(busy.holding) if busy and busy.holding else "nothing reported"
+        return Plan(True, f"restarting {instance.id} anyway, overriding: {note}")
+    if busy is None or not busy.reachable:
+        detail = busy.detail if busy else "not asked"
+        return Plan(
+            False,
+            f"{instance.id} is running but did not say whether it is busy ({detail}). "
+            "Look at it, then use --force.",
+            1,
+        )
+    if busy.holding:
+        return Plan(False, "not restarting, work is unfinished: " + "; ".join(busy.holding), 2)
+    return Plan(True, f"restarting {instance.id}")
+
+
 # ---- the commands ----------------------------------------------------------
 
 
-def wait_until_answering(region: str, instance_id: str, domain: str, deadline: float) -> Instance:
+def wait_until_answering(
+    region: str,
+    instance_id: str,
+    domain: str,
+    deadline: float,
+    expect_image: str | None = None,
+) -> Instance:
     """Poll the name until the demo answers through it, or give up.
 
     The name, not the address: the instance rewrites its own A record at boot, and until
@@ -251,7 +387,11 @@ def wait_until_answering(region: str, instance_id: str, domain: str, deadline: f
     started = time.monotonic()
     url = f"{DEFAULT_SCHEME}://{domain}"
     while True:
-        if answers(f"{url}/health", expect='"status":"ok"') and answers(f"{url}/"):
+        # During a restart the old containers keep answering until they are down, so
+        # "it replies" is not "the new version is up". When a version is expected, that is
+        # what is waited for.
+        arrived = expect_image is None or running_image(url) == expect_image
+        if arrived and answers(f"{url}/health", expect='"status":"ok"') and answers(f"{url}/"):
             return Instance(instance_id, "running", public_ip(region, instance_id), domain)
         waited = time.monotonic() - started
         if waited > deadline:
@@ -284,6 +424,16 @@ def command_status(region: str) -> int:
         print("  busy: " + "; ".join(busy.holding))
     else:
         print("  idle")
+
+    # Configured and running are the same value almost always. They differ exactly when a
+    # version has been applied and not yet picked up, which is the moment an operator needs
+    # to be told about rather than left to infer.
+    running = running_image(instance.url)
+    configured = configured_image(region)
+    print(f"  running:    {running or 'not reported'}")
+    print(f"  configured: {configured or 'no version parameter; built before M6.8'}")
+    if running and configured and running != configured:
+        print("  the configured version is not the one running; `restart` picks it up")
     return 0
 
 
@@ -332,6 +482,37 @@ def command_stop(region: str, *, force: bool) -> int:
     return 0
 
 
+def command_restart(region: str, deadline: float, *, force: bool) -> int:
+    """Bring the stack down and up again on the same machine, reading the version afresh.
+
+    This is what a rollback is. Nothing here decides which version to run: Terraform wrote
+    that to a parameter, and the instance reads it. The volume, the database and the
+    certificate are not involved.
+    """
+    instance = find_instance(region)
+    busy = ask_busy(instance.url) if instance and instance.url else None
+    plan = plan_restart(instance, busy, force=force)
+    print(plan.message)
+    if not plan.act:
+        return plan.exit_code
+
+    assert instance is not None and instance.domain
+    target = configured_image(region)
+    if target is None:
+        raise DemoError(
+            f"No version is configured at {IMAGE_PARAMETER}. "
+            "Apply the current Terraform, which writes it."
+        )
+    print(f"  to {target}")
+
+    started = time.monotonic()
+    run_on_instance(region, instance.id, RESTART_COMMAND, deadline)
+    ready = wait_until_answering(region, instance.id, instance.domain, deadline, target)
+    print(f"answering {target} in {time.monotonic() - started:.0f}s")
+    print(f"  {ready.url}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -355,6 +536,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="stop even though the application reports work, or did not answer",
     )
+    restart = sub.add_parser(
+        "restart", help="re-read the configured version and bring the stack up on it"
+    )
+    restart.add_argument(
+        "--force",
+        action="store_true",
+        help="restart even though the application reports work, or did not answer",
+    )
+    restart.add_argument(
+        "--deadline",
+        type=float,
+        default=START_DEADLINE_SECONDS,
+        help="seconds to wait for the new version to answer before giving up",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -362,6 +557,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_status(args.region)
         if args.command == "start":
             return command_start(args.region, args.deadline)
+        if args.command == "restart":
+            return command_restart(args.region, args.deadline, force=args.force)
         return command_stop(args.region, force=args.force)
     except DemoError as exc:
         print(str(exc), file=sys.stderr)

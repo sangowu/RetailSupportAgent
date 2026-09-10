@@ -17,7 +17,6 @@ chmod +x /usr/libexec/docker/cli-plugins/docker-compose
 systemctl enable --now docker
 
 mkdir -p /opt/rsa
-echo '${compose_yaml}' | base64 -d > /opt/rsa/compose.yaml
 echo '${rsa_start}' | base64 -d > /usr/local/bin/rsa-start
 chmod +x /usr/local/bin/rsa-start
 echo '${rsa_service}' | base64 -d > /etc/systemd/system/rsa.service
@@ -26,20 +25,22 @@ echo '${rsa_idle_service}' | base64 -d > /etc/systemd/system/rsa-idle.service
 echo '${rsa_idle_timer}' | base64 -d > /etc/systemd/system/rsa-idle.timer
 echo '${update_dns}' | base64 -d > /usr/local/bin/update-dns
 chmod +x /usr/local/bin/update-dns
-echo '${caddyfile}' | base64 -d > /opt/rsa/Caddyfile
 
 # What the units read. No secret here: the model key is fetched from Parameter Store at
 # boot, and this file only says where to look. The user pool's identifiers are the same
 # kind of thing - they name a pool and an application, and open neither.
 #
-# RSA_IDENTITIES is base64 here because its value is JSON, and JSON in a file that both
-# systemd and a shell read would need quoting that survives both. rsa-start decodes it into
-# the file compose reads.
+# What is deliberately absent: which image to run, and which subject is which identity.
+# Both change more often than this machine does, and anything written here can only be
+# changed by replacing the machine. They are named here and read at every start instead,
+# which is what makes a rollback a restart (M6.8). The compose file and the Caddyfile are
+# absent for the same reason: they come out of the image being run.
 cat > /etc/rsa-demo.env <<'ENVFILE'
 RSA_REGION=${region}
 RSA_REGISTRY=${registry}
-RSA_IMAGE=${image}
 RSA_MODEL_KEY_PARAMETER=${model_key_parameter}
+RSA_IMAGE_PARAMETER=${image_parameter}
+RSA_IDENTITIES_PARAMETER=${identities_parameter}
 RSA_ZONE_ID=${zone_id}
 RSA_DOMAIN=${domain}
 RSA_ACME_EMAIL=${acme_email}
@@ -47,7 +48,6 @@ RSA_AUTH_ISSUER=${auth_issuer}
 RSA_AUTH_AUDIENCE=${auth_audience}
 RSA_COGNITO_REGION=${region}
 RSA_COGNITO_CLIENT_ID=${auth_audience}
-RSA_IDENTITIES_B64=${identities_b64}
 ENVFILE
 chmod 600 /etc/rsa-demo.env
 

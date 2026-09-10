@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     auth_jwks_url: str | None = Field(default=None, validation_alias="RSA_AUTH_JWKS_URL")
     auth_token_use: str = Field(default="access", validation_alias="RSA_AUTH_TOKEN_USE")
 
+    # Which image is answering. Reported by /health so that "which version is running" is a
+    # question with an answer rather than an assumption, which is what makes a rollback
+    # checkable (M6.8). Unset outside a container, where the question does not arise.
+    image: str | None = Field(default=None, validation_alias="RSA_IMAGE")
+
     # How long a supervisor's decision on an escalated action stays usable (M4). The
     # architecture document fixes the default at 30 minutes and requires it to be
     # configurable: a deployment where cases sit in a queue for an hour needs a longer

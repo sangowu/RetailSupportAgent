@@ -125,35 +125,46 @@ resource "aws_vpc_security_group_egress_rule" "all" {
 
 locals {
   registry = split("/", data.terraform_remote_state.base.outputs.ecr_repository_url)[0]
+  image    = "${data.terraform_remote_state.base.outputs.ecr_repository_url}:${var.image_tag}"
 
   cloud_init = templatefile("${path.module}/../../instance/cloud-init.sh.tftpl", {
     compose_plugin_url  = var.compose_plugin_url
     region              = var.region
     registry            = local.registry
-    image               = "${data.terraform_remote_state.base.outputs.ecr_repository_url}:${var.image_tag}"
     model_key_parameter = data.terraform_remote_state.base.outputs.model_key_parameter
-    idle_minutes        = var.idle_minutes
-    max_uptime_minutes  = var.max_uptime_minutes
-    zone_id             = data.terraform_remote_state.base.outputs.demo_zone_id
-    domain              = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
-    acme_email          = var.acme_email
-    auth_issuer         = data.terraform_remote_state.base.outputs.cognito_issuer
-    auth_audience       = data.terraform_remote_state.base.outputs.cognito_client_id
 
-    // Base64 because the value is JSON and the file it lands in is read by both systemd
-    // and a shell. Subjects are opaque identifiers; the mapping decides nothing without a
-    // token the pool signed.
-    identities_b64 = base64encode(data.terraform_remote_state.base.outputs.demo_identities)
+    // Names, not values. Which image and which identities are read at every start, so
+    // changing either is a restart rather than a new machine (M6.8).
+    image_parameter      = data.terraform_remote_state.base.outputs.image_parameter
+    identities_parameter = data.terraform_remote_state.base.outputs.identities_parameter
+    idle_minutes         = var.idle_minutes
+    max_uptime_minutes   = var.max_uptime_minutes
+    zone_id              = data.terraform_remote_state.base.outputs.demo_zone_id
+    domain               = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
+    acme_email           = var.acme_email
+    auth_issuer          = data.terraform_remote_state.base.outputs.cognito_issuer
+    auth_audience        = data.terraform_remote_state.base.outputs.cognito_client_id
 
-    compose_yaml     = filebase64("${path.module}/../../instance/compose.yaml")
+    // compose.yaml and the Caddyfile are absent: they are extracted from the image at
+    // boot, so that rolling back moves the stack definition with the code.
     rsa_start        = filebase64("${path.module}/../../instance/rsa-start.sh")
     rsa_service      = filebase64("${path.module}/../../instance/rsa.service")
     idle_shutdown    = filebase64("${path.module}/../../instance/idle_shutdown.py")
     rsa_idle_service = filebase64("${path.module}/../../instance/rsa-idle.service")
     rsa_idle_timer   = filebase64("${path.module}/../../instance/rsa-idle.timer")
     update_dns       = filebase64("${path.module}/../../instance/update-dns.sh")
-    caddyfile        = filebase64("${path.module}/../../instance/Caddyfile")
   })
+}
+
+// Which version runs. Changing this changes one parameter and replaces nothing; the
+// instance re-reads it on `systemctl restart rsa`, which is what scripts/demo.py restart
+// does. Before M6.8 this value was rendered into user data, so a rollback destroyed the
+// instance and its database and reissued the certificate.
+resource "aws_ssm_parameter" "image" {
+  name        = data.terraform_remote_state.base.outputs.image_parameter
+  description = "RetailSupportAgent demo: the image the instance runs"
+  type        = "String"
+  value       = local.image
 }
 
 resource "aws_instance" "demo" {

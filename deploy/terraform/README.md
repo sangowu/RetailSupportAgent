@@ -153,6 +153,26 @@ uv run python scripts/demo.py stop
 The URL does not change across a stop. The address does, and the instance rewrites its own
 A record at every boot.
 
+## Changing the version, and rolling back
+
+```bash
+terraform -chdir=deploy/terraform/demo apply   -var="state_bucket=$BUCKET"   -var="image_tag=m6.8.1"   -var="acme_email=you@example.com"
+
+uv run python scripts/demo.py restart
+```
+
+The apply writes one Parameter Store value; the plan reads `0 to add, 1 to change, 0 to
+destroy`. The instance reads that value at every start, so the restart is what picks it up.
+Nothing is replaced, and the database and the certificate are untouched.
+
+The plan cannot show which version it is moving to: the provider marks a parameter's value
+sensitive. `uv run python scripts/demo.py status` prints the configured version and the
+running one, which is the check worth doing.
+
+**A rollback target has to be an image from M6.8 or later.** The compose file and the
+Caddyfile ship inside the image and are extracted at boot, so an older image carries no
+stack definition and cannot be started.
+
 ## Destroying it
 
 ```bash

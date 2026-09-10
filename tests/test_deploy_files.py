@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -126,17 +127,39 @@ class TestTheCloudInitTemplate:
         assert supplied - placeholders == set()
 
     def test_every_file_it_installs_exists(self) -> None:
-        for name in (
-            "compose.yaml",
-            "rsa-start.sh",
-            "rsa.service",
-            "idle_shutdown.py",
-            "rsa-idle.service",
-            "rsa-idle.timer",
-            "update-dns.sh",
-            "Caddyfile",
-        ):
+        """Read out of the `filebase64` calls rather than listed here.
+
+        A list would go stale in the direction that matters: a file added to the template
+        and not to the list is exactly the case this is for.
+        """
+        text = DEMO_TF.read_text(encoding="utf-8")
+        referenced = re.findall(
+            r'filebase64\("\$\{path\.module\}/\.\./\.\./instance/([^"]+)"\)', text
+        )
+        assert referenced, "no instance files are rendered into user data at all"
+        for name in referenced:
             assert (INSTANCE / name).is_file(), name
+
+    def test_the_stack_definition_is_not_in_user_data(self) -> None:
+        """It ships inside the image instead (M6.8).
+
+        User data runs once per machine, so a compose file written there can only be
+        changed by replacing the machine - and a rollback would then leave the old image
+        running under the new file, which is how M6.7's compose would have asked M6.6's
+        image for a `seed` service it has never heard of.
+        """
+        text = DEMO_TF.read_text(encoding="utf-8")
+        assert "instance/compose.yaml" not in text
+        assert "instance/Caddyfile" not in text
+
+    def test_the_version_is_not_in_user_data(self) -> None:
+        """The defect M6.8 exists to fix: a version in user data can only be changed by
+        destroying the instance, which discards its database and its certificate."""
+        template = TEMPLATE.read_text(encoding="utf-8")
+        assert "RSA_IMAGE=" not in template
+        assert "RSA_IDENTITIES_B64" not in template
+        assert "RSA_IMAGE_PARAMETER=" in template
+        assert "RSA_IDENTITIES_PARAMETER=" in template
 
     def test_it_enables_both_units(self) -> None:
         text = TEMPLATE.read_text(encoding="utf-8")
@@ -190,6 +213,50 @@ class TestTheShellScripts:
         assert "umask 077" in text
         assert "chmod 600 /opt/rsa/.env" in text
         assert "--with-decryption" in text
+
+
+class TestAVersionBringsItsOwnStack:
+    """The image carries how to run it, and the start script goes and gets it.
+
+    Without this, rolling the image back would leave the machine running the newest
+    compose file against an older image, and the failure would be a service that version
+    does not have rather than anything to do with the rollback.
+    """
+
+    def test_the_image_carries_the_stack_definition(self) -> None:
+        text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        assert "deploy/instance/compose.yaml /app/deploy/compose.yaml" in text
+        assert "deploy/instance/Caddyfile /app/deploy/Caddyfile" in text
+
+    def test_the_start_script_extracts_it_from_the_image(self) -> None:
+        text = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
+        assert "/app/deploy/compose.yaml" in text
+        assert "/app/deploy/Caddyfile" in text
+
+    def test_it_is_moved_into_place_only_once_both_files_are_there(self) -> None:
+        """A half-written compose file leaves the machine unable to bring up either the
+        old stack or the new one."""
+        text = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
+        assert text.index('test -s "$TMP/compose.yaml"') < text.index('mv "$TMP/compose.yaml"')
+        assert text.index('test -s "$TMP/Caddyfile"') < text.index('mv "$TMP/Caddyfile"')
+
+    def test_the_start_script_reads_the_version_rather_than_being_told_it(self) -> None:
+        text = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
+        assert "RSA_IMAGE_PARAMETER" in text
+        assert "RSA_IDENTITIES_PARAMETER" in text
+
+    def test_the_image_reaches_the_api_so_health_can_report_it(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        """A rollback that cannot be checked from the running thing is a rollback nobody
+        can confirm happened."""
+        assert "RSA_IMAGE" in instance_compose["services"]["api"]["environment"]
+
+    def test_the_running_image_is_written_where_compose_reads_it_for_down_too(self) -> None:
+        """ExecStop runs without ExecStart's environment, and `docker compose down` still
+        interpolates the image."""
+        text = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
+        assert "RSA_IMAGE=%s" in text
 
 
 class TestWhatTheInternetCanReach:

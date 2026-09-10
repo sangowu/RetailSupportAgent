@@ -22,5 +22,5 @@ output "url" {
 
 output "image" {
   description = "The exact image this environment runs"
-  value       = "${data.terraform_remote_state.base.outputs.ecr_repository_url}:${var.image_tag}"
+  value       = local.image
 }

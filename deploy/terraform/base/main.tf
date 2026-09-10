@@ -147,6 +147,43 @@ resource "aws_iam_role_policy" "read_model_key" {
   })
 }
 
+// Which subject is which retail identity, read by the instance at every start.
+//
+// Not in user data. User data runs once per machine, so a mapping written there can only
+// be changed by replacing the machine, which discards its database. Adding an account is
+// not a reason to rebuild a server (M6.8).
+//
+// A String, not a SecureString: a subject is an opaque identifier and authenticates
+// nobody on its own.
+resource "aws_ssm_parameter" "identities" {
+  name        = var.identities_parameter
+  description = "RetailSupportAgent demo: subject to retail identity and roles"
+  type        = "String"
+  value       = local.demo_identities
+}
+
+// The two values the instance re-reads at every start. Named, not a prefix wildcard, for
+// the same reason read_model_key names one parameter: this role should not be able to read
+// another project's configuration.
+resource "aws_iam_role_policy" "read_release" {
+  name = "${var.name_prefix}-read-release"
+  role = aws_iam_role.instance.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.image_parameter}",
+          "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.identities_parameter}",
+        ]
+      },
+    ]
+  })
+}
+
 // Writing archives on stop, and reading them back. Confined to one prefix so a demo
 // cannot overwrite the Terraform state that sits in the same bucket.
 resource "aws_iam_role_policy" "write_archives" {
@@ -326,4 +363,14 @@ locals {
   provisioned = {
     for name, account in var.demo_accounts : name => account if account.user_id != ""
   }
+
+  // The mapping, in the shape the instance's RSA_IDENTITIES expects. Written to Parameter
+  // Store and also exposed as an output, from one expression so the two cannot disagree.
+  demo_identities = jsonencode([
+    for name, account in local.provisioned : {
+      subject = aws_cognito_user.demo[name].sub
+      user_id = account.user_id
+      roles   = account.roles
+    }
+  ])
 }

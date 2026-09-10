@@ -63,13 +63,12 @@ output "demo_identities" {
     are opaque identifiers, not credentials: this decides nothing on its own, since the
     account still has to hold a token the pool signed.
   EOT
-  value = jsonencode([
-    for name, account in local.provisioned : {
-      subject = aws_cognito_user.demo[name].sub
-      user_id = account.user_id
-      roles   = account.roles
-    }
-  ])
+  value       = local.demo_identities
+}
+
+output "identities_parameter" {
+  description = "Where the instance reads the mapping from at every start"
+  value       = aws_ssm_parameter.identities.name
 }
 
 output "set_these_passwords" {
@@ -82,4 +81,9 @@ output "set_these_passwords" {
     for name in sort(keys(var.demo_accounts)) :
     "aws cognito-idp admin-set-user-password --region ${var.region} --user-pool-id ${aws_cognito_user_pool.demo.id} --username ${name} --password '<choose one>' --permanent"
   ]
+}
+
+output "image_parameter" {
+  description = "Where the demo layer writes, and the instance reads, the image to run"
+  value       = var.image_parameter
 }

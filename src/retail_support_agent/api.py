@@ -488,6 +488,9 @@ def create_app(
             # The start/stop scripts use this to tell whether stopping now would
             # interrupt a demo in progress.
             "active_sessions": registry.active_sessions(),
+            # Which image is answering. A rollback is only checkable if the running
+            # version can be read rather than inferred from what was last applied.
+            "image": resolved_settings.image or "unknown",
         }
         if resolved_auth is None:
             body["demo_user_id"] = user_id

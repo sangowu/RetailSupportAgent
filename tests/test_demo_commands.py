@@ -8,7 +8,10 @@ refusing to stop on silence, and not pretending a starting machine is a running 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,22 @@ def at(
     state: str, ip: str | None = "203.0.113.7", domain: str | None = "rsa.example.test"
 ) -> Instance:
     return Instance(id="i-0abc", state=state, public_ip=ip, domain=domain)
+
+
+class Answer:
+    """A stand-in for one urlopen call, used as a context manager the way urlopen is."""
+
+    def __init__(self, body: dict[str, str]) -> None:
+        self._body = json.dumps(body).encode("utf-8")
+
+    def __enter__(self) -> Answer:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
 
 
 IDLE = Busy(reachable=True)
@@ -125,6 +144,100 @@ class TestReadingTheApplication:
 
     def test_a_failed_request_is_not_idle(self) -> None:
         assert not demo.plan_stop(at("running"), Busy(reachable=False), force=False).act
+
+
+class TestRestarting:
+    """A restart is what a rollback is, so its refusals are the same as a stop's.
+
+    Bringing the stack down loses a confirmation nobody has answered, whether the machine
+    goes off afterwards or not.
+    """
+
+    def test_an_idle_instance_is_restarted(self) -> None:
+        assert demo.plan_restart(at("running"), IDLE, force=False).act
+
+    def test_unfinished_work_stops_the_restart(self) -> None:
+        plan = demo.plan_restart(at("running"), WORKING, force=False)
+        assert not plan.act
+        assert "confirmation" in plan.message
+        assert plan.exit_code == 2
+
+    def test_silence_is_not_permission(self) -> None:
+        plan = demo.plan_restart(at("running"), SILENT, force=False)
+        assert not plan.act
+        assert "--force" in plan.message
+
+    def test_force_overrides_and_says_what_it_overrode(self) -> None:
+        plan = demo.plan_restart(at("running"), WORKING, force=True)
+        assert plan.act
+        assert "confirmation" in plan.message
+
+    def test_a_stopped_instance_is_pointed_at_start_instead(self) -> None:
+        """Unlike a stop, this is not a no-op: the version is read at start, so starting
+        it is what the operator wanted and saying so is more use than doing nothing."""
+        plan = demo.plan_restart(at("stopped", ip=None), None, force=False)
+        assert not plan.act
+        assert "start" in plan.message
+        assert plan.exit_code == 1
+
+    def test_a_machine_in_motion_is_left_alone(self) -> None:
+        assert not demo.plan_restart(at("pending"), None, force=False).act
+
+    def test_no_environment_is_reported_not_crashed(self) -> None:
+        assert not demo.plan_restart(None, None, force=False).act
+
+
+class TestWhichVersionIsRunning:
+    def test_an_environment_without_the_parameter_is_reported_not_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One built before M6.8 has no version parameter. Saying so beats a failure that
+        reads like a broken tool."""
+
+        def missing(*_args: object, **_kwargs: object) -> str:
+            raise demo.DemoError("ParameterNotFound")
+
+        monkeypatch.setattr(demo, "aws", missing)
+        assert demo.configured_image("eu-west-1") is None
+
+    def test_the_configured_version_is_read_from_one_place(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, tuple[str, ...]] = {}
+
+        def capture(*args: str, **_kwargs: object) -> str:
+            seen["args"] = args
+            return "registry/rsa-app:m6.8"
+
+        monkeypatch.setattr(demo, "aws", capture)
+        assert demo.configured_image("eu-west-1") == "registry/rsa-app:m6.8"
+        assert demo.IMAGE_PARAMETER in seen["args"]
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ({"status": "ok", "image": "registry/rsa-app:m6.8"}, "registry/rsa-app:m6.8"),
+            # `/health` answers "unknown" when the setting is absent. A caller comparing
+            # versions must not treat that string as one, or a restart would wait for a
+            # version literally named unknown and time out.
+            ({"status": "ok", "image": "unknown"}, None),
+            ({"status": "ok"}, None),
+        ],
+    )
+    def test_the_running_version_is_read_from_the_thing_that_is_running(
+        self, monkeypatch: pytest.MonkeyPatch, body: dict[str, str], expected: str | None
+    ) -> None:
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Answer(body))
+        assert demo.running_image("https://rsa.example.test") == expected
+
+    def test_a_service_that_does_not_answer_is_not_a_version(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*_args: object, **_kwargs: object) -> object:
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", refuse)
+        assert demo.running_image("https://rsa.example.test") is None
 
 
 class TestUrls:
