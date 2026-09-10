@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -35,10 +35,12 @@ from retail_support_agent.client import (
     Account,
     Api,
     ApiError,
+    Approval,
     ConflictError,
     Event,
     ForbiddenError,
     Reply,
+    Ticket,
     UnauthenticatedError,
     UnavailableError,
 )
@@ -214,10 +216,21 @@ class Visitor:
     refresh_token: str | None = None
     session_id: str = ""
     account: Account | None = None
+    # What this account can see of the case work (M7.3). Held here rather than read on
+    # every render, so one place decides what is on screen and a failed refresh leaves
+    # the last known state visible instead of an empty table that looks like "no cases".
+    cases: tuple[Ticket, ...] = ()
+    approvals: tuple[Approval, ...] = ()
+    assignable: tuple[Account, ...] = ()
+    # The case whose session is loaded in the conversation, when one is.
+    working: int | None = None
 
     @property
     def signed_in(self) -> bool:
         return self.account is not None
+
+    def may(self, permission: str) -> bool:
+        return holds(self.account, permission)
 
 
 def api_from_env() -> Api:
@@ -240,15 +253,20 @@ def cognito_from_env() -> Cognito | None:
     return Cognito(region=region, client_id=client_id)
 
 
-def describe(account: Account) -> str:
+def describe(account: Account, working: int | None = None) -> str:
     """The account line on the page.
 
     It names the retail identity and the roles because they are the evidence: they come
     from the database for the signed-in subject, and no field on this page can change
     them.
+
+    From M7.3 it also names the case being worked, when one is. An agent acting on a
+    customer's orders inside their own session should not have to remember whose.
     """
     roles = ", ".join(account.roles) or "no roles"
     line = f"**Acting as** `{account.user_id}` · **roles:** {roles}"
+    if working is not None:
+        line += f" · **working case {working}**"
     if account.auth != "required":
         line += " · authentication is not configured on this service"
     return line
@@ -291,6 +309,76 @@ def retrying(visitor: Visitor, cognito: Cognito | None, call: Any) -> tuple[Visi
         return refreshed, call(refreshed.token)
 
 
+# ---- what an account may see (M7.3) -----------------------------------------
+#
+# Which sections a visitor gets comes from the permissions `/me` reports, which come from
+# the database. Hiding is not enforcement: every route refuses a caller who lacks the
+# permission, and `tests/test_auth.py` asserts that route by route. The page hides
+# sections because offering an action that will be refused is a bad interface.
+#
+# The supervisor's two absences are the interesting part. They assign cases and decide
+# escalations and cannot work a case, because an approver who also performs the action is
+# not an approver.
+
+CASES = "ticket:read"
+WORK = "ticket:work"
+ASSIGN = "ticket:assign"
+DECIDE = "escalation:decide"
+
+
+def holds(account: Account | None, permission: str) -> bool:
+    return account is not None and permission in account.permissions
+
+
+def cases_table(tickets: Sequence[Ticket]) -> list[list[str]]:
+    """The case list, as rows. Empty is a state worth rendering, not a blank panel."""
+    return [
+        [
+            str(ticket.id),
+            ticket.state,
+            ticket.user_id,
+            ticket.summary,
+            ticket.assignee or "unassigned",
+            ticket.resolution or "",
+        ]
+        for ticket in tickets
+    ]
+
+
+CASE_COLUMNS = ["case", "state", "customer", "summary", "assignee", "resolution"]
+
+
+def approvals_table(approvals: Sequence[Approval]) -> list[list[str]]:
+    """One row per escalation. The arguments are shown whole: they are what is being
+    decided, and a summary would be the page deciding which parts matter."""
+    return [
+        [
+            str(approval.id),
+            approval.tool_name,
+            ", ".join(f"{k}={v!r}" for k, v in sorted(approval.arguments.items())),
+            approval.session_id,
+            approval.expires_at,
+        ]
+        for approval in approvals
+    ]
+
+
+APPROVAL_COLUMNS = ["request", "action", "arguments", "session", "expires"]
+
+
+def assignee_choices(accounts: Sequence[Account]) -> list[tuple[str, str]]:
+    """Who a case can be given to, as (what a person reads, what the API needs).
+
+    A subject is an opaque identifier. Showing one and asking a supervisor to pick it is
+    the difference between a control that works and one that exists.
+    """
+    return [
+        (f"{account.user_id} · {', '.join(account.roles) or 'no roles'}", account.subject or "")
+        for account in accounts
+        if account.subject
+    ]
+
+
 def build_demo() -> gr.Blocks:
     api = api_from_env()
     cognito = cognito_from_env()
@@ -319,6 +407,38 @@ def build_demo() -> gr.Blocks:
             with gr.Row():
                 reset = gr.Button("New session")
                 sign_out = gr.Button("Sign out", visible=cognito is not None)
+
+            # M4 built these and nothing could reach them. Which of the three appears is
+            # decided by the permissions `/me` reports, which the database decides. The
+            # page hides what an account may not do because offering an action that will
+            # be refused is a bad interface; the refusal itself lives in the service.
+            with gr.Accordion("Cases", open=False, visible=False) as cases_panel:
+                cases = gr.Dataframe(headers=CASE_COLUMNS, interactive=False, wrap=True, label=None)
+                with gr.Row():
+                    case_id = gr.Number(label="Case", precision=0, minimum=0, scale=1)
+                    refresh = gr.Button("Refresh", scale=1)
+                with gr.Row(visible=False) as assign_row:
+                    assignee = gr.Dropdown(label="Assign to", choices=[], scale=3)
+                    do_assign = gr.Button("Assign", scale=1)
+                with gr.Row(visible=False) as work_row:
+                    work = gr.Button("Work this case", variant="primary")
+                with gr.Row() as close_row:
+                    close_as = gr.Radio(
+                        ["resolved", "rejected"], value="resolved", label="Close as", scale=1
+                    )
+                    resolution = gr.Textbox(label="What happened", scale=3)
+                    close_case = gr.Button("Close", scale=1)
+                cases_message = gr.Markdown("")
+
+            with gr.Accordion("Approvals", open=False, visible=False) as approvals_panel:
+                approvals = gr.Dataframe(
+                    headers=APPROVAL_COLUMNS, interactive=False, wrap=True, label=None
+                )
+                with gr.Row():
+                    approval_id = gr.Number(label="Request", precision=0, minimum=0, scale=1)
+                    approve = gr.Button("Approve", variant="primary", scale=1)
+                    reject = gr.Button("Reject", scale=1)
+                approvals_message = gr.Markdown("")
 
         # ---- handlers ---------------------------------------------------
         #
@@ -453,12 +573,223 @@ def build_demo() -> gr.Blocks:
             fresh = replace(visitor, session_id=uuid.uuid4().hex)
             return _stay(fresh, [], "", Situation(label="new session"))
 
+        # ---- the case work (M7.3) ---------------------------------------
+        #
+        # Every one of these is a call the service authorizes on its own. What the page
+        # adds is knowing which controls to offer and reporting what came back.
+
+        def with_cases(visitor: Visitor) -> tuple[Visitor, Situation | None]:
+            """Read what this account may see. Returns the visitor and any failure.
+
+            A failure is returned rather than raised because it must not stop the page
+            from rendering: a supervisor whose approvals query fails still has a
+            conversation, and an empty table that means "the query failed" would read as
+            "there are no cases".
+            """
+            if not visitor.signed_in:
+                return visitor, None
+            try:
+                if visitor.may(CASES):
+                    visitor, tickets = retrying(visitor, cognito, lambda token: api.tickets(token))
+                    visitor = replace(visitor, cases=tickets)
+                if visitor.may(ASSIGN):
+                    visitor, people = retrying(
+                        visitor, cognito, lambda token: api.assignable(token)
+                    )
+                    visitor = replace(visitor, assignable=people)
+                if visitor.may(DECIDE):
+                    visitor, waiting = retrying(
+                        visitor, cognito, lambda token: api.approvals(token)
+                    )
+                    visitor = replace(visitor, approvals=waiting)
+            except ApiError as exc:
+                return visitor, situation_of_failure(exc)
+            return visitor, None
+
+        def refreshed(
+            visitor: Visitor, history: list[dict[str, Any]], note: str
+        ) -> tuple[Any, ...]:
+            """Re-read the case work and render, with a note about what just happened."""
+            visitor, failure = with_cases(visitor)
+            if failure is not None and failure.signed_out:
+                return _signed_out(render(failure))
+            trouble = render(failure) if failure is not None else ""
+            return _stay(
+                visitor,
+                history,
+                "",
+                Situation(label="answered"),
+                cases_note=note or trouble,
+            )
+
+        def do_refresh(visitor: Visitor, history: list[dict[str, Any]]) -> tuple[Any, ...]:
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            return refreshed(visitor, history, "")
+
+        def act_on_case(
+            visitor: Visitor,
+            history: list[dict[str, Any]],
+            call: Any,
+            said: Any,
+        ) -> tuple[Any, ...]:
+            """Run one case action and re-read the list.
+
+            Re-reading rather than patching the row: the service decides what a case looks
+            like after an action, and a page that guessed would show a state the database
+            does not have.
+            """
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            try:
+                visitor, outcome = retrying(visitor, cognito, call)
+            except UnauthenticatedError as exc:
+                return _signed_out(render(situation_of_failure(exc)))
+            except ApiError as exc:
+                return refreshed(visitor, history, render(situation_of_failure(exc)))
+            return refreshed(visitor, history, said(outcome))
+
+        def do_assign_click(
+            visitor: Visitor, history: list[dict[str, Any]], number: float | None, subject: str
+        ) -> tuple[Any, ...]:
+            case = int(number or 0)
+            if not case or not subject:
+                return refreshed(visitor, history, "**Pick a case and somebody to give it to.**")
+            return act_on_case(
+                visitor,
+                history,
+                lambda token: api.assign(token, case, subject),
+                lambda ticket: f"**Case {ticket.id} is with {ticket.assignee}.**",
+            )
+
+        def do_close(
+            visitor: Visitor,
+            history: list[dict[str, Any]],
+            number: float | None,
+            state: str,
+            resolution_text: str,
+        ) -> tuple[Any, ...]:
+            case = int(number or 0)
+            if not case or not resolution_text.strip():
+                return refreshed(visitor, history, "**Pick a case and say what happened.**")
+            return act_on_case(
+                visitor,
+                history,
+                lambda token: api.close(token, case, state, resolution_text.strip()),
+                lambda ticket: (
+                    f"**Case {ticket.id} is {ticket.state}.** The customer's session runs again."
+                ),
+            )
+
+        def do_work(visitor: Visitor, number: float | None) -> tuple[Any, ...]:
+            """Open the session in which this account works a case.
+
+            Their own session, not the customer's: the customer's conversation belongs to
+            the customer, and M3's ownership check enforces that against the person
+            helping them too. The conversation on screen is cleared because it is a
+            different conversation.
+            """
+            case = int(number or 0)
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            if not case:
+                return refreshed(visitor, [], "**Pick a case to work.**")
+            try:
+                visitor, opened = retrying(visitor, cognito, lambda token: api.work(token, case))
+            except UnauthenticatedError as exc:
+                return _signed_out(render(situation_of_failure(exc)))
+            except ApiError as exc:
+                return refreshed(visitor, [], render(situation_of_failure(exc)))
+            visitor = replace(visitor, session_id=opened.session_id, working=opened.ticket_id)
+            return refreshed(
+                visitor,
+                [],
+                f"**Working case {opened.ticket_id} for {opened.user_id}**, in a session of "
+                "your own. What you do here is recorded against your account.",
+            )
+
+        def do_decide(
+            visitor: Visitor,
+            history: list[dict[str, Any]],
+            number: float | None,
+            approve_it: bool,
+        ) -> tuple[Any, ...]:
+            request = int(number or 0)
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            if not request:
+                return _approvals_note(visitor, history, "**Pick a request to decide.**")
+            try:
+                visitor, state = retrying(
+                    visitor, cognito, lambda token: api.decide(token, request, approve_it)
+                )
+            except UnauthenticatedError as exc:
+                return _signed_out(render(situation_of_failure(exc)))
+            except ApiError as exc:
+                # The refusal that matters is 403 "Nobody may decide their own escalation",
+                # which is the separation of duties this project keeps claiming.
+                return _approvals_note(visitor, history, render(situation_of_failure(exc)))
+            return _approvals_note(visitor, history, f"**Request {request} is {state}.**")
+
+        def _approvals_note(
+            visitor: Visitor, history: list[dict[str, Any]], note: str
+        ) -> tuple[Any, ...]:
+            visitor, failure = with_cases(visitor)
+            if failure is not None and failure.signed_out:
+                return _signed_out(render(failure))
+            return _stay(
+                visitor,
+                history,
+                "",
+                Situation(label="answered"),
+                approvals_note=note,
+            )
+
         # ---- shapes of the update tuple ---------------------------------
         #
         # The box and the Send button are part of the state, not decoration around it
         # (M7.2). Three states cannot be advanced by typing, and a page that leaves the
         # box open in those is offering an action whose only possible answer is the
         # sentence already on screen.
+        #
+        # From M7.3 the case sections are in here too, so one failure path cannot leave
+        # the page half switched: signed out with somebody's cases still on screen, or a
+        # supervisor's approval queue visible to the customer who signed in after them.
+
+        def _hidden() -> tuple[Any, ...]:
+            """The case sections, closed. What a signed-out page and a customer share."""
+            return (
+                gr.update(visible=False),
+                [],
+                gr.update(visible=False),
+                gr.update(choices=[], value=None),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                "",
+                gr.update(visible=False),
+                [],
+                "",
+            )
+
+        def _sections(visitor: Visitor, cases_note: str, approvals_note: str) -> tuple[Any, ...]:
+            """The case sections for one account.
+
+            Visible exactly when the permission is held. Hiding is not enforcement - every
+            route refuses a caller who lacks the permission, and tests/test_auth.py asserts
+            that route by route - but a control that will be refused is not worth offering.
+            """
+            return (
+                gr.update(visible=visitor.may(CASES)),
+                cases_table(visitor.cases),
+                gr.update(visible=visitor.may(ASSIGN)),
+                gr.update(choices=assignee_choices(visitor.assignable)),
+                gr.update(visible=visitor.may(WORK)),
+                gr.update(visible=visitor.may(CASES)),
+                cases_note,
+                gr.update(visible=visitor.may(DECIDE)),
+                approvals_table(visitor.approvals),
+                approvals_note,
+            )
 
         def _signed_out(message: str) -> tuple[Any, ...]:
             return (
@@ -471,6 +802,7 @@ def build_demo() -> gr.Blocks:
                 gr.update(value="", interactive=True, placeholder=OPEN_PLACEHOLDER),
                 gr.update(interactive=True),
                 "",
+                *_hidden(),
             )
 
         def _signed_in(visitor: Visitor, message: str) -> tuple[Any, ...]:
@@ -485,6 +817,7 @@ def build_demo() -> gr.Blocks:
                 gr.update(value="", interactive=True, placeholder=OPEN_PLACEHOLDER),
                 gr.update(interactive=True),
                 "",
+                *_sections(visitor, "", ""),
             )
 
         def _stay(
@@ -492,6 +825,8 @@ def build_demo() -> gr.Blocks:
             history: list[dict[str, Any]],
             box_value: str,
             situation: Situation,
+            cases_note: str = "",
+            approvals_note: str = "",
         ) -> tuple[Any, ...]:
             assert visitor.account is not None
             return (
@@ -499,7 +834,7 @@ def build_demo() -> gr.Blocks:
                 gr.update(visible=False),
                 gr.update(visible=True),
                 "",
-                describe(visitor.account),
+                describe(visitor.account, visitor.working),
                 history,
                 gr.update(
                     value=box_value,
@@ -508,6 +843,7 @@ def build_demo() -> gr.Blocks:
                 ),
                 gr.update(interactive=situation.can_send),
                 render(situation),
+                *_sections(visitor, cases_note, approvals_note),
             )
 
         outputs = [
@@ -520,6 +856,16 @@ def build_demo() -> gr.Blocks:
             box,
             send,
             status,
+            cases_panel,
+            cases,
+            assign_row,
+            assignee,
+            work_row,
+            close_row,
+            cases_message,
+            approvals_panel,
+            approvals,
+            approvals_message,
         ]
 
         demo.load(enter, visitor_state, outputs)
@@ -535,6 +881,19 @@ def build_demo() -> gr.Blocks:
         send.click(respond, [box, chatbot, visitor_state], outputs)
         box.submit(respond, [box, chatbot, visitor_state], outputs)
         reset.click(start_over, visitor_state, outputs)
+
+        refresh.click(do_refresh, [visitor_state, chatbot], outputs)
+        do_assign.click(do_assign_click, [visitor_state, chatbot, case_id, assignee], outputs)
+        close_case.click(do_close, [visitor_state, chatbot, case_id, close_as, resolution], outputs)
+        work.click(do_work, [visitor_state, case_id], outputs)
+        approve.click(
+            lambda v, h, n: do_decide(v, h, n, True), [visitor_state, chatbot, approval_id], outputs
+        )
+        reject.click(
+            lambda v, h, n: do_decide(v, h, n, False),
+            [visitor_state, chatbot, approval_id],
+            outputs,
+        )
 
     assert isinstance(demo, gr.Blocks)
     return demo

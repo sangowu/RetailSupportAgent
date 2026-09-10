@@ -68,6 +68,8 @@ class Reply:
     tool_calls: tuple[str, ...] = ()
     pending_confirmation: str | None = None
     stop_reason: str | None = None
+    # The case this session is behind, when it is behind one (M7.3).
+    ticket_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,52 @@ class Event:
 
 
 @dataclass(frozen=True)
+class Ticket:
+    """One case, as the service reports it (M7.3)."""
+
+    id: int
+    session_id: str
+    user_id: str
+    state: str
+    summary: str
+    requested_by: str = ""
+    assignee: str | None = None
+    resolution: str | None = None
+    created_at: str = ""
+    closed_at: str | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.state == "open"
+
+
+@dataclass(frozen=True)
+class Approval:
+    """One escalated write waiting for a decision."""
+
+    id: int
+    session_id: str
+    tool_name: str
+    arguments: Mapping[str, Any]
+    requested_by: str = ""
+    ticket_id: int | None = None
+    expires_at: str = ""
+
+
+@dataclass(frozen=True)
+class AgentSession:
+    """The session in which an assignee works a case.
+
+    Their own, not the customer's: the customer's conversation belongs to the customer,
+    and M3's ownership check enforces that against the person helping them too.
+    """
+
+    session_id: str
+    ticket_id: int
+    user_id: str
+
+
+@dataclass(frozen=True)
 class Account:
     """Who the service says the caller is, after the database has decided.
 
@@ -98,6 +146,9 @@ class Account:
     roles: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
     auth: str = "disabled"
+    # Answered by `/assignable` and never by `/me`: naming somebody else is the one action
+    # that needs a subject, and a page that never sees its own cannot misplace it.
+    subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,13 +162,7 @@ class Api:
         return self._call("GET", "/health", token=None)
 
     def me(self, token: str | None) -> Account:
-        body = self._call("GET", "/me", token=token)
-        return Account(
-            user_id=str(body.get("user_id", "")),
-            roles=tuple(body.get("roles") or ()),
-            permissions=tuple(body.get("permissions") or ()),
-            auth=str(body.get("auth", "disabled")),
-        )
+        return _account(self._call("GET", "/me", token=token))
 
     def chat(self, token: str | None, session_id: str, message: str) -> Reply:
         body = self._call(
@@ -132,6 +177,7 @@ class Api:
             tool_calls=tuple(body.get("tool_calls") or ()),
             pending_confirmation=body.get("pending_confirmation"),
             stop_reason=body.get("stop_reason"),
+            ticket_id=body.get("ticket_id"),
         )
 
     def chat_stream(self, token: str | None, session_id: str, message: str) -> Iterator[Event]:
@@ -166,6 +212,66 @@ class Api:
         quoted = urllib.parse.quote(session_id, safe="")
         self._call("POST", f"/session/{quoted}/reset", token=token)
 
+    # ---- cases and escalations (M7.3) -----------------------------------
+    #
+    # Seven routes M4 built and nothing could reach. The narrowing is the service's: a
+    # supervisor's `/tickets` answers with every case and an agent's with their own, and
+    # this client does not filter, because "an agent cannot widen their own visibility"
+    # is a rule and a client-side filter is a preference.
+
+    def tickets(self, token: str | None, open_only: bool = False) -> tuple[Ticket, ...]:
+        body = self._call_list(
+            "GET",
+            f"/tickets?open_only={'true' if open_only else 'false'}",
+            token=token,
+        )
+        return tuple(_ticket(row) for row in body)
+
+    def assignable(self, token: str | None) -> tuple[Account, ...]:
+        body = self._call_list("GET", "/assignable", token=token)
+        return tuple(_account(row) for row in body)
+
+    def assign(self, token: str | None, ticket_id: int, assignee: str) -> Ticket:
+        return _ticket(
+            self._call(
+                "POST",
+                f"/tickets/{ticket_id}/assign",
+                token=token,
+                payload={"assignee": assignee},
+            )
+        )
+
+    def close(self, token: str | None, ticket_id: int, state: str, resolution: str) -> Ticket:
+        return _ticket(
+            self._call(
+                "POST",
+                f"/tickets/{ticket_id}/close",
+                token=token,
+                payload={"state": state, "resolution": resolution},
+            )
+        )
+
+    def work(self, token: str | None, ticket_id: int) -> AgentSession:
+        body = self._call("POST", f"/tickets/{ticket_id}/session", token=token, payload={})
+        return AgentSession(
+            session_id=str(body.get("session_id", "")),
+            ticket_id=int(body.get("ticket_id", 0)),
+            user_id=str(body.get("user_id", "")),
+        )
+
+    def approvals(self, token: str | None) -> tuple[Approval, ...]:
+        body = self._call_list("GET", "/approvals", token=token)
+        return tuple(_approval(row) for row in body)
+
+    def decide(self, token: str | None, approval_id: int, approve: bool) -> str:
+        body = self._call(
+            "POST",
+            f"/approvals/{approval_id}/decision",
+            token=token,
+            payload={"approve": approve},
+        )
+        return str(body.get("state", ""))
+
     def _request(
         self,
         method: str,
@@ -187,6 +293,12 @@ class Api:
             f"{self.base_url.rstrip('/')}{path}", data=data, method=method, headers=headers
         )
 
+    def _call_list(self, method: str, path: str, *, token: str | None) -> list[Mapping[str, Any]]:
+        """A route that answers with a list. Separate from `_call` so neither has to
+        guess which shape it is holding."""
+        body = self._raw(self._request(method, path, token=token, payload=None))
+        return [row for row in body if isinstance(row, dict)] if isinstance(body, list) else []
+
     def _call(
         self,
         method: str,
@@ -195,7 +307,10 @@ class Api:
         token: str | None,
         payload: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        request = self._request(method, path, token=token, payload=payload)
+        body = self._raw(self._request(method, path, token=token, payload=payload))
+        return body if isinstance(body, dict) else {}
+
+    def _raw(self, request: urllib.request.Request) -> Any:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
@@ -204,8 +319,47 @@ class Api:
             # `from None`: the chained exception holds `request`, and `request.headers`
             # holds the bearer token. A traceback that reached a log would carry it.
             raise _refusal(exc) from None
+        except ApiError:
+            raise
         except Exception:
             raise UnavailableError("The service is not answering.") from None
+
+
+def _account(body: Mapping[str, Any]) -> Account:
+    return Account(
+        user_id=str(body.get("user_id", "")),
+        roles=tuple(body.get("roles") or ()),
+        permissions=tuple(body.get("permissions") or ()),
+        auth=str(body.get("auth", "disabled")),
+        subject=body.get("subject"),
+    )
+
+
+def _ticket(body: Mapping[str, Any]) -> Ticket:
+    return Ticket(
+        id=int(body.get("id", 0)),
+        session_id=str(body.get("session_id", "")),
+        user_id=str(body.get("user_id", "")),
+        state=str(body.get("state", "")),
+        summary=str(body.get("summary", "")),
+        requested_by=str(body.get("requested_by", "")),
+        assignee=body.get("assignee"),
+        resolution=body.get("resolution"),
+        created_at=str(body.get("created_at", "")),
+        closed_at=body.get("closed_at"),
+    )
+
+
+def _approval(body: Mapping[str, Any]) -> Approval:
+    return Approval(
+        id=int(body.get("id", 0)),
+        session_id=str(body.get("session_id", "")),
+        tool_name=str(body.get("tool_name", "")),
+        arguments=dict(body.get("arguments") or {}),
+        requested_by=str(body.get("requested_by", "")),
+        ticket_id=body.get("ticket_id"),
+        expires_at=str(body.get("expires_at", "")),
+    )
 
 
 def _events(response: Any) -> Iterator[Event]:
@@ -253,6 +407,7 @@ def _event(raw: str) -> Event:
             tool_calls=tuple(body.get("tool_calls") or ()),
             pending_confirmation=body.get("pending_confirmation"),
             stop_reason=body.get("stop_reason"),
+            ticket_id=body.get("ticket_id"),
         ),
     )
 

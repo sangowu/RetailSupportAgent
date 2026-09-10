@@ -204,15 +204,35 @@ class TestThePageIsWiredConsistently:
         ]
         assert len(helpers) == 3
         for helper in helpers:
-            returned = [
-                node.value
-                for node in ast.walk(helper)
-                if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
-            ]
+            returned = self.returned_tuples(helper)
             assert returned, helper.name
             for tup in returned:
-                assert isinstance(tup, ast.Tuple)
-                assert len(tup.elts) == width, helper.name
+                assert self.width_of(tup, body) == width, helper.name
+
+    @classmethod
+    def width_of(cls, tup: ast.Tuple, body: ast.FunctionDef) -> int:
+        """How many components a returned tuple actually fills.
+
+        `*_sections(...)` is one element to the parser and ten to Gradio, so a starred
+        call is resolved to the width of what that helper returns. Without this the check
+        passes on a tuple that is nine components short.
+        """
+        total = 0
+        for element in tup.elts:
+            if not isinstance(element, ast.Starred):
+                total += 1
+                continue
+            call = element.value
+            assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name), ast.dump(call)
+            inner = next(
+                node
+                for node in ast.walk(body)
+                if isinstance(node, ast.FunctionDef) and node.name == call.func.id
+            )
+            widths = {cls.width_of(one, body) for one in cls.returned_tuples(inner)}
+            assert len(widths) == 1, call.func.id
+            total += widths.pop()
+        return total
 
     def test_a_turn_never_writes_into_the_sign_in_area(self) -> None:
         """And a sign-out never writes into the conversation's.

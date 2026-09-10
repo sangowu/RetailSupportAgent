@@ -95,6 +95,15 @@ variable "demo_accounts" {
     // assigns, and an approver who also performs the action is not an approver.
     sam = { user_id = "ava_moore_2033", roles = ["supervisor"] }
 
+    // The account that works a case. Added in M7.3, because until then the demo could
+    // escalate and nothing could ever pick the case up: the two customers cannot, and a
+    // supervisor deliberately holds no ticket:work. An escalation was a one-way door.
+    //
+    // The retail identity is Ivan's, so an agent working Ava's case is visibly acting on
+    // somebody else's orders under their own account, which is the thing the audit trail
+    // is for.
+    mia = { user_id = "ivan_santos_6635", roles = ["agent"] }
+
     // In the pool, not in the database. Signs in, and every action answers 403.
     nobody = { user_id = "", roles = [] }
   }
