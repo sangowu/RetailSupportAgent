@@ -36,17 +36,20 @@ def number(pattern: str, text: str) -> int:
     return int(found.group(1))
 
 
-def load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+def load(path: Path) -> dict[str, Any]:
+    content = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(content, dict), f"{path} must contain a YAML mapping"
+    assert all(isinstance(key, str) for key in content), f"{path} must use string keys"
+    return content
 
 
 @pytest.fixture(scope="module")
-def local_compose() -> dict:
+def local_compose() -> dict[str, Any]:
     return load(REPO / "compose.yaml")
 
 
 @pytest.fixture(scope="module")
-def instance_compose() -> dict:
+def instance_compose() -> dict[str, Any]:
     return load(INSTANCE / "compose.yaml")
 
 
@@ -56,13 +59,15 @@ class TestTheTwoComposeFiles:
     They are separate files because the differences are real, and separate files drift.
     """
 
-    def test_they_define_the_same_services(self, local_compose, instance_compose) -> None:
+    def test_they_define_the_same_services(
+        self, local_compose: dict[str, Any], instance_compose: dict[str, Any]
+    ) -> None:
         assert set(local_compose["services"]) == set(SERVICES)
         assert set(instance_compose["services"]) == set(SERVICES) | set(INSTANCE_ONLY)
 
     @pytest.mark.parametrize("service", SERVICES)
     def test_each_shared_service_runs_the_same_command(
-        self, service: str, local_compose, instance_compose
+        self, service: str, local_compose: dict[str, Any], instance_compose: dict[str, Any]
     ) -> None:
         assert local_compose["services"][service].get("command") == instance_compose["services"][
             service
@@ -70,7 +75,7 @@ class TestTheTwoComposeFiles:
 
     @pytest.mark.parametrize("service", ("migrate", "seed", "api", "ui"))
     def test_each_service_is_given_the_same_settings(
-        self, service: str, local_compose, instance_compose
+        self, service: str, local_compose: dict[str, Any], instance_compose: dict[str, Any]
     ) -> None:
         """The names, not the values: the database host is the same, the key is not."""
         assert set(local_compose["services"][service]["environment"]) == set(
@@ -79,7 +84,7 @@ class TestTheTwoComposeFiles:
 
     @pytest.mark.parametrize("service", ("db", "api", "ui"))
     def test_each_long_running_service_has_a_health_check(
-        self, service: str, instance_compose
+        self, service: str, instance_compose: dict[str, Any]
     ) -> None:
         """`docker compose up --wait` returns when health checks pass.
 
@@ -88,14 +93,16 @@ class TestTheTwoComposeFiles:
         """
         assert "healthcheck" in instance_compose["services"][service]
 
-    def test_migrations_run_once_and_are_not_restarted(self, instance_compose) -> None:
+    def test_migrations_run_once_and_are_not_restarted(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
         migrate = instance_compose["services"]["migrate"]
         assert migrate["restart"] == "no"
         for dependent in ("api", "ui"):
             condition = instance_compose["services"][dependent]["depends_on"]["migrate"]
             assert condition["condition"] == "service_completed_successfully"
 
-    def test_the_instance_file_names_no_key(self, instance_compose) -> None:
+    def test_the_instance_file_names_no_key(self, instance_compose: dict[str, Any]) -> None:
         """Every value must be a substitution, never a literal.
 
         The key reaches the instance from Parameter Store at boot. A default here would put
@@ -106,7 +113,7 @@ class TestTheTwoComposeFiles:
             assert value.startswith("${") and value.endswith("}")
 
     def test_the_instance_file_requires_an_image_rather_than_defaulting(
-        self, instance_compose
+        self, instance_compose: dict[str, Any]
     ) -> None:
         for service in ("migrate", "seed", "api", "ui"):
             assert instance_compose["services"][service]["image"].startswith("${RSA_IMAGE:?")
@@ -128,10 +135,14 @@ class TestTheCloudInitTemplate:
         block = text[text.index("templatefile(") : text.index('resource "aws_instance"')]
         return set(re.findall(r"^\s{4}(\w+)\s*=", block, re.MULTILINE))
 
-    def test_every_placeholder_is_supplied(self, placeholders, supplied) -> None:
+    def test_every_placeholder_is_supplied(
+        self, placeholders: set[str], supplied: set[str]
+    ) -> None:
         assert placeholders - supplied == set()
 
-    def test_nothing_is_supplied_that_the_template_ignores(self, placeholders, supplied) -> None:
+    def test_nothing_is_supplied_that_the_template_ignores(
+        self, placeholders: set[str], supplied: set[str]
+    ) -> None:
         """Terraform errors on an unused variable, so this would break an apply."""
         assert supplied - placeholders == set()
 
@@ -415,17 +426,19 @@ class TestWhatTheInternetCanReach:
     in allowed_cidrs before this; now it is not routable from outside at all.
     """
 
-    def test_only_caddy_publishes_ports(self, instance_compose) -> None:
+    def test_only_caddy_publishes_ports(self, instance_compose: dict[str, Any]) -> None:
         publishing = {
             name for name, service in instance_compose["services"].items() if service.get("ports")
         }
         assert publishing == {"caddy"}
 
-    def test_caddy_publishes_exactly_eighty_and_four_four_three(self, instance_compose) -> None:
+    def test_caddy_publishes_exactly_eighty_and_four_four_three(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
         ports = {str(p).split(":")[0] for p in instance_compose["services"]["caddy"]["ports"]}
         assert ports == {"80", "443"}
 
-    def test_the_certificate_outlives_the_container(self, instance_compose) -> None:
+    def test_the_certificate_outlives_the_container(self, instance_compose: dict[str, Any]) -> None:
         """Reissuing on every start would meet Let's Encrypt's rate limit within a week."""
         volumes = instance_compose["services"]["caddy"]["volumes"]
         assert any(str(v).startswith("caddy_data:") for v in volumes)
@@ -443,7 +456,9 @@ class TestWhatTheInternetCanReach:
         for write_route in ("/chat", "/tickets", "/approvals", "/session"):
             assert write_route not in directives, write_route
 
-    def test_the_name_and_the_contact_have_no_defaults(self, instance_compose) -> None:
+    def test_the_name_and_the_contact_have_no_defaults(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
         environment = instance_compose["services"]["caddy"]["environment"]
         for key in ("RSA_DOMAIN", "RSA_ACME_EMAIL"):
             assert environment[key].startswith("${") and ":?" in environment[key]

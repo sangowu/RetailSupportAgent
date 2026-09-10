@@ -7,7 +7,6 @@ refusing to stop on silence, and not pretending a starting machine is a running 
 
 from __future__ import annotations
 
-import importlib.util
 import inspect
 import json
 import sys
@@ -15,20 +14,14 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-_spec = importlib.util.spec_from_file_location("demo", REPO / "scripts" / "demo.py")
-assert _spec and _spec.loader
-demo = importlib.util.module_from_spec(_spec)
-sys.modules["demo"] = demo
-_spec.loader.exec_module(demo)
-
-Instance = demo.Instance
-Busy = demo.Busy
+import demo
+from demo import Busy, Instance
 
 
 def at(
@@ -421,10 +414,10 @@ class TestUrls:
 
 
 class TestFindingTheInstance:
-    def test_the_domain_comes_from_the_instance_tag(self, monkeypatch) -> None:
+    def test_the_domain_comes_from_the_instance_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One source of truth: the tool already finds the instance by tag."""
 
-        def tagged(*_args: object, **_kwargs: object) -> dict:
+        def tagged(*_args: object, **_kwargs: object) -> dict[str, Any]:
             return {
                 "Reservations": [
                     {
@@ -445,10 +438,12 @@ class TestFindingTheInstance:
         assert found is not None
         assert found.url == "https://rsa.example.test"
 
-    def test_two_tagged_instances_are_refused_rather_than_guessed(self, monkeypatch) -> None:
+    def test_two_tagged_instances_are_refused_rather_than_guessed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Acting on an arbitrary one of two environments is the worst available answer."""
 
-        def two(*_args: object, **_kwargs: object) -> dict:
+        def two(*_args: object, **_kwargs: object) -> dict[str, Any]:
             return {
                 "Reservations": [
                     {
@@ -466,15 +461,19 @@ class TestFindingTheInstance:
         assert "i-0aaa" in str(caught.value)
         assert "i-0bbb" in str(caught.value)
 
-    def test_no_instances_is_none_rather_than_an_error(self, monkeypatch) -> None:
+    def test_no_instances_is_none_rather_than_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(demo, "aws", lambda *a, **k: {"Reservations": []})
         assert demo.find_instance("eu-west-1") is None
 
-    def test_terminated_instances_are_excluded_by_the_query(self, monkeypatch) -> None:
+    def test_terminated_instances_are_excluded_by_the_query(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """They keep their tags for a while, and a terminated instance is not an environment."""
-        seen: dict[str, tuple] = {}
+        seen: dict[str, tuple[str, ...]] = {}
 
-        def capture(*args: str, **kwargs: object) -> dict:
+        def capture(*args: str, **kwargs: object) -> dict[str, Any]:
             seen["args"] = args
             return {"Reservations": []}
 

@@ -232,6 +232,11 @@ it was run on. What was missing is that nobody asked what CI thought.
 This is not corrected in this change, because it is a code change and this one is
 documentation. It is the first thing to do next.
 
+**Follow-up, 2026-09-10:** the [CI test typing repair](CI_TYPE_FIX.md) fixes the 49 errors
+locally and verifies all 858 tests against isolated PostgreSQL. That follow-up has not
+yet established a new main CI result in this report; its PR checks record remote
+verification before merge. The failure above describes the original `a31ebb2` revision.
+
 ## 8. Reproduction
 
 ```bash
