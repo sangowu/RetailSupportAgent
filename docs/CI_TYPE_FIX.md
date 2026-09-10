@@ -9,7 +9,9 @@ Recorded before implementation on 2026-09-10, against `a31ebb2`.
   `test_idle_shutdown.py` (17) and `test_demo_commands.py` (14). The latest main CI
   run, [34496006219](https://github.com/sangowu/RetailSupportAgent/actions/runs/34496006219),
   fails at mypy and skips the main pytest step and baseline-integrity job.
-- Scope: test imports and annotations, PyYAML typing dependency and this repair record.
+- Initial scope: test imports and annotations, PyYAML typing dependency and this repair
+  record. Remote verification subsequently exposed a missing CI test environment;
+  the workflow setup is included in the same repair, as recorded below.
 - Controls: application and deployment code, model, prompt, reasoning settings,
   evaluation protocol, baselines, CI strictness and existing test assertions stay fixed.
 - Expected benefit: mypy succeeds so CI can reach its existing test step. No runtime
@@ -40,7 +42,8 @@ Recorded before implementation on 2026-09-10, against `a31ebb2`.
   own lockfile dependency metadata gains the new stub package.
 
 No existing assertion was removed or weakened, and no mypy override or ignore was added.
-Application code, deployment scripts and workflow definitions are unchanged.
+Application code and deployment scripts are unchanged. The workflow setup correction
+found during remote verification is recorded below; strict checks remain enabled.
 
 ### Verification
 
@@ -71,6 +74,25 @@ The initial Docker inventory approval timed out; its read-only retry succeeded. 
 first implementation check reduced mypy to the one missing stub error before dependency
 sync, and reported import-placement and line-length lint errors. Those were corrected
 before the passing checks above. No test failures were hidden by retries.
+
+### Remote verification exposed missing test prerequisites
+
+The first [PR run, 34504231665](https://github.com/sangowu/RetailSupportAgent/actions/runs/34504231665),
+passed mypy and reached pytest for the first time since M6.3. It then reported **9 failed,
+801 passed and 23 skipped**. All nine failures were `DomainError` from constructing a
+retail domain without `third_party/tau2-bench/data`, in API streaming and case-response
+tests added after M6.3. The main test job installed neither the optional benchmark
+dependencies nor the pinned data. The local 858-pass run had both prerequisites.
+
+`.github/workflows/ci.yml` now syncs the locked bench group and fetches and SHA256-verifies
+the pinned retail checkout before pytest in the main test job. This uses the same full
+test environment already verified locally. The PostgreSQL service, strict mypy checks,
+existing assertions and exclusion of billed `live_model` tests remain unchanged. The
+independent upstream pin/replay job remains a separate gate. Installing bench dependencies
+does not execute an evaluation or require model credentials.
+
+The repair PR's checks record the result of this corrected workflow; the failed first
+run is retained above rather than described as a successful verification.
 
 ## 3. Comparison
 

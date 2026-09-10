@@ -52,8 +52,12 @@ jobs:
         with:
           enable-cache: true
 
-      - name: sync dependencies (project and dev; the bench group is only for evaluation jobs)
-        run: uv sync --locked
+      # API and streaming tests construct the real retail domain even when model
+      # responses are faked. Install its dependencies and verified data so this job
+      # runs the full suite rather than failing or silently skipping domain tests.
+      # Installing bench dependencies does not run a billed evaluation.
+      - name: sync dependencies (project, dev and bench for the full test suite)
+        run: uv sync --locked --group bench
 
       - name: ruff format
         run: uv run ruff format --check .
@@ -63,6 +67,9 @@ jobs:
 
       - name: mypy
         run: uv run mypy
+
+      - name: fetch and verify the pinned retail data for the full test suite
+        run: uv run python scripts/fetch_tau2.py
 
       - name: pytest (excluding tests that need billed model calls)
         run: uv run pytest -m "not live_model"
@@ -83,11 +90,8 @@ jobs:
       - name: fetch the pinned commit and verify every file's SHA256
         run: uv run python scripts/fetch_tau2.py
 
-      # The M2 replay tests are the only ones needing both the real data and the tau2
-      # package, and this is the only job that has the data. The static job installs
-      # neither, so it would skip them, and a skip reads exactly like a pass in the
-      # summary line. Running them here is what makes "a restart reproduces the same
-      # database" a CI-checked claim rather than a developer-machine one.
+      # Keep this focused replay check independent of the full test job so upstream
+      # pin integrity and domain replay remain separately visible gates.
       - name: install the bench group for the domain replay tests
         run: uv sync --locked --group bench
 
