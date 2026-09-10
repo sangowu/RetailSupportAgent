@@ -161,9 +161,13 @@ terraform -chdir=deploy/terraform/demo apply   -var="state_bucket=$BUCKET"   -va
 uv run python scripts/demo.py restart
 ```
 
-The apply writes one Parameter Store value; the plan reads `0 to add, 1 to change, 0 to
-destroy`. The instance reads that value at every start, so the restart is what picks it up.
-Nothing is replaced, and the database and the certificate are untouched.
+When the only difference is the image tag, the apply writes one Parameter Store value;
+the plan reads `0 to add, 1 to change, 0 to destroy`. Always inspect a refreshed full
+plan first: a change to an embedded instance script can also propose replacing the
+instance and deleting its database volume. See the
+[user-data reconciliation record](../../docs/USER_DATA_RECONCILIATION.md) and the
+[operations procedure](../../docs/OPERATIONS.md) before applying such a plan.
+The instance reads the image parameter at every start, so the restart picks up the image.
 
 The plan cannot show which version it is moving to: the provider marks a parameter's value
 sensitive. `uv run python scripts/demo.py status` prints the configured version and the

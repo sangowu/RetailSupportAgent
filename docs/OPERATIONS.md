@@ -243,9 +243,25 @@ user data as it was, so the next untargeted apply still replaces the instance, a
 at whatever moment somebody happens to run it. That is the cost of the choice, and the
 reason to record which correction is waiting rather than to rediscover it in a plan.
 
-**Waiting now**: the `>/dev/null` on the restore in `restore.sh`, corrected after M6.9's
-instance was launched and installed on it by hand at the time. The machine has the fixed
-script; the user data does not.
+For a known correction that needs only launch-metadata reconciliation, AWS supports
+updating the user-data attribute while the existing instance is stopped. This keeps
+the instance and its disk, but **does not install or execute the embedded scripts**.
+Compare the complete decoded payload first, keep the previous value for rollback, and
+refuse any unrelated difference. After the attribute update, inspect a full refreshed
+plan, save the refresh-only state update, and require a final full plan with no changes.
+Do not use this procedure as a substitute for installing a runtime fix, or change
+`user_data_replace_on_change` or ignore user data merely to suppress a replacement.
+See the [one-time reconciliation record](USER_DATA_RECONCILIATION.md) for the measured
+scope and the remaining runtime-verification boundary.
+
+**Resolved, 2026-09-10**: the `>/dev/null` correction in `restore.sh` was present in the
+repository but absent from EC2 user data. A live full plan confirmed the resulting
+replacement. The stopped instance's user-data attribute was reconciled in place and
+Terraform state refreshed; the final full plan returned exit code 0 with no changes or
+remaining drift. The instance and root volume IDs were unchanged. The earlier manual
+installation on disk is historical evidence, not something re-verified by this operation.
+Details and rollback-payload hashes are in the
+[reconciliation record](USER_DATA_RECONCILIATION.md).
 
 **The base layer has a second reason to be targeted.** An untargeted apply refreshes the
 Cloudflare records and needs `CLOUDFLARE_API_TOKEN`. Adding or removing an account touches
