@@ -215,6 +215,48 @@ the systemd units, the idle watcher, `update-dns` or `rsa-start`. Those are the 
 rather than the application. Everything the application needs - the version, the accounts,
 the identity mapping - now changes without one.
 
+**Editing an instance script is one of those changes, including after the fact.** The
+scripts are embedded in the user data with `filebase64`, so correcting a comment in
+`archive.sh` or `restore.sh` is indistinguishable to Terraform from rewriting the machine:
+`user_data_base64` differs, and the instance is replaced. The correction is real and
+belongs in the repository; what does not follow is that it should be delivered by
+destroying the database.
+
+Read the plan before believing a version change is only a version change:
+
+```bash
+terraform -chdir=deploy/terraform/demo plan -var="image_tag=<tag>" ...   # expect 0 to destroy
+```
+
+If the instance is in the plan, decide which of the two is true. **A change to how the
+machine behaves** is worth the replacement, and `demo.py archive` before it and
+`demo.py restore` after it are what M6.9 exists for. **A change already installed on the
+machine**, or one that will not matter until the instance is next replaced anyway, is not:
+apply the parameter alone.
+
+```bash
+terraform -chdir=deploy/terraform/demo apply -target=aws_ssm_parameter.image ...
+```
+
+**The drift outlives the release.** A targeted apply changes the parameter and leaves the
+user data as it was, so the next untargeted apply still replaces the instance, and does it
+at whatever moment somebody happens to run it. That is the cost of the choice, and the
+reason to record which correction is waiting rather than to rediscover it in a plan.
+
+**Waiting now**: the `>/dev/null` on the restore in `restore.sh`, corrected after M6.9's
+instance was launched and installed on it by hand at the time. The machine has the fixed
+script; the user data does not.
+
+**The base layer has a second reason to be targeted.** An untargeted apply refreshes the
+Cloudflare records and needs `CLOUDFLARE_API_TOKEN`. Adding or removing an account touches
+two resources and neither is Cloudflare's:
+
+```bash
+terraform -chdir=deploy/terraform/base apply \
+  -target='aws_cognito_user.demo["<name>"]' \
+  -target='aws_ssm_parameter.identities' ...
+```
+
 ## What survives the machine (from M6.9)
 
 The database is archived to the state bucket, under `archives/`, on **every stop**. That
