@@ -31,15 +31,17 @@ variable "image_tag" {
 
 variable "allowed_cidrs" {
   description = <<-EOT
-    Addresses that may reach the demo over TLS. There is no default and an empty list
-    closes it to everyone, which is the right way for this to fail.
+    Addresses that may reach the demo over TLS.
 
-    A certificate makes the connection private and says nothing about who is on the other
-    end. Until login is on, this is what decides who may use the demo, so it should be one
-    address rather than a network.
+    Open by default since M6.7. What an unauthenticated visitor can reach is a sign-in
+    form; every route behind it requires a token the user pool signed, and what the holder
+    may do is read from the database. An address list is still available and still worth
+    setting for an environment nobody outside is meant to open.
+
+    An empty list closes it to everyone, which remains the right way for this to fail.
   EOT
   type        = list(string)
-  default     = []
+  default     = ["0.0.0.0/0"]
 }
 
 variable "instance_type" {

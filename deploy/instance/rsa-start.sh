@@ -24,6 +24,13 @@ aws ssm get-parameter --region "$REGION" --name "$PARAMETER" --with-decryption \
   --query 'Parameter.Value' --output text > /opt/rsa/.model-key
 printf 'DASHSCOPE_API_KEY=%s\n' "$(cat /opt/rsa/.model-key)" > /opt/rsa/.env
 rm -f /opt/rsa/.model-key
+
+# Which token subject is which retail identity. Not a credential - an account still needs a
+# token the pool signed - but it is JSON, so it is carried base64 through the environment
+# file and single-quoted here, where compose reads it. The JSON contains no single quote.
+if [ -n "${RSA_IDENTITIES_B64:-}" ]; then
+  printf "RSA_IDENTITIES='%s'\n" "$(printf '%s' "$RSA_IDENTITIES_B64" | base64 -d)" >> /opt/rsa/.env
+fi
 chmod 600 /opt/rsa/.env
 
 cd /opt/rsa && docker compose up -d --wait

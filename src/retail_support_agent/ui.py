@@ -1,26 +1,43 @@
-"""Minimal Gradio demo UI.
+"""The demo UI: sign in, then talk to the API as the account you signed in as.
 
-M0.3 needs only enough interface to run the three flows: fixed simulated identity,
-bound to 127.0.0.1, no public share link. A real interface is M7.
+Until M6.7 this page built a `RetailAgent` in its own process under a hard-coded user id.
+That made the demo the one path in the system that skipped authentication, session
+ownership and the role table: whoever opened the page acted as `ava_moore_2033`. The page
+now signs in against the user pool and calls the API with the resulting token, so what a
+visitor may do is decided by the same code that decides it for any other caller.
 
-The UI shows three states explicitly - answered, awaiting confirmation, denied -
-because "writes require explicit confirmation" is this project's central claim and
-must not be buried in conversation text.
+Two rules carry the identity handling:
+
+1. **The browser never receives a token.** Sign-in happens in this process and the tokens
+   live in `gr.State`, which is per browser session and in this process's memory. Gradio
+   splits one interaction into a POST and a server-sent event stream, so a credential the
+   client had to attach would have to be attached to both; not giving it one removes the
+   problem rather than solving it twice.
+2. **Nothing here decides what an account may do.** The roles and permissions on the page
+   are read from `/me`, which reads them from the database. This module renders them.
+
+The three states a business action can end in - answered, awaiting confirmation, denied -
+are still shown explicitly, because "writes require explicit confirmation" is this
+project's central claim and must not be buried in conversation text.
 """
 
 from __future__ import annotations
 
 import os
+import uuid
+from dataclasses import dataclass, replace
 from typing import Any
 
 import gradio as gr
 
-from retail_support_agent.agent import RetailAgent
-from retail_support_agent.api import DEMO_USER_ID
-from retail_support_agent.config import Settings
-from retail_support_agent.domain import RetailDomain
-from retail_support_agent.guardrails import SessionState
-from retail_support_agent.llm import ModelConfig, make_chat_fn
+from retail_support_agent.client import (
+    Account,
+    Api,
+    ApiError,
+    ForbiddenError,
+    UnauthenticatedError,
+)
+from retail_support_agent.cognito import Cognito, SignInError, Tokens
 
 STATUS_LABELS = {
     "answered": "answered",
@@ -29,61 +46,286 @@ STATUS_LABELS = {
     "stopped": "■ session stopped",
 }
 
-INTRO = f"""### RetailSupportAgent · M0.3 minimal business loop
+INTRO = """### RetailSupportAgent
 
-Fixed simulated identity: `{DEMO_USER_ID}` (τ²-bench simulated data, not a real user).
-Supports order lookup, order cancellation and return requests.
+Order lookup, order cancellation and return requests, against τ²-bench simulated retail
+data. No account here belongs to a real person.
 
 Write actions are held for confirmation of their exact arguments. That is by design,
 not a hang.
 """
 
-
-def _new_agent(user_id: str) -> RetailAgent:
-    settings = Settings()  # type: ignore[call-arg]
-    domain = RetailDomain()
-    return RetailAgent(make_chat_fn(settings, ModelConfig()), domain, SessionState(user_id))
+SIGNED_OUT = "Signed out."
 
 
-def build_demo(user_id: str = DEMO_USER_ID) -> gr.Blocks:
+@dataclass(frozen=True)
+class Visitor:
+    """One browser session's state. Held in `gr.State`, never sent to the browser."""
+
+    token: str | None = None
+    refresh_token: str | None = None
+    session_id: str = ""
+    account: Account | None = None
+
+    @property
+    def signed_in(self) -> bool:
+        return self.account is not None
+
+
+def api_from_env() -> Api:
+    """Which service to call. Inside compose this is the API container by service name."""
+    return Api(base_url=os.getenv("RSA_API_URL", "http://127.0.0.1:8000"))
+
+
+def cognito_from_env() -> Cognito | None:
+    """The user pool, or None when one is not configured.
+
+    Unconfigured is the local stack and the developer machine: the API is then in its own
+    unauthenticated mode and answers as the demo identity, so the page has nothing to sign
+    in to and does not ask. Both halves have to be unconfigured together, which is why
+    `/me` reports which mode the service is in and the page shows it.
+    """
+    region = os.getenv("RSA_COGNITO_REGION", "")
+    client_id = os.getenv("RSA_COGNITO_CLIENT_ID", "")
+    if not region or not client_id:
+        return None
+    return Cognito(region=region, client_id=client_id)
+
+
+def describe(account: Account) -> str:
+    """The account line on the page.
+
+    It names the retail identity and the roles because they are the evidence: they come
+    from the database for the signed-in subject, and no field on this page can change
+    them.
+    """
+    roles = ", ".join(account.roles) or "no roles"
+    line = f"**Acting as** `{account.user_id}` · **roles:** {roles}"
+    if account.auth != "required":
+        line += " · authentication is not configured on this service"
+    return line
+
+
+def authenticate(cognito: Cognito, api: Api, username: str, password: str) -> Visitor:
+    """Sign in and read back who the service says that account is.
+
+    Both halves, in this order. A token that verifies for a subject with no row in
+    `identities` is authenticated and authorized to do nothing, and finding that out at
+    sign-in is better than finding it out on the first message.
+    """
+    tokens: Tokens = cognito.sign_in(username.strip(), password)
+    account = api.me(tokens.access_token)
+    return Visitor(
+        token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        session_id=uuid.uuid4().hex,
+        account=account,
+    )
+
+
+def retrying(visitor: Visitor, cognito: Cognito | None, call: Any) -> tuple[Visitor, Any]:
+    """Run `call(token)`, refreshing the access token once if it has expired.
+
+    Once, not in a loop. A refresh token the pool has revoked would otherwise turn one
+    expired session into a stream of requests to the pool, and the visitor would watch a
+    page that never resolves instead of a form that asks them to sign in again.
+    """
+    try:
+        return visitor, call(visitor.token)
+    except UnauthenticatedError:
+        if cognito is None or not visitor.refresh_token:
+            raise
+        try:
+            tokens = cognito.refresh(visitor.refresh_token)
+        except SignInError as exc:
+            raise UnauthenticatedError(str(exc)) from None
+        refreshed = replace(visitor, token=tokens.access_token)
+        return refreshed, call(refreshed.token)
+
+
+def build_demo() -> gr.Blocks:
+    api = api_from_env()
+    cognito = cognito_from_env()
+
     with gr.Blocks(title="RetailSupportAgent") as demo:
         gr.Markdown(INTRO)
-        agent_state = gr.State(None)
-        # No `type` argument: gradio 6 removed it because messages is the only format,
-        # and passing it raises TypeError. This code already emits {"role", "content"}.
-        chatbot = gr.Chatbot(height=460, label="Conversation")
-        status = gr.Markdown("")
-        with gr.Row():
-            box = gr.Textbox(placeholder="e.g. show me my orders", scale=5, show_label=False)
-            send = gr.Button("Send", variant="primary", scale=1)
-        reset = gr.Button("New session")
+        visitor_state = gr.State(Visitor())
+
+        with gr.Column(visible=cognito is not None) as sign_in_panel:
+            gr.Markdown("Sign in with the account you were given.")
+            with gr.Row():
+                username = gr.Textbox(label="Username", scale=2, autofocus=True)
+                # `type="password"` keeps it out of the rendered value and out of the
+                # browser's autofill history for a text field.
+                password = gr.Textbox(label="Password", type="password", scale=2)
+                sign_in = gr.Button("Sign in", variant="primary", scale=1)
+            sign_in_message = gr.Markdown("")
+
+        with gr.Column(visible=False) as app_panel:
+            whoami = gr.Markdown("")
+            chatbot = gr.Chatbot(height=440, label="Conversation")
+            status = gr.Markdown("")
+            with gr.Row():
+                box = gr.Textbox(placeholder="e.g. show me my orders", scale=5, show_label=False)
+                send = gr.Button("Send", variant="primary", scale=1)
+            with gr.Row():
+                reset = gr.Button("New session")
+                sign_out = gr.Button("Sign out", visible=cognito is not None)
+
+        # ---- handlers ---------------------------------------------------
+        #
+        # Each returns the same tuple of updates, so that one failure path cannot leave
+        # the page half switched: signed out with a conversation still on screen, or
+        # signed in with no account line.
+
+        def enter(visitor: Visitor) -> tuple[Any, ...]:
+            """What the page shows when it opens.
+
+            With a pool configured this is the sign-in form. Without one the service is
+            in its unauthenticated mode, so the page reads the identity it will act as
+            and goes straight to the conversation.
+            """
+            if cognito is not None:
+                return _signed_out("")
+            try:
+                account = api.me(None)
+            except ApiError as exc:
+                return _signed_out(f"The service is not ready: {exc}")
+            ready = Visitor(session_id=uuid.uuid4().hex, account=account)
+            return _signed_in(ready, "")
+
+        def do_sign_in(name: str, secret: str, visitor: Visitor) -> tuple[Any, ...]:
+            if cognito is None:  # pragma: no cover - the button is hidden in this mode
+                return _signed_out("This service is not configured for sign-in.")
+            try:
+                signed_in = authenticate(cognito, api, name, secret)
+            except SignInError as exc:
+                return _signed_out(f"**{exc}**")
+            except ForbiddenError as exc:
+                # Authenticated, and no account here. Named rather than reported as a
+                # sign-in failure, because the password was right and telling someone
+                # their password is wrong when it is not sends them to the wrong place.
+                return _signed_out(f"**Signed in, but this account has no access.** {exc}")
+            except ApiError as exc:
+                return _signed_out(f"**Signed in, but the service is not answering.** {exc}")
+            return _signed_in(signed_in, "")
+
+        def do_sign_out(visitor: Visitor) -> tuple[Any, ...]:
+            """Drop the tokens. The pool is not told: this is one browser session ending,
+            and a global sign-out would end the others."""
+            return _signed_out(SIGNED_OUT)
 
         def respond(
-            message: str, history: list[dict[str, Any]], agent: RetailAgent | None
-        ) -> tuple[list[dict[str, Any]], RetailAgent, str, str]:
+            message: str, history: list[dict[str, Any]], visitor: Visitor
+        ) -> tuple[Any, ...]:
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
             if not message.strip():
-                return history, agent or _new_agent(user_id), "", ""
-            active = agent or _new_agent(user_id)
-            result = active.send(message)
-            label = STATUS_LABELS.get(result.status, result.status)
+                return _stay(visitor, history, "", "")
+            try:
+                visitor, reply = retrying(
+                    visitor, cognito, lambda token: api.chat(token, visitor.session_id, message)
+                )
+            except UnauthenticatedError as exc:
+                # The token expired and could not be renewed. Back to the form, with the
+                # conversation cleared: it belonged to a session this visitor can no
+                # longer prove is theirs.
+                return _signed_out(f"**Signed out.** {exc}")
+            except ApiError as exc:
+                # A refusal or a failure, not a reason to sign anyone out. The message is
+                # the service's own, which for a 403 names the permission that was missing.
+                return _stay(visitor, history, "", f"**✗ {exc}**")
+
+            label = STATUS_LABELS.get(reply.status, reply.status)
             note = f"**Status: {label}**"
-            if result.tool_calls:
-                note += f" · tools called: {', '.join(result.tool_calls)}"
-            if result.stop_reason:
-                note += f" · {result.stop_reason}"
+            if reply.tool_calls:
+                note += f" · tools called: {', '.join(reply.tool_calls)}"
+            if reply.stop_reason:
+                note += f" · {reply.stop_reason}"
             updated = [
                 *history,
                 {"role": "user", "content": message},
-                {"role": "assistant", "content": result.reply},
+                {"role": "assistant", "content": reply.reply},
             ]
-            return updated, active, "", note
+            return _stay(visitor, updated, "", note)
 
-        def start_over() -> tuple[list[dict[str, Any]], None, str]:
-            return [], None, "Started a new session."
+        def start_over(visitor: Visitor) -> tuple[Any, ...]:
+            """A new conversation under the same account.
 
-        send.click(respond, [box, chatbot, agent_state], [chatbot, agent_state, box, status])
-        box.submit(respond, [box, chatbot, agent_state], [chatbot, agent_state, box, status])
-        reset.click(start_over, None, [chatbot, agent_state, status])
+            A new session id rather than a reset of the old one: the account is unchanged,
+            and the previous session's audit trail is a record, not scratch space.
+            """
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            fresh = replace(visitor, session_id=uuid.uuid4().hex)
+            return _stay(fresh, [], "", "Started a new session.")
+
+        # ---- shapes of the update tuple ---------------------------------
+
+        def _signed_out(message: str) -> tuple[Any, ...]:
+            return (
+                Visitor(),
+                gr.update(visible=cognito is not None),
+                gr.update(visible=False),
+                message,
+                "",
+                [],
+                "",
+                "",
+            )
+
+        def _signed_in(visitor: Visitor, message: str) -> tuple[Any, ...]:
+            assert visitor.account is not None
+            return (
+                visitor,
+                gr.update(visible=False),
+                gr.update(visible=True),
+                message,
+                describe(visitor.account),
+                [],
+                "",
+                "",
+            )
+
+        def _stay(
+            visitor: Visitor, history: list[dict[str, Any]], box_value: str, note: str
+        ) -> tuple[Any, ...]:
+            assert visitor.account is not None
+            return (
+                visitor,
+                gr.update(visible=False),
+                gr.update(visible=True),
+                "",
+                describe(visitor.account),
+                history,
+                box_value,
+                note,
+            )
+
+        outputs = [
+            visitor_state,
+            sign_in_panel,
+            app_panel,
+            sign_in_message,
+            whoami,
+            chatbot,
+            box,
+            status,
+        ]
+
+        demo.load(enter, visitor_state, outputs)
+        # The password box is cleared by the same event that reads it, so a failed
+        # sign-in does not leave it on screen for the next person at the machine.
+        sign_in.click(do_sign_in, [username, password, visitor_state], outputs).then(
+            lambda: "", None, password
+        )
+        password.submit(do_sign_in, [username, password, visitor_state], outputs).then(
+            lambda: "", None, password
+        )
+        sign_out.click(do_sign_out, visitor_state, outputs)
+        send.click(respond, [box, chatbot, visitor_state], outputs)
+        box.submit(respond, [box, chatbot, visitor_state], outputs)
+        reset.click(start_over, visitor_state, outputs)
 
     assert isinstance(demo, gr.Blocks)
     return demo

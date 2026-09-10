@@ -44,6 +44,24 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Provisions the demo's accounts: which token subject is which retail identity, and
+  # which roles it holds. Empty here, because a developer machine has no user pool; the
+  # instance is given a mapping and this writes it. Idempotent, so it runs every start.
+  seed:
+    image: retail-support-agent:local
+    container_name: rsa-seed
+    command: ["seed"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      RSA_IDENTITIES: ${RSA_IDENTITIES:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
     image: retail-support-agent:local
     container_name: rsa-api
@@ -51,12 +69,18 @@ services:
     environment:
       RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      # Unset here, so the local stack keeps the fixed-identity behaviour and the whole
+      # existing suite still passes. Setting both turns authentication on for every route.
+      RSA_AUTH_ISSUER: ${RSA_AUTH_ISSUER:-}
+      RSA_AUTH_AUDIENCE: ${RSA_AUTH_AUDIENCE:-}
     ports:
       - "${RSA_BIND:-127.0.0.1}:8000:8000"
     depends_on:
       db:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      seed:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)\""]
@@ -74,6 +98,13 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
       # Inside a container the loopback address is reachable only from the container.
       RSA_UI_HOST: "0.0.0.0"
+      # The UI is a client of the API, not a second copy of the agent. Without this it
+      # would call its own loopback address, where nothing listens.
+      RSA_API_URL: http://api:8000
+      # Unset here: with no pool the page asks for no sign-in and the API answers as the
+      # demo identity. Both halves are unconfigured together or neither is.
+      RSA_COGNITO_REGION: ${RSA_COGNITO_REGION:-}
+      RSA_COGNITO_CLIENT_ID: ${RSA_COGNITO_CLIENT_ID:-}
     ports:
       - "${RSA_BIND:-127.0.0.1}:7860:7860"
     depends_on:
@@ -81,6 +112,10 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3).status==200 else 1)\""]
       interval: 3s

@@ -54,6 +54,23 @@ aws ssm put-parameter --region "$REGION" \
   --value "$DASHSCOPE_API_KEY"
 ```
 
+## Setting the demo's passwords
+
+The base layer also creates the user pool and its accounts. Each is created **without a
+password**: both of the arguments that would set one write the value into Terraform state,
+and a credential in state is a credential in the bucket.
+
+```bash
+terraform -chdir=deploy/terraform/base output set_these_passwords
+```
+
+That prints one command per account with the password left blank. Run each with a password
+of your choosing. Until an account has one it exists and cannot sign in, and the sign-in
+form says so rather than reporting a wrong password.
+
+Adding an account later means adding it to `demo_accounts`, applying, setting its password,
+and restarting the instance so the boot re-runs the seeding.
+
 ## Delegating the demo's name
 
 The base layer creates a Route 53 hosted zone for a subdomain. Nothing resolves until that
@@ -115,9 +132,10 @@ terraform apply \
 terraform output url
 ```
 
-`allowed_cidrs` has no default and an empty list closes the environment to everyone. A
-certificate makes the connection private and says nothing about who is on the other end, so
-until login is on this is what decides who may use the demo: one address, not a network.
+`allowed_cidrs` is open by default since M6.7, because there is now something behind it:
+every route requires a token the pool signed, and what the holder may do is read from the
+database. Pass `-var='allowed_cidrs=["203.0.113.4/32"]'` to narrow it anyway; an empty list
+still closes the environment to everyone.
 
 `acme_email` is where Let's Encrypt sends expiry warnings. It appears in the certificate's
 public issuance records, so use an address meant to be seen.

@@ -375,6 +375,50 @@ class TestRolesComeFromTheDatabase:
         assert permissions_for(["not-a-role"]) == frozenset()
 
 
+class TestWhatTheCallerIsToldAboutThemselves:
+    """`/me` is what the demo page renders, so it is where "the identity is not
+    selectable" becomes something a person can see rather than read about."""
+
+    def test_it_reports_the_roles_the_database_granted_not_the_ones_asserted(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        subject = new_subject()
+        store.provision_identity(subject, RETAIL_USER, ["customer"])
+        token = mint(keys, subject=subject, extra={"cognito:groups": ["supervisor"]})
+
+        body = client.get("/me", headers=bearer(token)).json()
+        assert body["roles"] == ["customer"]
+        assert "audit:read" not in body["permissions"]
+
+    def test_it_reports_the_retail_identity_the_database_maps(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        """The demo renders this. A page that showed a name the request had chosen would
+        make the whole claim untestable by eye."""
+        subject = new_subject()
+        store.provision_identity(subject, RETAIL_USER, ["customer"])
+        body = client.get("/me", headers=bearer(mint(keys, subject=subject))).json()
+        assert body["user_id"] == RETAIL_USER
+
+    def test_it_does_not_return_the_subject(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        """It identifies the account in the identity provider, and no part of the page
+        needs it."""
+        subject = new_subject()
+        store.provision_identity(subject, RETAIL_USER, ["customer"])
+        body = client.get("/me", headers=bearer(mint(keys, subject=subject))).json()
+        assert subject not in json.dumps(body)
+
+    def test_an_unprovisioned_subject_is_refused_here_too(
+        self, client: TestClient, keys: Keys
+    ) -> None:
+        """The UI calls this at sign-in, so this refusal is what turns "authenticated and
+        authorized to do nothing" into a message rather than an empty conversation."""
+        response = client.get("/me", headers=bearer(mint(keys, subject=new_subject())))
+        assert response.status_code == 403
+
+
 class TestTheApiRefusesUnauthenticatedRequests:
     """Threshold: with authentication on, no route serves an anonymous caller."""
 
@@ -382,6 +426,7 @@ class TestTheApiRefusesUnauthenticatedRequests:
         ("method", "path", "body"),
         [
             ("post", "/chat", {"session_id": "s1", "message": "hello"}),
+            ("get", "/me", None),
             ("get", "/session/s1/audit", None),
             ("post", "/session/s1/reset", None),
             ("post", "/sessions/reset", None),
@@ -400,6 +445,14 @@ class TestTheApiRefusesUnauthenticatedRequests:
         now = int(time.time())
         token = mint(keys, iat=now - 7200, exp=now - 3600)
         assert client.post("/sessions/reset", headers=bearer(token)).status_code == 401
+
+    def test_the_idle_route_stays_public_because_the_machine_calls_it(
+        self, client: TestClient
+    ) -> None:
+        """The watcher runs on the instance and has no token. It reads counts, not data,
+        and requiring one would mean putting a credential on the machine to shut the
+        machine down."""
+        assert client.get("/idle").status_code == 200
 
     def test_health_stays_public_and_names_the_mode(self, client: TestClient) -> None:
         """An operator must be able to see whether authentication is on without holding

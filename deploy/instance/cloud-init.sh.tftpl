@@ -29,7 +29,12 @@ chmod +x /usr/local/bin/update-dns
 echo '${caddyfile}' | base64 -d > /opt/rsa/Caddyfile
 
 # What the units read. No secret here: the model key is fetched from Parameter Store at
-# boot, and this file only says where to look.
+# boot, and this file only says where to look. The user pool's identifiers are the same
+# kind of thing - they name a pool and an application, and open neither.
+#
+# RSA_IDENTITIES is base64 here because its value is JSON, and JSON in a file that both
+# systemd and a shell read would need quoting that survives both. rsa-start decodes it into
+# the file compose reads.
 cat > /etc/rsa-demo.env <<'ENVFILE'
 RSA_REGION=${region}
 RSA_REGISTRY=${registry}
@@ -38,6 +43,11 @@ RSA_MODEL_KEY_PARAMETER=${model_key_parameter}
 RSA_ZONE_ID=${zone_id}
 RSA_DOMAIN=${domain}
 RSA_ACME_EMAIL=${acme_email}
+RSA_AUTH_ISSUER=${auth_issuer}
+RSA_AUTH_AUDIENCE=${auth_audience}
+RSA_COGNITO_REGION=${region}
+RSA_COGNITO_CLIENT_ID=${auth_audience}
+RSA_IDENTITIES_B64=${identities_b64}
 ENVFILE
 chmod 600 /etc/rsa-demo.env
 

@@ -4,6 +4,7 @@
 #   api       the FastAPI service
 #   ui        the Gradio demo UI
 #   migrate   apply migrations and exit
+#   seed      provision the demo's accounts and exit
 #
 # Migrations are their own role rather than something the API does on the way up. Two API
 # containers starting at once would otherwise run them concurrently, and "it worked when
@@ -22,6 +23,12 @@ case "$ROLE" in
     ;;
   migrate)
     exec alembic upgrade head
+    ;;
+  seed)
+    # Runs after migrate and before the API and the UI. Idempotent: it writes the
+    # subject-to-identity mapping the environment names, and a boot that changes
+    # nothing writes nothing.
+    exec python -m retail_support_agent.seed
     ;;
   *)
     # Anything else is run as given, so that `docker run <image> python -c ...` still works

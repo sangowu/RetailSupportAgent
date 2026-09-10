@@ -76,6 +76,15 @@ class ChatResponse(BaseModel):
     stop_reason: str | None = None
 
 
+class AccountResponse(BaseModel):
+    """What `/me` answers: the caller's own identity as the database records it."""
+
+    user_id: str
+    roles: list[str] = []
+    permissions: list[str] = []
+    auth: str
+
+
 class AssignRequest(BaseModel):
     assignee: str = Field(min_length=1, max_length=128)
 
@@ -532,6 +541,25 @@ def create_app(
             "open_tickets": open_tickets,
             "persistent": resolved_store is not None,
         }
+
+    @app.get("/me", response_model=AccountResponse)
+    def me(identity: CurrentIdentity) -> AccountResponse:
+        """Who the caller is, after the database has decided what they may do.
+
+        The retail identity and the roles come from `identities` and `role_memberships`,
+        never from the token's claims and never from the request. Returning them makes
+        that visible: the demo renders this, so a visitor can see that signing in as one
+        account does not let them act as another.
+
+        The subject is deliberately not returned. It identifies the account in the
+        identity provider and nothing on this page needs it.
+        """
+        return AccountResponse(
+            user_id=identity.user_id,
+            roles=sorted(identity.roles),
+            permissions=sorted(permission.value for permission in identity.permissions),
+            auth="required" if resolved_auth is not None else "disabled",
+        )
 
     @app.post("/chat", response_model=ChatResponse)
     def chat(request: ChatRequest, identity: CurrentIdentity) -> ChatResponse:
