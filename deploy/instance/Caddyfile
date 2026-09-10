@@ -1,0 +1,45 @@
+# What the internet can reach.
+#
+# Narrower than what runs. The demo UI is served at /, the two routes an operator needs are
+# proxied, and nothing else of the API is reachable from outside. The UI builds its own
+# agent in process and never calls the API over the network, so closing it costs nothing.
+#
+# The certificate is obtained over HTTP-01 and kept in /data, which is a volume on the
+# host, so it survives a stop, a start and a container being replaced.
+
+{
+	email {$RSA_ACME_EMAIL}
+}
+
+{$RSA_DOMAIN} {
+	# The operator's two routes. Both carry counts rather than anyone's data: whether the
+	# service is up, and whether it is in the middle of something.
+	handle /health {
+		reverse_proxy api:8000
+	}
+	handle /idle {
+		reverse_proxy api:8000
+	}
+
+	# Everything else is the demo UI. Gradio needs websockets and server-sent events for
+	# its queue, which reverse_proxy passes through without configuration.
+	handle {
+		reverse_proxy ui:7860
+	}
+
+	# Nothing else of the API is routed here. /chat, /tickets and /approvals are reachable
+	# only from inside the compose network.
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		# The demo UI is the only thing served, and it is never framed.
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

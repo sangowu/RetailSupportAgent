@@ -12,6 +12,10 @@ REGION="${RSA_REGION:-eu-west-1}"
 PARAMETER="${RSA_MODEL_KEY_PARAMETER:-/rsa/demo/dashscope-api-key}"
 REGISTRY="${RSA_REGISTRY:?RSA_REGISTRY is required}"
 
+# The name first. The certificate is obtained over HTTP-01, so Let's Encrypt has to
+# resolve this machine and not whichever one had the address last week.
+/usr/local/bin/update-dns
+
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null 2>&1
 

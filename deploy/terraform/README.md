@@ -54,6 +54,29 @@ aws ssm put-parameter --region "$REGION" \
   --value "$DASHSCOPE_API_KEY"
 ```
 
+## Delegating the demo's name
+
+The base layer creates a Route 53 hosted zone for a subdomain. Nothing resolves until that
+subdomain is delegated to it, once, at whoever hosts the parent domain.
+
+```bash
+terraform -chdir=deploy/terraform/base output delegate_these_name_servers
+```
+
+Add each of those as an `NS` record for the subdomain at the parent's DNS host. For a
+parent on Cloudflare that is four `NS` records named `rsa`, with proxying off; `NS` records
+cannot be proxied anyway.
+
+Check it before expecting a certificate:
+
+```bash
+nslookup -type=NS rsa.proshot.top 8.8.8.8
+```
+
+Until this is done the instance still writes its A record at every boot, and the record is
+simply invisible to the world. The demo is then reachable only by address, and Let's
+Encrypt cannot validate the name.
+
 ## Publishing an image
 
 The registry rejects a tag that already exists, so a tag names one image for good and a
@@ -85,24 +108,32 @@ terraform init \
 
 terraform apply \
   -var="state_bucket=$BUCKET" \
-  -var="image_tag=m6.4" \
+  -var="image_tag=m6.6" \
+  -var="acme_email=you@example.com" \
   -var='allowed_cidrs=["203.0.113.4/32"]'
 
-terraform output urls
+terraform output url
 ```
 
-`allowed_cidrs` has no default and an empty list closes the environment to everyone. Until
-HTTPS exists this carries a session cookie over plain HTTP, so it should be one address and
-not a network.
+`allowed_cidrs` has no default and an empty list closes the environment to everyone. A
+certificate makes the connection private and says nothing about who is on the other end, so
+until login is on this is what decides who may use the demo: one address, not a network.
+
+`acme_email` is where Let's Encrypt sends expiry warnings. It appears in the certificate's
+public issuance records, so use an address meant to be seen.
 
 The first boot takes about two minutes: installing Docker, pulling the image, running
-migrations, starting both servers. After that the instance stops itself once nobody has
-used it for fifteen minutes, and starting it again takes about forty seconds.
+migrations, starting the servers and obtaining a certificate. After that use the commands
+in `docs/OPERATIONS.md`:
 
 ```bash
-aws ec2 start-instances --instance-ids "$(terraform output -raw instance_id)"
-terraform output -raw public_ip   # the address changes across a stop
+uv run python scripts/demo.py start    # about half a minute, prints the URL
+uv run python scripts/demo.py status
+uv run python scripts/demo.py stop
 ```
+
+The URL does not change across a stop. The address does, and the instance rewrites its own
+A record at every boot.
 
 ## Destroying it
 

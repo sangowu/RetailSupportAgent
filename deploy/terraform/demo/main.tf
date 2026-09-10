@@ -80,27 +80,36 @@ resource "aws_security_group" "demo" {
 
 // No default. An empty list means nobody can reach it, which is the right way for this to
 // fail: a demo nobody can open is a smaller problem than one anybody can.
-resource "aws_vpc_security_group_ingress_rule" "api" {
+//
+// This still gates who may use the demo. A certificate makes the connection private; it
+// says nothing about who is on the other end, and login is the next step.
+resource "aws_vpc_security_group_ingress_rule" "https" {
   for_each = toset(var.allowed_cidrs)
 
   security_group_id = aws_security_group.demo.id
-  description       = "API"
+  description       = "The demo, over TLS"
   cidr_ipv4         = each.value
-  from_port         = 8000
-  to_port           = 8000
+  from_port         = 443
+  to_port           = 443
   ip_protocol       = "tcp"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "ui" {
-  for_each = toset(var.allowed_cidrs)
-
+// Open to everyone, and it has to be: Let's Encrypt validates HTTP-01 from wherever it
+// happens to be, so this cannot be restricted to named addresses. What answers here is a
+// redirect to HTTPS and the challenge responder. Port 443 is what is restricted, so this
+// does not open the demo.
+resource "aws_vpc_security_group_ingress_rule" "acme" {
   security_group_id = aws_security_group.demo.id
-  description       = "Demo UI"
-  cidr_ipv4         = each.value
-  from_port         = 7860
-  to_port           = 7860
+  description       = "HTTP-01 challenge and the redirect to HTTPS"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  to_port           = 80
   ip_protocol       = "tcp"
 }
+
+// The API's and the UI's own ports are deliberately absent. Caddy reaches them over the
+// compose network, and /chat, /tickets and /approvals are not routable from outside at
+// all.
 
 // Outbound is open: the instance pulls its image, reads Parameter Store and calls the
 // model API. There is no useful narrower rule, since the model endpoint is a public
@@ -125,6 +134,9 @@ locals {
     model_key_parameter = data.terraform_remote_state.base.outputs.model_key_parameter
     idle_minutes        = var.idle_minutes
     max_uptime_minutes  = var.max_uptime_minutes
+    zone_id             = data.terraform_remote_state.base.outputs.demo_zone_id
+    domain              = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
+    acme_email          = var.acme_email
 
     compose_yaml     = filebase64("${path.module}/../../instance/compose.yaml")
     rsa_start        = filebase64("${path.module}/../../instance/rsa-start.sh")
@@ -132,6 +144,8 @@ locals {
     idle_shutdown    = filebase64("${path.module}/../../instance/idle_shutdown.py")
     rsa_idle_service = filebase64("${path.module}/../../instance/rsa-idle.service")
     rsa_idle_timer   = filebase64("${path.module}/../../instance/rsa-idle.timer")
+    update_dns       = filebase64("${path.module}/../../instance/update-dns.sh")
+    caddyfile        = filebase64("${path.module}/../../instance/Caddyfile")
   })
 }
 
@@ -171,7 +185,12 @@ resource "aws_instance" "demo" {
     http_endpoint = "enabled"
   }
 
-  tags = { Name = "${var.name_prefix}-demo" }
+  tags = {
+    Name = "${var.name_prefix}-demo"
+    // Read by scripts/demo.py, so the operator's tool has no second source of truth for
+    // where the demo answers. It already finds the instance by tag.
+    Domain = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
+  }
 
   lifecycle {
     ignore_changes = [

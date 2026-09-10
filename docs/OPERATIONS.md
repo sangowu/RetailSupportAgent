@@ -88,8 +88,9 @@ uv run python scripts/demo.py stop
 
 - **`start` waits for an answer, not for a state.** `running` means the hypervisor has the
   machine; the demo answers about half a minute later. Measured at 29 and 35 seconds.
-- **`start` prints the current addresses.** This shape uses no Elastic IP, so they change
-  across every stop.
+- **`start` prints the URL.** From M6.6 that is one name over TLS and it does not change
+  across a stop; the address underneath does, and the instance rewrites its own A record at
+  every boot.
 - **`stop` asks the application whether it is busy**, using the same verdict the idle
   watcher uses. It refuses while a write is awaiting confirmation, an approval is awaiting a
   human, or a ticket is open, and names which.
@@ -99,6 +100,31 @@ uv run python scripts/demo.py stop
 
 Exit codes: 0 done or nothing to do, 1 could not be done, 2 refused because work is
 unfinished. A wrapper may retry on 1 and must not on 2.
+
+## What the internet can reach (from M6.6)
+
+The demo answers on one name over TLS, `rsa.proshot.top`, terminated by Caddy on the
+instance. The certificate lives on a volume, so a stop and a start do not reissue it.
+
+**Less is exposed than runs.** The UI is served at `/`, and `/health` and `/idle` are
+proxied for the operator. The rest of the API is on the compose network and is not routable
+from outside at all: `/chat`, `/tickets` and `/approvals` cannot be called even from an
+address in `allowed_cidrs`. The UI builds its own agent in process and never calls the API
+over the network, so nothing is lost.
+
+| Port | Open to | What answers |
+|---|---|---|
+| 443 | `allowed_cidrs` | the demo |
+| 80 | everyone | the ACME challenge and a redirect to HTTPS |
+
+Port 80 cannot be restricted, because Let's Encrypt validates from wherever it happens to
+be. Port 443 is what decides who can use the demo.
+
+**A certificate is not a login.** Until authentication is on, `allowed_cidrs` is the only
+thing deciding who may use this, and it should hold one address rather than a network.
+
+The name is delegated once: see `deploy/terraform/README.md`. Until that is done the
+instance still writes its A record at every boot and nobody can see it.
 
 ## Stopping the instance when nobody is using it (from M6.3)
 

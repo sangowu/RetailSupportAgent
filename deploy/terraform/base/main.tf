@@ -15,6 +15,12 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    // Only used to write the delegation. Configured from CLOUDFLARE_API_TOKEN in the
+    // environment, so the token never becomes a Terraform variable and never enters state.
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
   }
 
   // The bucket this points at is not a Terraform resource. A bucket cannot hold the state
@@ -165,4 +171,60 @@ resource "aws_iam_role_policy" "write_archives" {
       },
     ]
   })
+}
+
+// ---- the demo's name -------------------------------------------------------
+
+// A delegated subdomain, not the apex. The apex stays wherever it is; only these NS
+// records are added at the registrar, once, by hand. Until they are, this zone answers to
+// nobody and no certificate can be issued.
+resource "aws_route53_zone" "demo" {
+  name    = var.demo_domain
+  comment = "RetailSupportAgent demo; the A record is written by the instance at boot"
+}
+
+// The instance writes its own address here at every boot. Terraform does not own that
+// record: it runs when someone applies, and the address changes when the machine starts.
+resource "aws_iam_role_policy" "update_own_dns" {
+  name = "${var.name_prefix}-update-own-dns"
+  role = aws_iam_role.instance.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["route53:ChangeResourceRecordSets"]
+        Resource = aws_route53_zone.demo.arn
+      },
+      {
+        // Waiting for the change to be accepted. Not scopable to one zone: the change id
+        // is global.
+        Effect   = "Allow"
+        Action   = ["route53:GetChange"]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+// ---- the delegation itself -------------------------------------------------
+
+// The parent domain's DNS is elsewhere, and the subdomain has to be pointed at the zone
+// above. Doing that by hand would leave one remembered manual step in an environment whose
+// whole point is being reproducible - and worse, a silent one: recreating the zone issues a
+// different set of name servers, and records added by hand would go on pointing at the old
+// ones.
+//
+// Optional. With no `cloudflare_zone_id` this creates nothing and the records are added
+// wherever the parent is hosted; `delegate_these_name_servers` is what to add.
+resource "cloudflare_dns_record" "delegation" {
+  for_each = var.cloudflare_zone_id == "" ? toset([]) : toset(aws_route53_zone.demo.name_servers)
+
+  zone_id = var.cloudflare_zone_id
+  name    = trimsuffix(aws_route53_zone.demo.name, ".")
+  type    = "NS"
+  content = each.value
+  ttl     = 3600
+  comment = "RetailSupportAgent demo, delegated to Route 53 by deploy/terraform/base"
 }

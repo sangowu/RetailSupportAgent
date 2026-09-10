@@ -26,8 +26,10 @@ Instance = demo.Instance
 Busy = demo.Busy
 
 
-def at(state: str, ip: str | None = "203.0.113.7") -> Instance:
-    return Instance(id="i-0abc", state=state, public_ip=ip)
+def at(
+    state: str, ip: str | None = "203.0.113.7", domain: str | None = "rsa.example.test"
+) -> Instance:
+    return Instance(id="i-0abc", state=state, public_ip=ip, domain=domain)
 
 
 IDLE = Busy(reachable=True)
@@ -126,22 +128,48 @@ class TestReadingTheApplication:
 
 
 class TestUrls:
-    def test_urls_are_built_from_the_current_address(self) -> None:
-        instance = at("running", ip="198.51.100.9")
-        assert instance.api_url == "http://198.51.100.9:8000"
-        assert instance.ui_url == "http://198.51.100.9:7860"
+    def test_the_url_is_the_name_over_tls(self) -> None:
+        assert at("running", domain="rsa.example.test").url == "https://rsa.example.test"
 
-    def test_a_stopped_instance_has_no_urls(self) -> None:
-        """This shape uses no Elastic IP, so a stopped instance has no address at all.
+    def test_the_url_does_not_change_when_the_address_does(self) -> None:
+        """The point of the name.
 
-        Returning a stale one would be worse than returning none.
+        The address is different after every stop; a link someone was sent is not.
         """
-        instance = at("stopped", ip=None)
-        assert instance.api_url is None
-        assert instance.ui_url is None
+        first = at("running", ip="198.51.100.9").url
+        second = at("running", ip="203.0.113.44").url
+        assert first == second
+
+    def test_an_instance_without_the_tag_has_no_url(self) -> None:
+        """It was built by older Terraform. Guessing a name would be worse than none."""
+        assert at("running", domain=None).url is None
 
 
 class TestFindingTheInstance:
+    def test_the_domain_comes_from_the_instance_tag(self, monkeypatch) -> None:
+        """One source of truth: the tool already finds the instance by tag."""
+
+        def tagged(*_args: object, **_kwargs: object) -> dict:
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-0abc",
+                                "State": {"Name": "running"},
+                                "PublicIpAddress": "203.0.113.7",
+                                "Tags": [{"Key": "Domain", "Value": "rsa.example.test"}],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(demo, "aws", tagged)
+        found = demo.find_instance("eu-west-1")
+        assert found is not None
+        assert found.url == "https://rsa.example.test"
+
     def test_two_tagged_instances_are_refused_rather_than_guessed(self, monkeypatch) -> None:
         """Acting on an arbitrary one of two environments is the worst available answer."""
 

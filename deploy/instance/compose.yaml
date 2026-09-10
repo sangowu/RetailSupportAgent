@@ -8,6 +8,9 @@
 # DASHSCOPE_API_KEY comes from /opt/rsa/.env, written at boot from Parameter Store by
 # rsa-start. It has no default: a stack that starts without a key and fails on the first
 # message is worse than one that refuses to start.
+#
+# Only Caddy publishes ports. The API and the UI are reachable on the compose network and
+# nowhere else, so the write routes cannot be called from outside at all.
 services:
   db:
     image: postgres:17-alpine
@@ -39,7 +42,6 @@ services:
     environment:
       RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
-    ports: ["8000:8000"]
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
@@ -57,7 +59,6 @@ services:
       RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
       RSA_UI_HOST: "0.0.0.0"
-    ports: ["7860:7860"]
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
@@ -68,5 +69,35 @@ services:
       timeout: 5s
       retries: 40
 
+  # Terminates TLS on a name that follows this machine's changing address, and exposes
+  # less than what runs: the UI, plus /health and /idle for the operator.
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      RSA_DOMAIN: ${RSA_DOMAIN:?RSA_DOMAIN is required}
+      RSA_ACME_EMAIL: ${RSA_ACME_EMAIL:?RSA_ACME_EMAIL is required}
+    ports:
+      # 80 has to be open to the internet for the HTTP-01 challenge. What answers there is
+      # a redirect and the challenge responder; 443 is what the security group restricts.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/rsa/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates on the host, so they survive a stop, a start and this container being
+      # replaced. Reissuing on every start would meet Let's Encrypt's rate limit quickly.
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+      ui: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 volumes:
   rsa_pgdata:
+  caddy_data:
+  caddy_config:

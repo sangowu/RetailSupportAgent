@@ -38,3 +38,29 @@ variable "model_key_parameter" {
   type        = string
   default     = "/rsa/demo/dashscope-api-key"
 }
+
+variable "demo_domain" {
+  description = <<-EOT
+    The name the demo answers on. A subdomain delegated to this account's Route 53, not an
+    apex: the apex stays with whatever hosts it today.
+
+    After the first apply, add the name servers this outputs as NS records at the
+    registrar of the parent domain. Nothing resolves until that is done.
+  EOT
+  type        = string
+  default     = "rsa.proshot.top"
+}
+
+variable "cloudflare_zone_id" {
+  description = <<-EOT
+    The parent domain's zone id at Cloudflare, if that is where it is hosted. Given, the
+    delegation is written as code; left empty, this layer creates nothing there and the
+    records from `delegate_these_name_servers` are added by hand.
+
+    The token comes from CLOUDFLARE_API_TOKEN in the environment, never from a variable: a
+    variable would end up in state in clear. It needs Zone -> DNS -> Edit on that one zone
+    and nothing else.
+  EOT
+  type        = string
+  default     = ""
+}

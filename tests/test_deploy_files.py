@@ -21,6 +21,9 @@ TEMPLATE = INSTANCE / "cloud-init.sh.tftpl"
 DEMO_TF = REPO / "deploy" / "terraform" / "demo" / "main.tf"
 
 SERVICES = ("db", "migrate", "api", "ui")
+# Caddy runs only on the instance: development reaches the UI on the loopback address and
+# has nothing to get a certificate for.
+INSTANCE_ONLY = ("caddy",)
 
 
 def load(path: Path) -> dict:
@@ -44,10 +47,11 @@ class TestTheTwoComposeFiles:
     """
 
     def test_they_define_the_same_services(self, local_compose, instance_compose) -> None:
-        assert set(local_compose["services"]) == set(instance_compose["services"]) == set(SERVICES)
+        assert set(local_compose["services"]) == set(SERVICES)
+        assert set(instance_compose["services"]) == set(SERVICES) | set(INSTANCE_ONLY)
 
     @pytest.mark.parametrize("service", SERVICES)
-    def test_each_service_runs_the_same_command(
+    def test_each_shared_service_runs_the_same_command(
         self, service: str, local_compose, instance_compose
     ) -> None:
         assert local_compose["services"][service].get("command") == instance_compose["services"][
@@ -129,6 +133,8 @@ class TestTheCloudInitTemplate:
             "idle_shutdown.py",
             "rsa-idle.service",
             "rsa-idle.timer",
+            "update-dns.sh",
+            "Caddyfile",
         ):
             assert (INSTANCE / name).is_file(), name
 
@@ -160,7 +166,8 @@ class TestTheCloudInitTemplate:
 
 class TestTheShellScripts:
     @pytest.mark.parametrize(
-        "name", ("rsa-start.sh", "cloud-init.sh.tftpl", "../../docker/entrypoint.sh")
+        "name",
+        ("rsa-start.sh", "update-dns.sh", "cloud-init.sh.tftpl", "../../docker/entrypoint.sh"),
     )
     def test_no_carriage_returns(self, name: str) -> None:
         """A CRLF shebang fails as 'no such file or directory', naming the wrong problem.
@@ -183,3 +190,65 @@ class TestTheShellScripts:
         assert "umask 077" in text
         assert "chmod 600 /opt/rsa/.env" in text
         assert "--with-decryption" in text
+
+
+class TestWhatTheInternetCanReach:
+    """The instance publishes one thing. Everything else is on the compose network.
+
+    /chat writes to the database on the caller's behalf. It was reachable from any address
+    in allowed_cidrs before this; now it is not routable from outside at all.
+    """
+
+    def test_only_caddy_publishes_ports(self, instance_compose) -> None:
+        publishing = {
+            name for name, service in instance_compose["services"].items() if service.get("ports")
+        }
+        assert publishing == {"caddy"}
+
+    def test_caddy_publishes_exactly_eighty_and_four_four_three(self, instance_compose) -> None:
+        ports = {str(p).split(":")[0] for p in instance_compose["services"]["caddy"]["ports"]}
+        assert ports == {"80", "443"}
+
+    def test_the_certificate_outlives_the_container(self, instance_compose) -> None:
+        """Reissuing on every start would meet Let's Encrypt's rate limit within a week."""
+        volumes = instance_compose["services"]["caddy"]["volumes"]
+        assert any(str(v).startswith("caddy_data:") for v in volumes)
+
+    def test_the_proxy_routes_only_the_operator_routes_to_the_api(self) -> None:
+        """Comments are stripped first: one of them names the routes to explain why they
+        are absent, and a test that read comments would forbid saying so."""
+        lines = [
+            line
+            for line in (INSTANCE / "Caddyfile").read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith("#")
+        ]
+        directives = chr(10).join(lines)
+        assert "reverse_proxy api:8000" in directives
+        for write_route in ("/chat", "/tickets", "/approvals", "/session"):
+            assert write_route not in directives, write_route
+
+    def test_the_name_and_the_contact_have_no_defaults(self, instance_compose) -> None:
+        environment = instance_compose["services"]["caddy"]["environment"]
+        for key in ("RSA_DOMAIN", "RSA_ACME_EMAIL"):
+            assert environment[key].startswith("${") and ":?" in environment[key]
+
+
+class TestTheDnsUpdater:
+    def test_it_runs_before_the_registry_login(self) -> None:
+        """Let's Encrypt has to resolve this machine, not whichever had the address last."""
+        start = (INSTANCE / "rsa-start.sh").read_text(encoding="utf-8")
+        assert start.index("update-dns") < start.index("get-login-password")
+
+    def test_it_uses_imdsv2(self) -> None:
+        """The instance requires a token; a v1 read would simply fail."""
+        text = (INSTANCE / "update-dns.sh").read_text(encoding="utf-8")
+        assert "api/token" in text
+        assert "X-aws-ec2-metadata-token:" in text
+
+    def test_it_refuses_to_write_an_empty_address(self) -> None:
+        text = (INSTANCE / "update-dns.sh").read_text(encoding="utf-8")
+        assert 'if [ -z "$ADDRESS" ]' in text
+
+    def test_it_waits_for_the_change(self) -> None:
+        text = (INSTANCE / "update-dns.sh").read_text(encoding="utf-8")
+        assert "resource-record-sets-changed" in text

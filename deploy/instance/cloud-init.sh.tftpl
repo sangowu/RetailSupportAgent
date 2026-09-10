@@ -24,6 +24,9 @@ echo '${rsa_service}' | base64 -d > /etc/systemd/system/rsa.service
 echo '${idle_shutdown}' | base64 -d > /opt/rsa/idle_shutdown.py
 echo '${rsa_idle_service}' | base64 -d > /etc/systemd/system/rsa-idle.service
 echo '${rsa_idle_timer}' | base64 -d > /etc/systemd/system/rsa-idle.timer
+echo '${update_dns}' | base64 -d > /usr/local/bin/update-dns
+chmod +x /usr/local/bin/update-dns
+echo '${caddyfile}' | base64 -d > /opt/rsa/Caddyfile
 
 # What the units read. No secret here: the model key is fetched from Parameter Store at
 # boot, and this file only says where to look.
@@ -32,6 +35,9 @@ RSA_REGION=${region}
 RSA_REGISTRY=${registry}
 RSA_IMAGE=${image}
 RSA_MODEL_KEY_PARAMETER=${model_key_parameter}
+RSA_ZONE_ID=${zone_id}
+RSA_DOMAIN=${domain}
+RSA_ACME_EMAIL=${acme_email}
 ENVFILE
 chmod 600 /etc/rsa-demo.env
 

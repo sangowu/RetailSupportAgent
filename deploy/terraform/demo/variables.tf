@@ -31,11 +31,12 @@ variable "image_tag" {
 
 variable "allowed_cidrs" {
   description = <<-EOT
-    Addresses that may reach the API and the UI. There is no default and an empty list
+    Addresses that may reach the demo over TLS. There is no default and an empty list
     closes it to everyone, which is the right way for this to fail.
 
-    Until M6.5 adds HTTPS this carries a session cookie over plain HTTP, so it should be
-    one address, not a network.
+    A certificate makes the connection private and says nothing about who is on the other
+    end. Until login is on, this is what decides who may use the demo, so it should be one
+    address rather than a network.
   EOT
   type        = list(string)
   default     = []
@@ -74,4 +75,12 @@ variable "compose_plugin_url" {
   description = "Pinned rather than 'latest': the plugin version is part of what was tested."
   type        = string
   default     = "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64"
+}
+
+variable "acme_email" {
+  description = <<-EOT
+    Where Let's Encrypt sends expiry warnings. It is published in the certificate's
+    issuance records, so use an address that is meant to be seen.
+  EOT
+  type        = string
 }
