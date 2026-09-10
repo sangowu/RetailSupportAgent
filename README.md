@@ -44,40 +44,41 @@ judge was not held constant; see
 ## Reading order
 
 1. **[M0 report](docs/M0_REPORT.md)** - start here; conclusions and limits in one page
-2. [Project goals and settled decisions](PROJECT_CONTEXT.md)
-3. [M0.1 protocol and environment freeze](docs/M0.1_PROTOCOL_FREEZE.md)
-4. [M0.2 model capability verification](docs/M0.2_MODEL_CAPABILITY.md)
-5. [M0.3 minimal business loop](docs/M0.3_BUSINESS_LOOP.md)
-6. [M0.4 selection experiment and cost estimate](docs/M0.4_EXPERIMENT_PLAN.md)
-7. [M0.5 part one: cost accounting and observability](docs/M0.5_OBSERVABILITY.md)
-8. [M0.5 part two: local start/stop and demo flows](docs/M0.5_LOCAL_DEMO.md)
-9. [M0.5 part three: frozen baselines](docs/M0.5_BASELINE.md)
-10. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
-11. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
-12. [M2 cross-process recovery](docs/M2_RECOVERY.md)
-13. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
-14. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
-15. [M5.1 cost priced by the run's clock, and latency](docs/M5.1_MEASUREMENT.md)
-16. [M5.2 how much thinking the task set needs](docs/M5.2_THINKING_EFFORT.md)
-17. [M5.3 routing thinking per turn, and why it stops](docs/M5.3_THINKING_ROUTING.md)
-18. [M6.1 choosing the AWS deployment shape](docs/M6.1_DEPLOYMENT_SHAPE.md)
-19. [M6.2 packaging the application, and whether it starts in time](docs/M6.2_CONTAINER_AND_START.md)
-20. [M6.3 deciding nobody is using this, and turning it off](docs/M6.3_IDLE_SHUTDOWN.md)
-21. [M6.4 the demo environment as code](docs/M6.4_TERRAFORM.md)
-22. [M6.5 two commands an operator actually runs](docs/M6.5_START_STOP.md)
-23. [M6.6 a name that survives a stop, and a certificate](docs/M6.6_HTTPS.md)
-24. [M6.7 a login, and a demo that goes through it](docs/M6.7_LOGIN.md)
-25. [M6.8 changing the version without rebuilding the machine](docs/M6.8_ROLLBACK.md)
-26. [M6.9 what survives the machine](docs/M6.9_ARCHIVE.md)
-27. [M7.1 showing the work while it happens](docs/M7.1_STREAMING.md)
-28. [M7.2 what happened, and what to do about it](docs/M7.2_STATES.md)
-29. [M7.3 the case a human owns, on screen](docs/M7.3_TICKETS.md)
-30. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-31. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-32. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-33. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-34. [Local and AWS start/stop design](docs/OPERATIONS.md)
-35. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+2. **[Delivery report: M1 to M7](docs/DELIVERY_REPORT.md)** - what each stage proved, what it cost, and what is not covered
+3. [Project goals and settled decisions](PROJECT_CONTEXT.md)
+4. [M0.1 protocol and environment freeze](docs/M0.1_PROTOCOL_FREEZE.md)
+5. [M0.2 model capability verification](docs/M0.2_MODEL_CAPABILITY.md)
+6. [M0.3 minimal business loop](docs/M0.3_BUSINESS_LOOP.md)
+7. [M0.4 selection experiment and cost estimate](docs/M0.4_EXPERIMENT_PLAN.md)
+8. [M0.5 part one: cost accounting and observability](docs/M0.5_OBSERVABILITY.md)
+9. [M0.5 part two: local start/stop and demo flows](docs/M0.5_LOCAL_DEMO.md)
+10. [M0.5 part three: frozen baselines](docs/M0.5_BASELINE.md)
+11. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
+12. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
+13. [M2 cross-process recovery](docs/M2_RECOVERY.md)
+14. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
+15. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
+16. [M5.1 cost priced by the run's clock, and latency](docs/M5.1_MEASUREMENT.md)
+17. [M5.2 how much thinking the task set needs](docs/M5.2_THINKING_EFFORT.md)
+18. [M5.3 routing thinking per turn, and why it stops](docs/M5.3_THINKING_ROUTING.md)
+19. [M6.1 choosing the AWS deployment shape](docs/M6.1_DEPLOYMENT_SHAPE.md)
+20. [M6.2 packaging the application, and whether it starts in time](docs/M6.2_CONTAINER_AND_START.md)
+21. [M6.3 deciding nobody is using this, and turning it off](docs/M6.3_IDLE_SHUTDOWN.md)
+22. [M6.4 the demo environment as code](docs/M6.4_TERRAFORM.md)
+23. [M6.5 two commands an operator actually runs](docs/M6.5_START_STOP.md)
+24. [M6.6 a name that survives a stop, and a certificate](docs/M6.6_HTTPS.md)
+25. [M6.7 a login, and a demo that goes through it](docs/M6.7_LOGIN.md)
+26. [M6.8 changing the version without rebuilding the machine](docs/M6.8_ROLLBACK.md)
+27. [M6.9 what survives the machine](docs/M6.9_ARCHIVE.md)
+28. [M7.1 showing the work while it happens](docs/M7.1_STREAMING.md)
+29. [M7.2 what happened, and what to do about it](docs/M7.2_STATES.md)
+30. [M7.3 the case a human owns, on screen](docs/M7.3_TICKETS.md)
+31. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+32. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+33. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+34. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+35. [Local and AWS start/stop design](docs/OPERATIONS.md)
+36. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
@@ -163,11 +164,13 @@ committed.
 | Environment | Start | Stop | Status |
 |---|---|---|---|
 | local | `scripts/start-local.ps1` | `scripts/stop-local.ps1` | implemented and verified by running it |
-| AWS | GitHub Actions: `Start Demo` | GitHub Actions: `Stop Demo` | planned, M6 |
+| AWS | `scripts/demo.py start` | `scripts/demo.py stop` | deployed since M6.4, behind a login since M6.7 |
 
 The local scripts control only processes this project recorded, verified by PID and
-start time, and never guess which python belongs to the project. There is no hosted
-demo. The contract is in [operations](docs/OPERATIONS.md).
+start time, and never guess which python belongs to the project. The AWS demo is one
+instance that stops itself when nobody is using it, archives its database on every stop,
+and is reached over TLS at one name. Both are described in
+[operations](docs/OPERATIONS.md).
 
 ## Benchmark attribution
 
