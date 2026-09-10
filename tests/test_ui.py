@@ -46,3 +46,19 @@ def test_demo_is_not_shared_publicly() -> None:
     source = inspect.getsource(ui.main)
     assert "share=False" in source
     assert "127.0.0.1" in source
+
+
+def test_every_handler_is_wired_to_the_same_outputs() -> None:
+    """Gradio's own view of the wiring, at runtime (M7.2).
+
+    The shapes of the update tuples are checked statically in test_ui_states.py; this
+    checks the other half, that every event was actually given the same output list. A
+    handler wired to fewer components silently leaves the rest of the page as it was,
+    which for a sign-out is a conversation still on screen.
+    """
+    demo = build_demo()
+    widths = {len(block.outputs) for block in demo.fns.values() if block.outputs}
+    # The one exception is the follow-up that clears the password box, which writes to
+    # that box alone and deliberately touches nothing else.
+    assert widths == {1, 9}, widths
+

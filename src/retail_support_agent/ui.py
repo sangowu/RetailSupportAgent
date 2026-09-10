@@ -35,24 +35,139 @@ from retail_support_agent.client import (
     Account,
     Api,
     ApiError,
+    ConflictError,
     Event,
     ForbiddenError,
     Reply,
     UnauthenticatedError,
+    UnavailableError,
 )
 from retail_support_agent.cognito import Cognito, SignInError, Tokens
 
-STATUS_LABELS = {
-    "answered": "answered",
-    "needs_confirmation": "⚠ awaiting your confirmation",
-    "denied": "✗ denied",
-    "stopped": "■ session stopped",
+
+@dataclass(frozen=True)
+class Situation:
+    """What state the page is in, and the one thing to do about it (M7.2).
+
+    The page used to report the last thing that happened and leave the reader to work out
+    what that meant for them. A state and a remedy are different things from an event, and
+    a visitor acts on the first two.
+    """
+
+    label: str
+    # The service's own words, or the arguments the guard is holding. Never a paraphrase:
+    # a 403 names the permission that was missing because `tests/test_auth.py` requires it
+    # to, and a page that reworded that would become the thing people read instead.
+    detail: str = ""
+    # What to do next. Empty when the answer is simply to carry on.
+    advice: str = ""
+    # Whether another message can advance this state. Three cannot, and leaving the box
+    # open in those invites a message whose only possible answer is already on screen.
+    can_send: bool = True
+    # Only an expired token, which is the one state that is not about this conversation.
+    signed_out: bool = False
+
+
+# One entry per status a turn can return. Enumerated against `TurnResult`'s own type in
+# tests/test_ui_states.py, so a status added later fails the suite until the page has
+# something to say about it. That check exists because three of these had no rendering at
+# all and reached the page as their internal names.
+TURN_STATES: dict[str, Situation] = {
+    "answered": Situation(label="answered"),
+    "needs_confirmation": Situation(
+        label="⚠ waiting for your confirmation",
+        advice="Reply yes to run exactly these arguments, or say what to change.",
+    ),
+    "needs_approval": Situation(
+        label="⚠ waiting for a supervisor",
+        advice="A supervisor has to decide this one. You can carry on with anything else.",
+    ),
+    "denied": Situation(label="✗ refused"),
+    "handed_off": Situation(
+        label="→ handed to a person",
+        advice="A person owns this case now. Their answer arrives here.",
+        can_send=False,
+    ),
+    "waiting_for_human": Situation(
+        label="→ with a person",
+        advice="Their answer arrives here. Start a new session to ask about something else.",
+        can_send=False,
+    ),
+    "stopped": Situation(
+        label="■ session stopped",
+        advice="Start a new session to carry on.",
+        can_send=False,
+    ),
 }
 
-# What the note area says while a turn is running. The status line is the only place the
-# page reports state, so leaving the previous turn's status there would be a lie for as
-# long as this one takes.
-WORKING = "**Working…**"
+
+def situation_of(reply: Reply) -> Situation:
+    """What state a completed turn leaves the page in."""
+    base = TURN_STATES.get(reply.status, Situation(label=reply.status))
+    detail = reply.pending_confirmation if reply.status == "needs_confirmation" else ""
+    if reply.status == "denied":
+        detail = reply.reply
+    if reply.stop_reason:
+        detail = reply.stop_reason
+    return replace(base, detail=detail or "")
+
+
+def situation_of_failure(exc: ApiError) -> Situation:
+    """What state a failed call leaves the page in.
+
+    Keyed on the exception class rather than on a status code, because the class is what
+    the client already decided the failure means, and two places deciding that is one too
+    many.
+    """
+    if isinstance(exc, UnauthenticatedError):
+        return Situation(
+            label="signed out",
+            detail=str(exc),
+            advice="Sign in again. The conversation was cleared: it belonged to a session "
+            "this browser can no longer prove is yours.",
+            signed_out=True,
+        )
+    if isinstance(exc, ForbiddenError):
+        return Situation(
+            label="✗ not permitted",
+            detail=str(exc),
+            advice="This account may not do that. Ask something else, or sign in as an "
+            "account that holds the permission named above.",
+        )
+    if isinstance(exc, ConflictError):
+        return Situation(
+            label="✗ this session is open somewhere else",
+            detail=str(exc),
+            advice="Another process is driving this session. Start a new session.",
+        )
+    if isinstance(exc, UnavailableError):
+        return Situation(
+            label="✗ the service failed",
+            detail=str(exc),
+            advice="This is not your account. Try again in a moment.",
+        )
+    return Situation(label="✗ refused", detail=str(exc), advice="Try a different request.")
+
+
+def render(situation: Situation) -> str:
+    """The status line. One place, so the states cannot start looking like each other."""
+    parts = [f"**Status: {situation.label}**"]
+    if situation.detail:
+        parts.append(f"\n\n`{situation.detail}`")
+    if situation.advice:
+        parts.append(f"\n\n{situation.advice}")
+    return "".join(parts)
+
+
+# While a turn is running. The status line is the only place the page reports state, so
+# leaving the previous turn's status there would be a lie for as long as this one takes.
+# The box stays open: a turn in progress is not a state that needs a remedy.
+WORKING = Situation(label="working…")
+
+# What the box invites, and what it says when nothing can be typed into it. A disabled box
+# with a stale placeholder reads as broken rather than as finished.
+OPEN_PLACEHOLDER = "e.g. show me my orders"
+CLOSED_PLACEHOLDER = "this session cannot take another message"
 
 # One line per step, in the assistant's bubble, replaced by the answer when it arrives.
 # Rendered as an assistant message rather than beside the box, because the work belongs
@@ -199,7 +314,7 @@ def build_demo() -> gr.Blocks:
             chatbot = gr.Chatbot(height=440, label="Conversation")
             status = gr.Markdown("")
             with gr.Row():
-                box = gr.Textbox(placeholder="e.g. show me my orders", scale=5, show_label=False)
+                box = gr.Textbox(placeholder=OPEN_PLACEHOLDER, scale=5, show_label=False)
                 send = gr.Button("Send", variant="primary", scale=1)
             with gr.Row():
                 reset = gr.Button("New session")
@@ -261,7 +376,7 @@ def build_demo() -> gr.Blocks:
                 yield _signed_out("**Sign in first.**")
                 return
             if not message.strip():
-                yield _stay(visitor, history, "", "")
+                yield _stay(visitor, history, "", Situation(label="answered"))
                 return
 
             asked = [*history, {"role": "user", "content": message}]
@@ -277,10 +392,10 @@ def build_demo() -> gr.Blocks:
                     lambda token: api.chat_stream(token, visitor.session_id, message),
                 )
             except UnauthenticatedError as exc:
-                yield _signed_out(f"**Signed out.** {exc}")
+                yield _signed_out(render(situation_of_failure(exc)))
                 return
             except ApiError as exc:
-                yield _stay(visitor, history, "", f"**✗ {exc}**")
+                yield _stay(visitor, history, "", situation_of_failure(exc))
                 return
 
             reply: Reply | None = None
@@ -291,10 +406,15 @@ def build_demo() -> gr.Blocks:
                         break
                     steps.append(_describe(event))
                     yield _stay(visitor, [*asked, _progress(steps)], "", WORKING)
+            except UnauthenticatedError as exc:
+                # Mid-turn, and the token is gone. The same answer as before the turn:
+                # back to the form with the conversation cleared.
+                yield _signed_out(render(situation_of_failure(exc)))
+                return
             except ApiError as exc:
-                # Mid-turn. The message stays on the page: it was sent, the turn ran, and
-                # pretending otherwise would hide a write that may have happened.
-                yield _stay(visitor, [*asked, _progress(steps)], "", f"**✗ {exc}**")
+                # The message stays on the page: it was sent, the turn ran, and pretending
+                # otherwise would hide a write that may have happened.
+                yield _stay(visitor, [*asked, _progress(steps)], "", situation_of_failure(exc))
                 return
 
             if reply is None:
@@ -302,21 +422,24 @@ def build_demo() -> gr.Blocks:
                     visitor,
                     [*asked, _progress(steps)],
                     "",
-                    "**✗ The turn ended without an answer.**",
+                    Situation(
+                        label="✗ the turn ended without an answer",
+                        advice="Try again, or start a new session.",
+                    ),
                 )
                 return
 
-            label = STATUS_LABELS.get(reply.status, reply.status)
-            note = f"**Status: {label}**"
+            situation = situation_of(reply)
             if reply.tool_calls:
-                note += f" · tools called: {', '.join(reply.tool_calls)}"
-            if reply.stop_reason:
-                note += f" · {reply.stop_reason}"
+                situation = replace(
+                    situation,
+                    label=f"{situation.label} · tools called: {', '.join(reply.tool_calls)}",
+                )
             yield _stay(
                 visitor,
                 [*asked, {"role": "assistant", "content": reply.reply}],
                 "",
-                note,
+                situation,
             )
 
         def start_over(visitor: Visitor) -> tuple[Any, ...]:
@@ -328,9 +451,14 @@ def build_demo() -> gr.Blocks:
             if not visitor.signed_in:
                 return _signed_out("**Sign in first.**")
             fresh = replace(visitor, session_id=uuid.uuid4().hex)
-            return _stay(fresh, [], "", "Started a new session.")
+            return _stay(fresh, [], "", Situation(label="new session"))
 
         # ---- shapes of the update tuple ---------------------------------
+        #
+        # The box and the Send button are part of the state, not decoration around it
+        # (M7.2). Three states cannot be advanced by typing, and a page that leaves the
+        # box open in those is offering an action whose only possible answer is the
+        # sentence already on screen.
 
         def _signed_out(message: str) -> tuple[Any, ...]:
             return (
@@ -340,7 +468,8 @@ def build_demo() -> gr.Blocks:
                 message,
                 "",
                 [],
-                "",
+                gr.update(value="", interactive=True, placeholder=OPEN_PLACEHOLDER),
+                gr.update(interactive=True),
                 "",
             )
 
@@ -353,12 +482,16 @@ def build_demo() -> gr.Blocks:
                 message,
                 describe(visitor.account),
                 [],
-                "",
+                gr.update(value="", interactive=True, placeholder=OPEN_PLACEHOLDER),
+                gr.update(interactive=True),
                 "",
             )
 
         def _stay(
-            visitor: Visitor, history: list[dict[str, Any]], box_value: str, note: str
+            visitor: Visitor,
+            history: list[dict[str, Any]],
+            box_value: str,
+            situation: Situation,
         ) -> tuple[Any, ...]:
             assert visitor.account is not None
             return (
@@ -368,8 +501,13 @@ def build_demo() -> gr.Blocks:
                 "",
                 describe(visitor.account),
                 history,
-                box_value,
-                note,
+                gr.update(
+                    value=box_value,
+                    interactive=situation.can_send,
+                    placeholder=OPEN_PLACEHOLDER if situation.can_send else CLOSED_PLACEHOLDER,
+                ),
+                gr.update(interactive=situation.can_send),
+                render(situation),
             )
 
         outputs = [
@@ -380,6 +518,7 @@ def build_demo() -> gr.Blocks:
             whoami,
             chatbot,
             box,
+            send,
             status,
         ]
 

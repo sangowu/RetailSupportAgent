@@ -47,6 +47,14 @@ class ForbiddenError(ApiError):
     """
 
 
+class ConflictError(ApiError):
+    """409. This session is being driven from somewhere else (M2).
+
+    Its own class since M7.2, because it is the one failure a new session resolves, and a
+    page that cannot tell it from a malformed request cannot say so.
+    """
+
+
 class UnavailableError(ApiError):
     """The service could not be reached, or failed for a reason that is not the caller."""
 
@@ -261,7 +269,7 @@ def _refusal(exc: urllib.error.HTTPError) -> ApiError:
     if exc.code == 403:
         return ForbiddenError(detail or "This account may not do that.")
     if exc.code == 409:
-        return ApiError(detail or "That session is being used by another process.")
+        return ConflictError(detail or "That session is being used by another process.")
     if exc.code == 422:
         return ApiError(detail or "The service rejected that request.")
     return UnavailableError(detail or f"The service failed ({exc.code}).")
