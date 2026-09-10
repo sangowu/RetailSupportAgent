@@ -150,6 +150,44 @@ instance so the boot re-runs the seeding. To remove a role, remove it from `demo
 and restart: a role revoked by hand comes back at the next boot, because the seeding writes
 what the configuration names.
 
+### The accounts, and what each is for
+
+| Account | Retail identity | Roles | What it demonstrates |
+|---|---|---|---|
+| `ava` | `ava_moore_2033` | customer | ordinary use: her own orders, and a write held for confirmation |
+| `ivan` | `ivan_santos_6635` | customer | isolation: he cannot reach Ava's orders |
+| `sam` | `ava_moore_2033` | supervisor | assigning a case and deciding an escalation, and being unable to work one |
+| `mia` | `ivan_santos_6635` | agent | working a case somebody else's customer raised |
+| `nobody` | none | none | a token that verifies for a subject with no account here |
+
+`sam` and `ava` share a retail identity on purpose: a supervisor still has orders of their
+own, so the retail identity does not identify the account.
+
+`mia` was added in M7.3. Before it, the demo could escalate a case and nothing could ever
+pick it up, because a supervisor deliberately holds no `ticket:work`.
+
+## Case work in the page (from M7.3)
+
+Which sections a signed-in account sees comes from the permissions `/me` reports.
+
+| Section | Permission | customer | agent | supervisor |
+|---|---|---|---|---|
+| Conversation | - | yes | yes | yes |
+| Cases | `ticket:read` | no | theirs only | all |
+| Work this case | `ticket:work` | no | yes | no |
+| Assign | `ticket:assign` | no | no | yes |
+| Approvals | `escalation:decide` | no | no | yes |
+
+**Hiding a section is not enforcement.** Every route refuses a caller who lacks the
+permission whatever the page shows. The page hides sections because offering an action
+that will be refused is a bad interface.
+
+**An agent works a case in their own session**, derived from the ticket and their subject,
+not the customer's conversation. The customer's conversation belongs to the customer, and
+the ownership check enforces that against the person helping them too.
+
+**Closing a case releases the customer's session.** They find out by sending a message.
+
 ## Changing which version runs (from M6.8)
 
 Two commands, and the machine survives both.

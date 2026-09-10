@@ -10,13 +10,17 @@ No network and no billing: a scripted model, as in test_agent_flow.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, ClassVar
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from retail_support_agent.agent import RetailAgent, TurnEvent
+from retail_support_agent.agent import RetailAgent, TurnEvent, TurnResult
+from retail_support_agent.api import create_app
+from retail_support_agent.config import Settings
 from retail_support_agent.db import Base, make_engine, make_session_factory
 from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.store import Store
@@ -189,3 +193,73 @@ class TestTheTwoRoutesWriteTheSameRows:
 
         assert self.rows(store, "sent2") == self.rows(store, "streamed2")
         assert self.rows(store, "sent2")[1] == 1, "the write should have been recorded once"
+
+
+@pytest.mark.skipif(
+    not TEST_URL,
+    reason="needs a real PostgreSQL: set RSA_TEST_DATABASE_URL (locally: docker compose up -d db)",
+)
+class TestAnAnswerNamesTheCase:
+    """M7.3. The number used to exist only inside the reply's prose, so a page that wanted
+    to link to the case had to dig it out of a sentence."""
+
+    @staticmethod
+    @pytest.fixture
+    def store() -> Store:
+        assert TEST_URL
+        engine = make_engine(TEST_URL)
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            for table in ("tickets", "messages", "sessions"):
+                connection.execute(text(f"delete from {table}"))
+        return Store(make_session_factory(engine))
+
+    @pytest.mark.parametrize("status", ("handed_off", "waiting_for_human"))
+    def test_a_session_behind_a_case_reports_its_id(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
+        session_id = f"cased-{status}"
+        store.ensure_session(session_id, "ava_moore_2033")
+        ticket = store.open_ticket(session_id, "ava_moore_2033", "a refund question", None)
+
+        def fake(self: object, message: str) -> Any:
+            yield TurnEvent(kind="reply", result=TurnResult(reply="x", status=status))  # type: ignore[arg-type]
+
+        monkeypatch.setattr(RetailAgent, "stream", fake)
+        app = create_app(settings=Settings(), store=store)  # type: ignore[call-arg]
+        with (
+            TestClient(app) as client,
+            client.stream(
+                "POST", "/chat/stream", json={"session_id": session_id, "message": "hello"}
+            ) as response,
+        ):
+            events = [
+                json.loads(line[len("data:") :])
+                for line in response.iter_lines()
+                if line.startswith("data:")
+            ]
+        assert events[-1]["ticket_id"] == ticket.id
+
+    def test_a_session_with_no_case_reports_none(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
+
+        def fake(self: object, message: str) -> Any:
+            yield TurnEvent(kind="reply", result=TurnResult(reply="x", status="handed_off"))
+
+        monkeypatch.setattr(RetailAgent, "stream", fake)
+        app = create_app(settings=Settings(), store=store)  # type: ignore[call-arg]
+        with (
+            TestClient(app) as client,
+            client.stream(
+                "POST", "/chat/stream", json={"session_id": "no-case", "message": "hello"}
+            ) as response,
+        ):
+            events = [
+                json.loads(line[len("data:") :])
+                for line in response.iter_lines()
+                if line.startswith("data:")
+            ]
+        assert events[-1]["ticket_id"] is None

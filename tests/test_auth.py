@@ -431,6 +431,7 @@ class TestTheApiRefusesUnauthenticatedRequests:
             # to send (M7.1).
             ("post", "/chat/stream", {"session_id": "s1", "message": "hello"}),
             ("get", "/me", None),
+            ("get", "/assignable", None),
             ("get", "/session/s1/audit", None),
             ("post", "/session/s1/reset", None),
             ("post", "/sessions/reset", None),
@@ -636,6 +637,61 @@ class TestRoleEnforcement:
         customer.require(Permission.ORDER_WRITE)  # holds it
         with pytest.raises(NotAuthorizedError):
             customer.require(Permission.AUDIT_READ)
+
+
+class TestWhoACaseCanBeGivenTo:
+    """M7.3's one new route. It reads what the database already decided and offers it to
+    the one role that has to act on it."""
+
+    def test_a_supervisor_is_told_who_can_work_a_case(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        agent = new_subject()
+        store.provision_identity(agent, "ivan_santos_6635", ["agent"])
+        supervisor = new_subject()
+        store.provision_identity(supervisor, RETAIL_USER, ["supervisor"])
+
+        response = client.get("/assignable", headers=bearer(mint(keys, subject=supervisor)))
+        assert response.status_code == 200
+        subjects = {row["subject"] for row in response.json()}
+        assert agent in subjects
+
+    def test_only_accounts_that_can_work_a_case_are_listed(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        """A supervisor holds no `ticket:work`, so assigning a case to one would produce
+        a case nobody can open."""
+        customer = new_subject()
+        store.provision_identity(customer, RETAIL_USER, ["customer"])
+        supervisor = new_subject()
+        store.provision_identity(supervisor, RETAIL_USER, ["supervisor"])
+
+        listed = client.get("/assignable", headers=bearer(mint(keys, subject=supervisor))).json()
+        subjects = {row["subject"] for row in listed}
+        assert customer not in subjects
+        assert supervisor not in subjects
+        for row in listed:
+            assert "ticket:work" in row["permissions"]
+
+    def test_an_account_that_cannot_assign_may_not_read_the_list(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        """Knowing who the agents are is not a customer's business, and the page hiding
+        the control is not what stops them."""
+        customer = new_subject()
+        store.provision_identity(customer, RETAIL_USER, ["customer"])
+        response = client.get("/assignable", headers=bearer(mint(keys, subject=customer)))
+        assert response.status_code == 403
+
+    def test_me_does_not_answer_with_a_subject(
+        self, client: TestClient, store: Store, keys: Keys
+    ) -> None:
+        """Naming somebody else is the one action that needs a subject. A page that never
+        sees its own cannot put it somewhere it does not belong."""
+        subject = new_subject()
+        store.provision_identity(subject, RETAIL_USER, ["customer"])
+        body = client.get("/me", headers=bearer(mint(keys, subject=subject))).json()
+        assert body.get("subject") is None
 
 
 # ---- 5. cost ------------------------------------------------------------

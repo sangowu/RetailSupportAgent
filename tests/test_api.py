@@ -162,6 +162,7 @@ class TestTheStreamingRoute:
             "tool_calls": ["get_order_details"],
             "pending_confirmation": None,
             "stop_reason": None,
+            "ticket_id": None,
         }
         assert set(payload) - {"kind"} <= set(ChatResponse.model_fields)
 
@@ -225,3 +226,33 @@ class TestTheStreamingRoute:
         self, client: TestClient, body: dict[str, str]
     ) -> None:
         assert client.post("/chat/stream", json=body).status_code == 422
+
+
+class TestTheCaseIdInAnAnswer:
+    """M7.2 found the ticket number living only inside the service's prose, and left it
+    there rather than have the page dig it out with a regular expression. This is the
+    field that makes that unnecessary (M7.3)."""
+
+    def test_an_ordinary_answer_carries_no_case(self, client: TestClient) -> None:
+        assert "ticket_id" in ChatResponse.model_fields
+        assert ChatResponse(reply="hi", status="answered").ticket_id is None
+
+    @pytest.mark.parametrize("status", ("answered", "needs_confirmation", "denied", "stopped"))
+    def test_no_lookup_happens_for_a_status_that_cannot_have_one(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, status: str
+    ) -> None:
+        """Every other turn would otherwise pay for a query whose answer is None."""
+
+        def fake(self: object, message: str) -> Iterator[TurnEvent]:
+            yield TurnEvent(kind="reply", result=TurnResult(reply="x", status=status))  # type: ignore[arg-type]
+
+        monkeypatch.setattr(RetailAgent, "stream", fake)
+        with client.stream(
+            "POST", "/chat/stream", json={"session_id": "s-case", "message": "hello"}
+        ) as response:
+            events = [
+                json.loads(line[len("data:") :])
+                for line in response.iter_lines()
+                if line.startswith("data:")
+            ]
+        assert events[-1]["ticket_id"] is None

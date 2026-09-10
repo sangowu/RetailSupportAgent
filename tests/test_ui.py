@@ -58,7 +58,8 @@ def test_every_handler_is_wired_to_the_same_outputs() -> None:
     """
     demo = build_demo()
     widths = {len(block.outputs) for block in demo.fns.values() if block.outputs}
-    # The one exception is the follow-up that clears the password box, which writes to
-    # that box alone and deliberately touches nothing else.
-    assert widths == {1, 9}, widths
-
+    # Two widths, not one: the follow-up that clears the password box writes to that box
+    # alone and deliberately touches nothing else. Everything else writes the whole page.
+    assert len(widths) == 2, widths
+    assert 1 in widths
+    assert max(widths) > 9, "the case sections should be in the update tuple too"

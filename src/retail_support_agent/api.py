@@ -60,8 +60,12 @@ _QUIET_ROUTES = frozenset({"/health", "/idle"})
 # (returnable), so all three flows can be demonstrated under one identity.
 DEMO_USER_ID = "ava_moore_2033"
 
+# The role that works a case. Named once, because `/assignable` and the page's own
+# description of what it is listing must not be able to disagree about it.
+WORKING_ROLE = "agent"
 
-def _as_payload(event: TurnEvent) -> dict[str, Any]:
+
+def _as_payload(event: TurnEvent, ticket_id: int | None = None) -> dict[str, Any]:
     """One event, in the shape a client parses (M7.1).
 
     The final event is the whole of what `/chat` answers, under the same field names, so
@@ -76,6 +80,7 @@ def _as_payload(event: TurnEvent) -> dict[str, Any]:
         "tool_calls": list(event.result.tool_calls),
         "pending_confirmation": event.result.pending_confirmation,
         "stop_reason": event.result.stop_reason,
+        "ticket_id": ticket_id,
     }
 
 
@@ -103,15 +108,26 @@ class ChatResponse(BaseModel):
     tool_calls: list[str] = []
     pending_confirmation: str | None = None
     stop_reason: str | None = None
+    # Set when the turn handed off, or when the session is behind an open case (M7.3).
+    # Read from the database rather than taken from the agent, so the agent stays exactly
+    # what the benchmark measures. Before this the number existed only inside the reply's
+    # prose, and a page wanting to link to the case had to dig it out of a sentence.
+    ticket_id: int | None = None
 
 
 class AccountResponse(BaseModel):
-    """What `/me` answers: the caller's own identity as the database records it."""
+    """What `/me` answers: the caller's own identity as the database records it.
+
+    `subject` is answered only by `/assignable`, where naming somebody else is the whole
+    point. `/me` leaves it unset: a caller learning their own subject gains nothing, and a
+    page that never sees it cannot put it somewhere it does not belong.
+    """
 
     user_id: str
     roles: list[str] = []
     permissions: list[str] = []
     auth: str
+    subject: str | None = None
 
 
 class AssignRequest(BaseModel):
@@ -593,6 +609,19 @@ def create_app(
             auth="required" if resolved_auth is not None else "disabled",
         )
 
+    def open_ticket_id(session_id: str, status: str) -> int | None:
+        """The case this session is behind, for the two statuses that have one.
+
+        Queried only for those two, because every other turn would pay for a lookup whose
+        answer is None. The agent is not asked: it would have to carry the id through a
+        result the benchmark also builds, and keeping it out of there is what lets M7.1's
+        claim about an untouched agent stay true.
+        """
+        if status not in ("handed_off", "waiting_for_human") or resolved_store is None:
+            return None
+        ticket = resolved_store.open_ticket_for(session_id)
+        return int(ticket.id) if ticket is not None else None
+
     @app.post("/chat", response_model=ChatResponse)
     def chat(request: ChatRequest, identity: CurrentIdentity) -> ChatResponse:
         agent = session_agent(request.session_id, identity)
@@ -608,6 +637,7 @@ def create_app(
             tool_calls=result.tool_calls,
             pending_confirmation=result.pending_confirmation,
             stop_reason=result.stop_reason,
+            ticket_id=open_ticket_id(request.session_id, result.status),
         )
 
     @app.post("/chat/stream")
@@ -627,7 +657,12 @@ def create_app(
         def events() -> Iterator[str]:
             try:
                 for event in agent.stream(request.message):
-                    yield _sse(_as_payload(event))
+                    ticket = (
+                        open_ticket_id(request.session_id, event.result.status)
+                        if event.result is not None
+                        else None
+                    )
+                    yield _sse(_as_payload(event, ticket))
             except Exception as exc:
                 # There is no status code left to send: the response began the moment the
                 # first event went out. The failure becomes an event of its own, in the
@@ -759,6 +794,32 @@ def create_app(
         session_id = f"t{ticket_id}-{digest}"
         store.bind_session_to_ticket(session_id, ticket.user_id, identity.subject, ticket_id)
         return AgentSession(session_id=session_id, ticket_id=ticket_id, user_id=ticket.user_id)
+
+    @app.get("/assignable", response_model=list[AccountResponse])
+    def assignable(identity: CurrentIdentity) -> list[AccountResponse]:
+        """Who a case can be given to (M7.3).
+
+        Assignment takes a subject, and a subject is an opaque identifier. Without this a
+        supervisor could only assign by pasting a string they have no way to obtain, so
+        the control would exist and be unusable.
+
+        Not a new rule: it reads what the database already decided, it is gated on the
+        same permission as assigning, and it answers with the same shape as `/me`. The
+        subject is deliberately absent from `/me` and present here, because assigning is
+        the one action that needs to name somebody else.
+        """
+        require(identity, Permission.TICKET_ASSIGN)
+        store = need_store()
+        return [
+            AccountResponse(
+                user_id=other.user_id,
+                roles=sorted(other.roles),
+                permissions=sorted(str(p) for p in other.permissions),
+                auth="required",
+                subject=other.subject,
+            )
+            for other in store.identities_with_role(WORKING_ROLE)
+        ]
 
     @app.get("/approvals", response_model=list[PendingApproval])
     def list_approvals(identity: CurrentIdentity) -> list[PendingApproval]:

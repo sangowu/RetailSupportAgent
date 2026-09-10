@@ -149,6 +149,37 @@ class Store:
                 )
                 db.execute(stmt)
 
+    def identities_with_role(self, role: str) -> list[Identity]:
+        """Everyone the database grants one role, for the page that has to name them.
+
+        Assignment takes a subject, and a subject is an opaque identifier nobody can type
+        from memory. Without this a supervisor could only assign a case by pasting a
+        string they have no way to obtain, so the control would exist and be unusable.
+
+        A read of what the database already decided, offered only to the role that has to
+        act on it: the route is gated on `ticket:assign`.
+        """
+        with self._sessions() as db:
+            subjects = list(
+                db.scalars(
+                    select(RoleMembershipRow.subject)
+                    .where(RoleMembershipRow.role == role)
+                    .order_by(RoleMembershipRow.subject)
+                )
+            )
+            found = []
+            for subject in subjects:
+                identity = db.get(IdentityRow, subject)
+                if identity is None:
+                    continue
+                roles = db.scalars(
+                    select(RoleMembershipRow.role).where(RoleMembershipRow.subject == subject)
+                )
+                found.append(
+                    Identity(subject=subject, user_id=identity.user_id, roles=frozenset(roles))
+                )
+            return found
+
     def revoke_role(self, subject: str, role: str) -> None:
         """Remove one role. It takes effect on the next request, which is the reason
         roles are read from here rather than from the token: a claim inside an already
