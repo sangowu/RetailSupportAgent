@@ -234,7 +234,8 @@ documentation. It is the first thing to do next.
 
 **Follow-up, 2026-09-10:** the [CI test typing repair](CI_TYPE_FIX.md) fixes the 49 errors
 locally and verifies all 858 tests against isolated PostgreSQL. That follow-up has not
-been published, so the remote CI status above remains the last verified main result.
+yet established a new main CI result in this report; its PR checks record remote
+verification before merge. The failure above describes the original `a31ebb2` revision.
 
 ## 8. Reproduction
 

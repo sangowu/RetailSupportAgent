@@ -79,7 +79,7 @@ before the passing checks above. No test failures were hidden by retries.
 | mypy | 49 errors in three tests | zero errors | fixed locally |
 | Full local suite | 858 reported historically; 734 passed / 124 skipped in the read-only check | 858 passed / zero skipped on isolated PostgreSQL | full local regression passed |
 | Baseline integrity | three baselines verified | three baselines verified | unchanged |
-| Remote CI | failed at mypy; main pytest and baseline gate skipped | not submitted | pending publication |
+| Remote CI | failed at mypy; main pytest and baseline gate skipped | see the repair PR's checks | required before merge |
 
 Benchmark quality, safety, latency and cost are not remeasured: the application,
 evaluation implementation and frozen inputs are unchanged. The historical `baseline-v3`
@@ -93,7 +93,7 @@ any frozen baseline or claim an improvement against the MVP's business performan
 is fixed and all 858 tests pass, including the 124 that need PostgreSQL. Runtime business
 behavior is unchanged. The temporary test container is stopped and removed after use.
 
-The user subsequently authorized a local commit on `fix/ci-test-typing`. No push, PR or
-deployment is included. Remote CI cannot validate the candidate until a later authorized publication. Its
-actual success, including the previously skipped pytest and baseline-integrity steps,
-remains the release check; local success must not be reported as a green GitHub run.
+Remote verification is recorded in the repair PR's GitHub Actions checks. All three CI
+jobs must pass before merging, including the previously skipped main pytest step and
+baseline-integrity job. Local success alone is not a green GitHub run. This repair does
+not deploy an application image or change cloud resources.
