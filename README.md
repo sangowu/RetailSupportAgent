@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, M6.6 put it behind one name over TLS, M6.7 put a login in front of it, M6.8 made a version change a restart rather than a rebuild, and M6.9 made the demo's record outlive the machine that recorded it, completing M6. M7.1 made a turn visible while it runs. The demo environment exists and is stopped, which costs its volume and its hosted zone.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, M6.6 put it behind one name over TLS, M6.7 put a login in front of it, M6.8 made a version change a restart rather than a rebuild, and M6.9 made the demo's record outlive the machine that recorded it, completing M6. M7.1 made a turn visible while it runs, and M7.2 made every state the page can be in say what it is and what to do. The demo environment exists and is stopped, which costs its volume and its hosted zone.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -70,12 +70,13 @@ judge was not held constant; see
 25. [M6.8 changing the version without rebuilding the machine](docs/M6.8_ROLLBACK.md)
 26. [M6.9 what survives the machine](docs/M6.9_ARCHIVE.md)
 27. [M7.1 showing the work while it happens](docs/M7.1_STREAMING.md)
-28. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-29. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-30. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-31. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-32. [Local and AWS start/stop design](docs/OPERATIONS.md)
-33. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+28. [M7.2 what happened, and what to do about it](docs/M7.2_STATES.md)
+29. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+30. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+31. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+32. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+33. [Local and AWS start/stop design](docs/OPERATIONS.md)
+34. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
