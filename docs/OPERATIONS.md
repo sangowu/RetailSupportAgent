@@ -150,6 +150,33 @@ instance so the boot re-runs the seeding. To remove a role, remove it from `demo
 and restart: a role revoked by hand comes back at the next boot, because the seeding writes
 what the configuration names.
 
+## Changing which version runs (from M6.8)
+
+Two commands, and the machine survives both.
+
+```bash
+terraform -chdir=deploy/terraform/demo apply -var="image_tag=<tag>" ...
+uv run python scripts/demo.py restart
+```
+
+The apply writes one Parameter Store value and replaces nothing. The restart brings the
+stack down, reads the parameter again, and brings the version up on the same instance, the
+same volume and the same certificate.
+
+`demo.py status` prints the configured version and the running one. They differ exactly
+while a version has been applied and not yet picked up, which is the moment worth being
+told about.
+
+**A version carries its own stack definition.** The compose file and the Caddyfile are
+copied into the image at build time and extracted from it at boot, so rolling back moves
+them with the code. One consequence: **no image published before M6.8 can be rolled back
+to**, because none of them contains those files.
+
+**What still replaces the instance**, and therefore still discards its database: changing
+the systemd units, the idle watcher, `update-dns` or `rsa-start`. Those are the machine
+rather than the application. Everything the application needs - the version, the accounts,
+the identity mapping - now changes without one.
+
 ## Stopping the instance when nobody is using it (from M6.3)
 
 M6.1 chose a shape whose idle cost is a stopped instance's disk. That number is only real

@@ -9,6 +9,10 @@
 # rsa-start. It has no default: a stack that starts without a key and fails on the first
 # message is worse than one that refuses to start.
 #
+# This file ships inside the image and is extracted from it at boot (M6.8), so the copy on
+# the instance always describes the version that is running. Editing the copy in /opt/rsa
+# has no lasting effect: the next start overwrites it.
+#
 # Only Caddy publishes ports. The API and the UI are reachable on the compose network and
 # nowhere else, so the write routes cannot be called from outside at all.
 services:
@@ -63,6 +67,9 @@ services:
       # opens anything on its own.
       RSA_AUTH_ISSUER: ${RSA_AUTH_ISSUER:?RSA_AUTH_ISSUER is required}
       RSA_AUTH_AUDIENCE: ${RSA_AUTH_AUDIENCE:?RSA_AUTH_AUDIENCE is required}
+      # Reported by /health. A rollback is only checkable if the running version can be
+      # read from the thing that is running (M6.8).
+      RSA_IMAGE: ${RSA_IMAGE:?RSA_IMAGE is required}
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
@@ -121,7 +128,18 @@ services:
       api: {condition: service_healthy}
       ui: {condition: service_healthy}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/ || exit 1"]
+      # Caddy's own admin API, not the site it serves.
+      #
+      # Asking the site on :80 gets a redirect to https, and wget follows it into a TLS
+      # handshake against an IP address, for which there is no certificate and never will
+      # be. That handshake fails, the container never reports healthy, `compose up --wait`
+      # gives up after 150s, and rsa.service reports a failure while the demo answers
+      # perfectly. It had been doing that on every boot since M6.6 and was found in M6.8,
+      # because `demo.py restart` is the first thing that reads the unit's result.
+      #
+      # Whether the proxy actually serves the site is checked from outside by
+      # scripts/demo.py, which is where that question can be answered honestly.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30

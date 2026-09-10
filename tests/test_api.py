@@ -41,6 +41,27 @@ def test_me_reports_the_demo_identity_and_says_authentication_is_off(
     assert body["roles"] == ["demo"]
 
 
+def test_health_reports_which_image_is_answering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rollback is only checkable if the running version can be read from the running
+    thing. Nothing pinned this field, and a revert quietly dropped it during M6.8: the
+    demo answered, the version was simply unknowable."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
+    monkeypatch.setenv("RSA_IMAGE", "registry.example/rsa-app:m6.8")
+    with TestClient(create_app(settings=Settings())) as client:  # type: ignore[call-arg]
+        assert client.get("/health").json()["image"] == "registry.example/rsa-app:m6.8"
+
+
+def test_health_says_unknown_rather_than_omitting_the_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Outside a container there is no image. A missing key would make a caller comparing
+    versions crash instead of saying it cannot tell."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
+    monkeypatch.delenv("RSA_IMAGE", raising=False)
+    with TestClient(create_app(settings=Settings(_env_file=None))) as client:  # type: ignore[call-arg]
+        assert client.get("/health").json()["image"] == "unknown"
+
+
 def test_empty_message_is_rejected_before_reaching_the_model(client: TestClient) -> None:
     response = client.post("/chat", json={"session_id": "s1", "message": ""})
     assert response.status_code == 422

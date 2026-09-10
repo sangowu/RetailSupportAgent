@@ -81,6 +81,15 @@ COPY --chown=app:app third_party/tau2-bench/data/tau2/user_simulator \
 COPY --chown=app:app docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# How to run this version, carried by the version itself (M6.8). The instance extracts
+# these at boot from the image it is about to run, rather than getting them from whatever
+# the last `terraform apply` rendered into its user data. Rolling back then moves the
+# stack definition and the code together: an older image whose compose file declares no
+# `seed` service is run without one, instead of being run under a newer file that expects
+# a service its entrypoint has never heard of.
+COPY --chown=app:app deploy/instance/compose.yaml /app/deploy/compose.yaml
+COPY --chown=app:app deploy/instance/Caddyfile /app/deploy/Caddyfile
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

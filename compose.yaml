@@ -73,6 +73,8 @@ services:
       # existing suite still passes. Setting both turns authentication on for every route.
       RSA_AUTH_ISSUER: ${RSA_AUTH_ISSUER:-}
       RSA_AUTH_AUDIENCE: ${RSA_AUTH_AUDIENCE:-}
+      # Reported by /health, so which version is answering is readable rather than assumed.
+      RSA_IMAGE: ${RSA_IMAGE:-retail-support-agent:local}
     ports:
       - "${RSA_BIND:-127.0.0.1}:8000:8000"
     depends_on:

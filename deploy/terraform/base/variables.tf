@@ -104,3 +104,27 @@ variable "demo_accounts" {
     error_message = "`demo` is the role the service invents when authentication is off, and it carries session:reset_all. It is not grantable to a real account."
   }
 }
+
+variable "image_parameter" {
+  description = <<-EOT
+    SSM Parameter Store path holding the image the demo runs. The demo layer writes it; the
+    instance reads it at every start.
+
+    Not in user data: user data runs once per machine, so a version written there can only
+    be changed by replacing the machine, and that discards the database and the certificate
+    with it. This is what makes a rollback a restart (M6.8).
+  EOT
+  type        = string
+  default     = "/rsa/demo/image"
+}
+
+variable "identities_parameter" {
+  description = <<-EOT
+    SSM Parameter Store path holding the subject-to-identity mapping, read at every start.
+
+    A String, not a SecureString. A subject is an opaque identifier; holding one
+    authenticates nobody.
+  EOT
+  type        = string
+  default     = "/rsa/demo/identities"
+}

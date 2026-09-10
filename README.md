@@ -4,7 +4,7 @@ A retail customer-support agent: order lookup, order cancellation and return req
 with business correctness, reliability and cost demonstrated through reproducible
 evaluation.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, M6.6 put it behind one name over TLS, and M6.7 put a login in front of it. The demo environment exists and is stopped, which costs its volume and its hosted zone.**
+**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, M6.6 put it behind one name over TLS, M6.7 put a login in front of it, and M6.8 made a version change a restart rather than a rebuild. The demo environment exists and is stopped, which costs its volume and its hosted zone.**
 
 The model is `deepseek-v4-pro` with thinking at effort=high.
 
@@ -30,8 +30,8 @@ M0's scores measured upstream's agent, not this project's; see
 [M0 report §1.1](docs/M0_REPORT.md). `baseline-v1` (holdout 40 tasks, 0.8750) is
 archived.
 
-**Not built yet**: streaming output, archiving before a teardown, rollback between image
-versions, and any screen for the people who work the handoff queue. Authentication runs
+**Not built yet**: streaming output, archiving before a teardown, and any screen for the
+people who work the handoff queue. Authentication runs
 against a real Cognito user pool from M6.7; the demo UI signs in against it and calls the
 API as the signed-in account. See [M0 report §9](docs/M0_REPORT.md).
 
@@ -67,12 +67,13 @@ judge was not held constant; see
 22. [M6.5 two commands an operator actually runs](docs/M6.5_START_STOP.md)
 23. [M6.6 a name that survives a stop, and a certificate](docs/M6.6_HTTPS.md)
 24. [M6.7 a login, and a demo that goes through it](docs/M6.7_LOGIN.md)
-25. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-26. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-27. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-28. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-29. [Local and AWS start/stop design](docs/OPERATIONS.md)
-30. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
+25. [M6.8 changing the version without rebuilding the machine](docs/M6.8_ROLLBACK.md)
+26. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
+27. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
+28. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
+29. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
+30. [Local and AWS start/stop design](docs/OPERATIONS.md)
+31. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
 
 Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
 
