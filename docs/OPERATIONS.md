@@ -96,7 +96,7 @@ uv run python scripts/demo.py stop
   human, or a ticket is open, and names which.
 - **`stop --force` overrides** and prints what it overrode.
 - **Stopping loses nothing.** The volume, the database and the image stay; the next start
-  reads the same rows.
+  reads the same rows. From M6.9 the stop also archives the database on its way down.
 
 Exit codes: 0 done or nothing to do, 1 could not be done, 2 refused because work is
 unfinished. A wrapper may retry on 1 and must not on 2.
@@ -176,6 +176,46 @@ to**, because none of them contains those files.
 the systemd units, the idle watcher, `update-dns` or `rsa-start`. Those are the machine
 rather than the application. Everything the application needs - the version, the accounts,
 the identity mapping - now changes without one.
+
+## What survives the machine (from M6.9)
+
+The database is archived to the state bucket, under `archives/`, on **every stop**. That
+includes the idle watcher's stops, which are most of them, so the newest archive is never
+much older than the last time anyone used the demo.
+
+```bash
+uv run python scripts/demo.py archive              # now, rather than at the next stop
+uv run python scripts/demo.py restore latest       # or an archives/... key
+```
+
+- **`archive` is for the minute before a teardown.** Archive, check the age in `status`,
+  then destroy.
+- **`restore` names its archive.** There is no default: it replaces the database, and a
+  command that does that on a bare word is one somebody runs by accident.
+- **`restore` refuses on unfinished work**, like `stop` and `restart`, and for one more
+  reason than either: the work would be overwritten rather than merely lost.
+- **Everyone signed in is signed out** by a restore. The UI holds sessions in memory and
+  the API and the UI are stopped while the database is replaced.
+
+**How a failed archive is noticed.** `status` prints the newest archive and its age. The
+instance is stopping when the archive runs, so there is nowhere on it to report to; an age
+that keeps growing across stops is what a silently broken archive looks like. The archive
+is bounded at 120 seconds and its failure does not block the stop, because a machine that
+will not shut down bills by the hour.
+
+**Restoring an identity is not a way back in.** The dump includes `identities`, so a
+restore can reinstate a row for an account that was removed from `demo_accounts`. That row
+grants nothing: reaching it requires a token the user pool signed, and Terraform removed
+the account from the pool. The archive is the record of what happened; the pool is the
+record of who may act.
+
+**Nothing expires.** The interesting archive is the last one before a teardown, and a
+lifecycle rule that deletes objects after ninety days would delete exactly that one. A few
+hundred kilobytes several times a day is cheaper than the rule that would manage it.
+
+**The certificate is not archived.** Caddy's `/data` holds a private key, which belongs in
+a secret manager rather than in an archive that exists to be read. Reissuing takes two
+minutes.
 
 ## Stopping the instance when nobody is using it (from M6.3)
 

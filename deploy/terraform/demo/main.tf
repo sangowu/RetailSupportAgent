@@ -137,13 +137,17 @@ locals {
     // changing either is a restart rather than a new machine (M6.8).
     image_parameter      = data.terraform_remote_state.base.outputs.image_parameter
     identities_parameter = data.terraform_remote_state.base.outputs.identities_parameter
-    idle_minutes         = var.idle_minutes
-    max_uptime_minutes   = var.max_uptime_minutes
-    zone_id              = data.terraform_remote_state.base.outputs.demo_zone_id
-    domain               = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
-    acme_email           = var.acme_email
-    auth_issuer          = data.terraform_remote_state.base.outputs.cognito_issuer
-    auth_audience        = data.terraform_remote_state.base.outputs.cognito_client_id
+
+    // Where the database goes on the way down. The same bucket that holds the state,
+    // under a prefix the instance role can write and the state is not in (M6.4).
+    archive_bucket     = data.terraform_remote_state.base.outputs.bucket
+    idle_minutes       = var.idle_minutes
+    max_uptime_minutes = var.max_uptime_minutes
+    zone_id            = data.terraform_remote_state.base.outputs.demo_zone_id
+    domain             = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
+    acme_email         = var.acme_email
+    auth_issuer        = data.terraform_remote_state.base.outputs.cognito_issuer
+    auth_audience      = data.terraform_remote_state.base.outputs.cognito_client_id
 
     // compose.yaml and the Caddyfile are absent: they are extracted from the image at
     // boot, so that rolling back moves the stack definition with the code.
@@ -153,6 +157,9 @@ locals {
     rsa_idle_service = filebase64("${path.module}/../../instance/rsa-idle.service")
     rsa_idle_timer   = filebase64("${path.module}/../../instance/rsa-idle.timer")
     update_dns       = filebase64("${path.module}/../../instance/update-dns.sh")
+    archive          = filebase64("${path.module}/../../instance/archive.sh")
+    restore          = filebase64("${path.module}/../../instance/restore.sh")
+    rsa_stop         = filebase64("${path.module}/../../instance/rsa-stop.sh")
   })
 }
 
@@ -179,9 +186,11 @@ resource "aws_instance" "demo" {
   // stop, and the entry point reads the current one.
   associate_public_ip_address = true
 
-  // Gzipped, which cloud-init decompresses. EC2 caps user data at 16 KB, and the six
-  // base64 file blobs are 16.4 KB before compression. base64 of text compresses well, so
-  // this leaves plenty of room rather than being a squeeze past the limit.
+  // Gzipped, which cloud-init decompresses. EC2 caps user data at 16 KB, and the nine
+  // base64 file blobs are 27 KB before compression. Compressed it is 13.7 KB, which is
+  // 83% of the limit and no longer roomy: tests/test_deploy_files.py renders this and
+  // fails if it stops fitting, because the alternative is an apply that fails on a limit
+  // nothing in the repository mentions.
   user_data_base64            = base64gzip(local.cloud_init)
   user_data_replace_on_change = true
 
@@ -208,6 +217,9 @@ resource "aws_instance" "demo" {
     // Read by scripts/demo.py, so the operator's tool has no second source of truth for
     // where the demo answers. It already finds the instance by tag.
     Domain = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
+    // Where this environment's archives are, for the same reason: the tool finds the
+    // instance by tag and should not need Terraform's state to find its history.
+    ArchiveBucket = data.terraform_remote_state.base.outputs.bucket
   }
 
   lifecycle {

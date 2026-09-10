@@ -25,6 +25,12 @@ echo '${rsa_idle_service}' | base64 -d > /etc/systemd/system/rsa-idle.service
 echo '${rsa_idle_timer}' | base64 -d > /etc/systemd/system/rsa-idle.timer
 echo '${update_dns}' | base64 -d > /usr/local/bin/update-dns
 chmod +x /usr/local/bin/update-dns
+echo '${archive}' | base64 -d > /usr/local/bin/rsa-archive
+chmod +x /usr/local/bin/rsa-archive
+echo '${restore}' | base64 -d > /usr/local/bin/rsa-restore
+chmod +x /usr/local/bin/rsa-restore
+echo '${rsa_stop}' | base64 -d > /usr/local/bin/rsa-stop
+chmod +x /usr/local/bin/rsa-stop
 
 # What the units read. No secret here: the model key is fetched from Parameter Store at
 # boot, and this file only says where to look. The user pool's identifiers are the same
@@ -41,6 +47,7 @@ RSA_REGISTRY=${registry}
 RSA_MODEL_KEY_PARAMETER=${model_key_parameter}
 RSA_IMAGE_PARAMETER=${image_parameter}
 RSA_IDENTITIES_PARAMETER=${identities_parameter}
+RSA_ARCHIVE_BUCKET=${archive_bucket}
 RSA_ZONE_ID=${zone_id}
 RSA_DOMAIN=${domain}
 RSA_ACME_EMAIL=${acme_email}
