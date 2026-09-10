@@ -7,32 +7,24 @@ same two consequences: a machine that never stops, or one that stops on somebody
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "src"))
+from retail_support_agent.store import Store
 
-_spec = importlib.util.spec_from_file_location(
-    "idle_shutdown", REPO / "deploy" / "instance" / "idle_shutdown.py"
-)
-assert _spec and _spec.loader
-idle_shutdown = importlib.util.module_from_spec(_spec)
-# Registered before it is executed: its dataclasses resolve their own annotations through
-# sys.modules, and a module that is not there raises during class creation.
-sys.modules["idle_shutdown"] = idle_shutdown
-_spec.loader.exec_module(idle_shutdown)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-Answer = idle_shutdown.Answer
-decide = idle_shutdown.decide
+from deploy.instance import idle_shutdown
+from deploy.instance.idle_shutdown import Answer, decide
 
 IDLE_REQUIRED = 15 * 60.0
 CAP = 240 * 60.0
@@ -107,14 +99,14 @@ class TestReadingTheAnswer:
         answer = Answer(reachable=True)
         assert not at(answer).shutdown
 
-    def test_uptime_that_cannot_be_read_reports_zero(self, monkeypatch) -> None:
+    def test_uptime_that_cannot_be_read_reports_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Zero disables the cap. A bad read must not look like a machine that is overdue."""
         with tempfile.TemporaryDirectory() as directory:
             monkeypatch.setattr(idle_shutdown, "UPTIME_PATH", str(Path(directory) / "absent"))
             assert idle_shutdown.uptime_seconds() == 0.0
         assert not at(Answer.unreachable("no answer"), uptime=0.0).shutdown
 
-    def test_uptime_is_read_from_the_first_field(self, monkeypatch) -> None:
+    def test_uptime_is_read_from_the_first_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "uptime"
             path.write_text("864000.42 1234.00" + chr(10), encoding="ascii")
@@ -149,6 +141,7 @@ class TestTheIdleRoute:
         The clock is pushed back an hour first. Without that, every reading is near zero
         and the test passes whether or not the poll resets anything.
         """
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         for _ in range(3):
             client.get("/idle")
@@ -156,10 +149,12 @@ class TestTheIdleRoute:
         assert client.get("/idle").json()["seconds_since_request"] > 3500.0
 
     def test_an_hour_of_quiet_counts_as_an_hour_of_idleness(self, client: TestClient) -> None:
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         assert client.get("/idle").json()["idle_seconds"] > 3500.0
 
     def test_a_real_request_does_reset_the_clock(self, client: TestClient) -> None:
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         client.get("/tickets")
         assert client.get("/idle").json()["seconds_since_request"] < 1.0
@@ -168,6 +163,7 @@ class TestTheIdleRoute:
         self, client: TestClient
     ) -> None:
         """Somebody is there. A 404 says they asked for the wrong thing, not that they left."""
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         client.get("/no-such-route")
         assert client.get("/idle").json()["seconds_since_request"] < 1.0
@@ -194,10 +190,10 @@ class TestTheIdleRouteAgainstARealDatabase:
     rows that exist.
     """
 
+    @staticmethod
     @pytest.fixture(scope="class")
-    def store(self):
+    def store() -> Iterator[Store]:
         from retail_support_agent.db import Base, make_engine, make_session_factory
-        from retail_support_agent.store import Store
 
         if not TEST_URL:
             if os.getenv("CI"):
@@ -216,18 +212,19 @@ class TestTheIdleRouteAgainstARealDatabase:
         engine.dispose()
 
     @pytest.fixture
-    def client(self, store) -> TestClient:
+    def client(self, store: Store) -> TestClient:
         from retail_support_agent.api import create_app
         from retail_support_agent.config import Settings
 
         settings = Settings(DASHSCOPE_API_KEY="not-a-real-key-for-tests")  # type: ignore[call-arg]
         return TestClient(create_app(settings=settings, store=store))
 
-    def test_an_open_ticket_holds_the_machine_open(self, store, client: TestClient) -> None:
+    def test_an_open_ticket_holds_the_machine_open(self, store: Store, client: TestClient) -> None:
         session_id = f"s-{uuid.uuid4().hex[:12]}"
         store.ensure_session(session_id, "ava_moore_2033", None)
         ticket = store.open_ticket(session_id, "ava_moore_2033", "held open", "test")
 
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         body = client.get("/idle").json()
         assert body["open_tickets"] >= 1
@@ -242,7 +239,7 @@ class TestTheIdleRouteAgainstARealDatabase:
         assert after["idle_seconds"] > 3500.0
 
     def test_a_write_waiting_for_confirmation_holds_the_machine_open(
-        self, store, client: TestClient
+        self, store: Store, client: TestClient
     ) -> None:
         from retail_support_agent.guardrails import ProposedCall
 
@@ -253,13 +250,16 @@ class TestTheIdleRouteAgainstARealDatabase:
             ProposedCall("cancel_pending_order", {"order_id": "#W001", "reason": "test"}),
         )
 
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 3600.0
         body = client.get("/idle").json()
         assert body["pending_confirmations"] >= 1
         assert body["idle_seconds"] == 0.0
         assert any("confirmation" in reason for reason in body["holding"])
 
-    def test_time_alone_never_makes_a_held_machine_idle(self, store, client: TestClient) -> None:
+    def test_time_alone_never_makes_a_held_machine_idle(
+        self, store: Store, client: TestClient
+    ) -> None:
         """The case a clock gets wrong.
 
         Nobody is sending requests, because they are waiting for an answer that has not
@@ -272,6 +272,7 @@ class TestTheIdleRouteAgainstARealDatabase:
         store.open_confirmation(
             session_id, ProposedCall("cancel_pending_order", {"order_id": "#W002", "reason": "t"})
         )
+        assert isinstance(client.app, FastAPI)
         client.app.state.last_activity = time.monotonic() - 24 * 3600.0
         answer = idle_shutdown.Answer(
             reachable=True,
