@@ -78,11 +78,11 @@ resource "aws_security_group" "demo" {
   tags = { Name = "${var.name_prefix}-demo" }
 }
 
-// No default. An empty list means nobody can reach it, which is the right way for this to
-// fail: a demo nobody can open is a smaller problem than one anybody can.
+// Open by default since M6.7, because there is now something behind it: every route
+// requires a token the user pool signed, and what the holder may do is read from the
+// database rather than from the token. An unauthenticated visitor reaches a sign-in form.
 //
-// This still gates who may use the demo. A certificate makes the connection private; it
-// says nothing about who is on the other end, and login is the next step.
+// An empty list still closes it to everyone, which remains the right way for this to fail.
 resource "aws_vpc_security_group_ingress_rule" "https" {
   for_each = toset(var.allowed_cidrs)
 
@@ -137,6 +137,13 @@ locals {
     zone_id             = data.terraform_remote_state.base.outputs.demo_zone_id
     domain              = trimsuffix(data.terraform_remote_state.base.outputs.demo_domain, ".")
     acme_email          = var.acme_email
+    auth_issuer         = data.terraform_remote_state.base.outputs.cognito_issuer
+    auth_audience       = data.terraform_remote_state.base.outputs.cognito_client_id
+
+    // Base64 because the value is JSON and the file it lands in is read by both systemd
+    // and a shell. Subjects are opaque identifiers; the mapping decides nothing without a
+    // token the pool signed.
+    identities_b64 = base64encode(data.terraform_remote_state.base.outputs.demo_identities)
 
     compose_yaml     = filebase64("${path.module}/../../instance/compose.yaml")
     rsa_start        = filebase64("${path.module}/../../instance/rsa-start.sh")

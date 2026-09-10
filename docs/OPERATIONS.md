@@ -101,7 +101,7 @@ uv run python scripts/demo.py stop
 Exit codes: 0 done or nothing to do, 1 could not be done, 2 refused because work is
 unfinished. A wrapper may retry on 1 and must not on 2.
 
-## What the internet can reach (from M6.6)
+## What the internet can reach (from M6.6, narrowed in M6.7)
 
 The demo answers on one name over TLS, `rsa.proshot.top`, terminated by Caddy on the
 instance. The certificate lives on a volume, so a stop and a start do not reissue it.
@@ -109,22 +109,46 @@ instance. The certificate lives on a volume, so a stop and a start do not reissu
 **Less is exposed than runs.** The UI is served at `/`, and `/health` and `/idle` are
 proxied for the operator. The rest of the API is on the compose network and is not routable
 from outside at all: `/chat`, `/tickets` and `/approvals` cannot be called even from an
-address in `allowed_cidrs`. The UI builds its own agent in process and never calls the API
-over the network, so nothing is lost.
+address in `allowed_cidrs`. Since M6.7 the UI reaches them itself, over that network,
+carrying the visitor's token.
 
 | Port | Open to | What answers |
 |---|---|---|
-| 443 | `allowed_cidrs` | the demo |
+| 443 | `allowed_cidrs`, `0.0.0.0/0` by default since M6.7 | a sign-in form, and the demo once signed in |
 | 80 | everyone | the ACME challenge and a redirect to HTTPS |
 
 Port 80 cannot be restricted, because Let's Encrypt validates from wherever it happens to
-be. Port 443 is what decides who can use the demo.
-
-**A certificate is not a login.** Until authentication is on, `allowed_cidrs` is the only
-thing deciding who may use this, and it should hold one address rather than a network.
+be.
 
 The name is delegated once: see `deploy/terraform/README.md`. Until that is done the
 instance still writes its A record at every boot and nobody can see it.
+
+## Who may use it (from M6.7)
+
+A Cognito user pool holds the accounts. It issues tokens and decides nothing else: the
+token's subject is looked up in `identities`, and `role_memberships` decides what the
+caller may do, so revoking a role takes effect on the next request rather than on the next
+token.
+
+Every route except `/health` and `/idle` requires a token the pool signed. The UI signs the
+visitor in on the server side and holds the tokens in the page's server-side session, so
+the browser never receives one.
+
+| Where a thing lives | |
+|---|---|
+| The accounts | `demo_accounts` in `deploy/terraform/base/variables.tf` |
+| The passwords | nowhere in this repository and nowhere in Terraform state; set once per account by hand |
+| The subject-to-identity mapping | written by Terraform, applied at every boot by the image's `seed` role |
+
+**Passwords are set out of band.** Terraform creates each account with no password, because
+both of its password arguments write the value into state. After the first apply,
+`terraform output set_these_passwords` prints one command per account; run each with a
+password of your choosing. Until then the account exists and cannot sign in.
+
+To add an account, add it to `demo_accounts`, apply, set its password, and restart the
+instance so the boot re-runs the seeding. To remove a role, remove it from `demo_accounts`
+and restart: a role revoked by hand comes back at the next boot, because the seeding writes
+what the configuration names.
 
 ## Stopping the instance when nobody is using it (from M6.3)
 

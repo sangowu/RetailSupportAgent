@@ -36,16 +36,38 @@ services:
       db: {condition: service_healthy}
     restart: "no"
 
+  # Which token subject is which retail identity, and which roles it holds. Terraform
+  # knows the subjects and the database does not, so the mapping arrives in the
+  # environment and this writes it before anything can authenticate against it. Idempotent,
+  # so it repairs a reset volume without an apply.
+  seed:
+    image: ${RSA_IMAGE:?RSA_IMAGE is required}
+    command: ["seed"]
+    environment:
+      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      RSA_IDENTITIES: ${RSA_IDENTITIES:-}
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: "no"
+
   api:
     image: ${RSA_IMAGE:?RSA_IMAGE is required}
     command: ["api"]
     environment:
       RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      # Both set here, so every route requires a verified token. The issuer names the
+      # pool and the audience names the app client; neither is a secret, and neither
+      # opens anything on its own.
+      RSA_AUTH_ISSUER: ${RSA_AUTH_ISSUER:?RSA_AUTH_ISSUER is required}
+      RSA_AUTH_AUDIENCE: ${RSA_AUTH_AUDIENCE:?RSA_AUTH_AUDIENCE is required}
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
+      seed: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)\""]
       interval: 3s
@@ -59,10 +81,17 @@ services:
       RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
       RSA_UI_HOST: "0.0.0.0"
+      # The UI signs the visitor in and then calls the API as them. It reaches the API on
+      # the compose network, so /chat stays unroutable from the internet.
+      RSA_API_URL: http://api:8000
+      RSA_COGNITO_REGION: ${RSA_COGNITO_REGION:?RSA_COGNITO_REGION is required}
+      RSA_COGNITO_CLIENT_ID: ${RSA_COGNITO_CLIENT_ID:?RSA_COGNITO_CLIENT_ID is required}
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
+      seed: {condition: service_completed_successfully}
+      api: {condition: service_healthy}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3).status==200 else 1)\""]
       interval: 3s

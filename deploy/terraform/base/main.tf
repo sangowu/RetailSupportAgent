@@ -228,3 +228,102 @@ resource "cloudflare_dns_record" "delegation" {
   ttl     = 3600
   comment = "RetailSupportAgent demo, delegated to Route 53 by deploy/terraform/base"
 }
+
+// ---- who may use the demo --------------------------------------------------
+
+// A user pool, and nothing else about it. It issues tokens; it decides nothing. The
+// token's `sub` is looked up in `identities` and `role_memberships` decides what the
+// caller may do, so `cognito:groups` is deliberately never read and never written.
+//
+// Billing is per monthly active user with a large free allowance, so a pool with four
+// accounts and an instance that is stopped most of the time adds nothing measurable to
+// the idle cost M6.1 bounded.
+resource "aws_cognito_user_pool" "demo" {
+  name = "${var.name_prefix}-demo"
+
+  // No self-registration. Accounts are created here and provisioned by the operator,
+  // which is what stops "choose your own role at sign-up".
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
+  password_policy {
+    minimum_length    = 12
+    require_lowercase = true
+    require_uppercase = true
+    require_numbers   = true
+    require_symbols   = true
+  }
+
+  // Nothing is mailed: these accounts have no address, and a demo that cannot deliver a
+  // message must not be configured as though it can.
+  auto_verified_attributes = []
+
+  // A teardown has to be able to remove this. Protection here would leave a pool behind
+  // after `destroy` and the next apply would fail on the name.
+  deletion_protection = "INACTIVE"
+}
+
+// The application the tokens are minted for. No secret: the client is the UI process,
+// which holds no credential of its own and only passes the visitor's password through.
+resource "aws_cognito_user_pool_client" "demo" {
+  name         = "${var.name_prefix}-demo-ui"
+  user_pool_id = aws_cognito_user_pool.demo.id
+
+  generate_secret = false
+
+  // Exactly two flows. Everything else - custom auth, admin sign-in, SRP - is absent
+  // rather than unused, so a flow nobody reviewed cannot be reached.
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+  ]
+
+  // A refusal must not say whether the username exists. This makes the pool answer
+  // `NotAuthorizedException` for an absent user as well as a wrong password, which is
+  // the same thing the UI would do on its own; both, because either alone is one change
+  // away from leaking it.
+  prevent_user_existence_errors = "ENABLED"
+
+  access_token_validity  = 60
+  id_token_validity      = 60
+  refresh_token_validity = 1
+
+  token_validity_units {
+    access_token  = "minutes"
+    id_token      = "minutes"
+    refresh_token = "days"
+  }
+}
+
+// The accounts themselves.
+//
+// No `password` and no `temporary_password`. Either argument writes the value into
+// Terraform state, and this project's rule is that a credential lives in a secret manager
+// or in the environment. Each user is created in FORCE_CHANGE_PASSWORD, and the operator
+// runs one command per account to set a permanent one; `set_these_passwords` prints them.
+resource "aws_cognito_user" "demo" {
+  for_each = var.demo_accounts
+
+  user_pool_id = aws_cognito_user_pool.demo.id
+  username     = each.key
+
+  // There is no address to send an invitation to.
+  message_action = "SUPPRESS"
+
+  lifecycle {
+    // The operator sets the password out of band, which moves the user out of
+    // FORCE_CHANGE_PASSWORD. Terraform must read that as done, not as drift to undo.
+    ignore_changes = [password, temporary_password]
+  }
+}
+
+locals {
+  // The accounts that also get a row in `identities`. An account whose `user_id` is empty
+  // is deliberately left unprovisioned: it exists in the pool and nowhere else, so that
+  // "authenticated, and authorized to do nothing" is a case someone can sign in and see
+  // rather than a paragraph in a document.
+  provisioned = {
+    for name, account in var.demo_accounts : name => account if account.user_id != ""
+  }
+}

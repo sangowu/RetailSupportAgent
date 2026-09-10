@@ -20,7 +20,7 @@ INSTANCE = REPO / "deploy" / "instance"
 TEMPLATE = INSTANCE / "cloud-init.sh.tftpl"
 DEMO_TF = REPO / "deploy" / "terraform" / "demo" / "main.tf"
 
-SERVICES = ("db", "migrate", "api", "ui")
+SERVICES = ("db", "migrate", "seed", "api", "ui")
 # Caddy runs only on the instance: development reaches the UI on the loopback address and
 # has nothing to get a certificate for.
 INSTANCE_ONLY = ("caddy",)
@@ -58,7 +58,7 @@ class TestTheTwoComposeFiles:
             service
         ].get("command")
 
-    @pytest.mark.parametrize("service", ("migrate", "api", "ui"))
+    @pytest.mark.parametrize("service", ("migrate", "seed", "api", "ui"))
     def test_each_service_is_given_the_same_settings(
         self, service: str, local_compose, instance_compose
     ) -> None:
@@ -91,14 +91,14 @@ class TestTheTwoComposeFiles:
         The key reaches the instance from Parameter Store at boot. A default here would put
         it in the repository, and a placeholder that looks like a key is worse than none.
         """
-        for service in ("migrate", "api", "ui"):
+        for service in ("migrate", "seed", "api", "ui"):
             value = instance_compose["services"][service]["environment"]["DASHSCOPE_API_KEY"]
             assert value.startswith("${") and value.endswith("}")
 
     def test_the_instance_file_requires_an_image_rather_than_defaulting(
         self, instance_compose
     ) -> None:
-        for service in ("migrate", "api", "ui"):
+        for service in ("migrate", "seed", "api", "ui"):
             assert instance_compose["services"][service]["image"].startswith("${RSA_IMAGE:?")
 
 

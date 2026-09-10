@@ -64,3 +64,43 @@ variable "cloudflare_zone_id" {
   type        = string
   default     = ""
 }
+
+variable "demo_accounts" {
+  description = <<-EOT
+    The demo's accounts: the username someone signs in with, the retail identity that owns
+    their orders, and the roles the database grants them.
+
+    The roles are the ones `ROLE_PERMISSIONS` in src/retail_support_agent/auth.py defines.
+    `demo` is not grantable here: it is the role the service invents for itself when
+    authentication is off, and it carries session:reset_all.
+
+    An empty `user_id` creates the account in the pool and provisions nothing, which is how
+    "a token that verifies for a subject with no account here" stays a demonstrable case.
+
+    Passwords are not here and are not in Terraform state. See `set_these_passwords`.
+  EOT
+
+  type = map(object({
+    user_id = string
+    roles   = list(string)
+  }))
+
+  default = {
+    // Two customers, both with orders in the τ²-bench data, so one cannot reach the
+    // other's is something to try rather than something to claim.
+    ava  = { user_id = "ava_moore_2033", roles = ["customer"] }
+    ivan = { user_id = "ivan_santos_6635", roles = ["customer"] }
+
+    // Approvals and the audit trail, and no ticket:work: a supervisor decides and
+    // assigns, and an approver who also performs the action is not an approver.
+    sam = { user_id = "ava_moore_2033", roles = ["supervisor"] }
+
+    // In the pool, not in the database. Signs in, and every action answers 403.
+    nobody = { user_id = "", roles = [] }
+  }
+
+  validation {
+    condition     = alltrue([for account in var.demo_accounts : !contains(account.roles, "demo")])
+    error_message = "`demo` is the role the service invents when authentication is off, and it carries session:reset_all. It is not grantable to a real account."
+  }
+}

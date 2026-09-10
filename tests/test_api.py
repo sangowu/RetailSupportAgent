@@ -30,6 +30,17 @@ def test_health_reports_milestone_and_demo_identity(client: TestClient) -> None:
     assert body["demo_user_id"] == DEMO_USER_ID
 
 
+def test_me_reports_the_demo_identity_and_says_authentication_is_off(
+    client: TestClient,
+) -> None:
+    """With no issuer configured the service keeps its fixed identity, and the page that
+    renders this says so rather than looking like a signed-in session."""
+    body = client.get("/me").json()
+    assert body["user_id"] == DEMO_USER_ID
+    assert body["auth"] == "disabled"
+    assert body["roles"] == ["demo"]
+
+
 def test_empty_message_is_rejected_before_reaching_the_model(client: TestClient) -> None:
     response = client.post("/chat", json={"session_id": "s1", "message": ""})
     assert response.status_code == 422

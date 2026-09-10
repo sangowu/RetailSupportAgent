@@ -39,3 +39,47 @@ output "delegate_these_name_servers" {
   EOT
   value       = aws_route53_zone.demo.name_servers
 }
+
+// ---- what the demo layer needs to authenticate anyone -----------------------
+
+output "cognito_issuer" {
+  description = "What the API verifies a token's `iss` against"
+  value       = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.demo.id}"
+}
+
+output "cognito_client_id" {
+  description = "The app client. The UI signs in against it; the API checks it as the audience."
+  value       = aws_cognito_user_pool_client.demo.id
+}
+
+output "cognito_user_pool_id" {
+  description = "For the one command that sets a password, and for nothing else"
+  value       = aws_cognito_user_pool.demo.id
+}
+
+output "demo_identities" {
+  description = <<-EOT
+    The subject-to-identity mapping, as the instance's RSA_IDENTITIES expects it. Subjects
+    are opaque identifiers, not credentials: this decides nothing on its own, since the
+    account still has to hold a token the pool signed.
+  EOT
+  value = jsonencode([
+    for name, account in local.provisioned : {
+      subject = aws_cognito_user.demo[name].sub
+      user_id = account.user_id
+      roles   = account.roles
+    }
+  ])
+}
+
+output "set_these_passwords" {
+  description = <<-EOT
+    One command per account, run once after the first apply. Terraform creates each user
+    without a password, because both of its password arguments write the value into state.
+    Choose a password per account and keep it wherever you keep passwords.
+  EOT
+  value = [
+    for name in sort(keys(var.demo_accounts)) :
+    "aws cognito-idp admin-set-user-password --region ${var.region} --user-pool-id ${aws_cognito_user_pool.demo.id} --username ${name} --password '<choose one>' --permanent"
+  ]
+}
