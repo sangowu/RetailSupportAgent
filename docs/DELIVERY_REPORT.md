@@ -239,6 +239,13 @@ verification before merge. The failure above describes the original `a31ebb2` re
 
 ## 8. Reproduction
 
+**Deployment maintenance, 2026-09-10:** the
+[user-data reconciliation](USER_DATA_RECONCILIATION.md) reproduced the pending instance
+replacement with a live full Terraform plan, reconciled launch metadata while the
+instance remained stopped, and verified a final full plan with no changes. The instance
+and its root volume were preserved. This is deployment-state verification, not a fresh
+runtime acceptance run.
+
 ```bash
 uv sync --group bench
 uv run python scripts/fetch_tau2.py                          # the pinned commit, SHA256 verified
