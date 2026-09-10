@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import ast
 import inspect
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from retail_support_agent import ui
-from retail_support_agent.client import Account, ForbiddenError, UnauthenticatedError
+from retail_support_agent.client import Account, Event, ForbiddenError, UnauthenticatedError
 from retail_support_agent.cognito import SignInError, Tokens
 from retail_support_agent.ui import Visitor, authenticate, cognito_from_env, describe, retrying
 
@@ -245,3 +246,62 @@ class TestTheDemoCannotBypassTheService:
     def test_the_visitor_state_is_not_serialised_into_a_component(self) -> None:
         state: Any = Visitor(token="a.token.value", account=CUSTOMER)
         assert "a.token.value" not in describe(state.account)
+
+
+class TestShowingTheWork:
+    """M7.1. A turn takes as long as it took; what changes is that it is visible."""
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            (Event(kind="thinking"), "asking the model…"),
+            (Event(kind="tool", tool="get_order_details"), "ran get_order_details"),
+            (
+                Event(kind="held", tool="cancel_pending_order"),
+                "⚠ held cancel_pending_order for your confirmation",
+            ),
+            (
+                Event(kind="approval", tool="modify_pending_order_payment"),
+                "⚠ modify_pending_order_payment is waiting for a supervisor",
+            ),
+        ],
+    )
+    def test_each_step_reads_as_a_sentence(self, event: Event, expected: str) -> None:
+        assert ui._describe(event) == expected
+
+    def test_a_refusal_says_why(self) -> None:
+        """The verdict is the interesting part of a refusal, and a line that only said
+        "refused" would hide the one thing worth reading."""
+        line = ui._describe(Event(kind="refused", detail="Order #W002 belongs to bob."))
+        assert "✗ refused" in line
+        assert "belongs to bob" in line
+
+    def test_an_unknown_kind_is_shown_rather_than_dropped(self) -> None:
+        """A page that silently ignores an event it does not recognise shows a turn with
+        a step missing and no sign that anything is missing."""
+        assert ui._describe(Event(kind="something-new")) == "something-new"
+
+    def test_the_first_bubble_says_something_before_any_step_finishes(self) -> None:
+        assert ui._progress([])["content"]
+
+    def test_the_steps_accumulate_rather_than_replace(self) -> None:
+        """The turn is the story: a viewer who looks up after the tool ran should still
+        see that the model was asked first."""
+        content = ui._progress(["asking the model…", "ran get_order_details"])["content"]
+        assert "asking the model…" in content
+        assert "ran get_order_details" in content
+
+    def test_the_page_renders_the_turn_progressively(self) -> None:
+        """Pinned on the source, because the failure is silent: a `respond` that returned
+        instead of yielding would still answer correctly, and the page would go back to a
+        blank panel for the whole turn without any test noticing."""
+        tree = ast.parse(Path(ui.__file__).read_text(encoding="utf-8"))
+        respond = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "respond"
+        )
+        assert any(isinstance(node, ast.Yield) for node in ast.walk(respond))
+        assert not any(
+            isinstance(node, ast.Return) and node.value is not None for node in ast.walk(respond)
+        ), "a bare return ends the generator; returning a value would end the turn early"

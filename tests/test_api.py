@@ -7,10 +7,20 @@ API quota.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
-from retail_support_agent.api import DEMO_USER_ID, create_app
+from retail_support_agent.agent import RetailAgent, TurnEvent, TurnResult
+from retail_support_agent.api import (
+    DEMO_USER_ID,
+    ChatResponse,
+    _as_payload,
+    _sse,
+    create_app,
+)
 from retail_support_agent.config import Settings
 
 
@@ -115,3 +125,103 @@ class TestResetAllSessions:
     def test_health_exposes_active_session_count(self, client: TestClient) -> None:
         """The stop script uses this to tell whether stopping now interrupts a demo."""
         assert client.get("/health").json()["active_sessions"] == 0
+
+
+class TestTheStreamingRoute:
+    """The wire between a turn and a page (M7.1).
+
+    The agent's own behaviour is covered in test_streaming.py; what is here is the shape
+    of what goes over the wire, because a page reads that and nothing else.
+    """
+
+    def test_an_event_is_one_data_line_and_a_blank_one(self) -> None:
+        """A newline inside the data field would end the event early, so the JSON is
+        written compact rather than pretty."""
+        line = _sse({"kind": "thinking", "tool": None, "detail": ""})
+        assert line.startswith("data: ")
+        assert line.endswith("\n\n")
+        assert line.count("\n") == 2
+
+    def test_a_progress_event_carries_no_result(self) -> None:
+        payload = _as_payload(TurnEvent(kind="tool", tool="get_order_details"))
+        assert payload == {"kind": "tool", "tool": "get_order_details", "detail": ""}
+
+    def test_the_final_event_is_what_chat_answers(self) -> None:
+        """A client can read one branch and be a client of either route, which is what
+        makes the events a view of a turn rather than a second account of it."""
+        result = TurnResult(
+            reply="Order #W001 is pending.",
+            status="answered",
+            tool_calls=["get_order_details"],
+        )
+        payload = _as_payload(TurnEvent(kind="reply", result=result))
+        assert payload == {
+            "kind": "reply",
+            "reply": "Order #W001 is pending.",
+            "status": "answered",
+            "tool_calls": ["get_order_details"],
+            "pending_confirmation": None,
+            "stop_reason": None,
+        }
+        assert set(payload) - {"kind"} <= set(ChatResponse.model_fields)
+
+    def test_the_route_sends_every_event_in_order(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake(self: object, message: str) -> Iterator[TurnEvent]:
+            yield TurnEvent(kind="thinking")
+            yield TurnEvent(kind="tool", tool="get_order_details")
+            yield TurnEvent(
+                kind="reply",
+                result=TurnResult(reply=f"heard {message}", status="answered"),
+            )
+
+        monkeypatch.setattr(RetailAgent, "stream", fake)
+        with client.stream(
+            "POST", "/chat/stream", json={"session_id": "s-stream", "message": "hello"}
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            events = [
+                json.loads(line[len("data:") :])
+                for line in response.iter_lines()
+                if line.startswith("data:")
+            ]
+        assert [e["kind"] for e in events] == ["thinking", "tool", "reply"]
+        assert events[-1]["reply"] == "heard hello"
+
+    def test_a_failure_mid_turn_becomes_an_event(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """There is no status code left to send: the response began with the first event.
+        The failure has to arrive in the shape the client already parses."""
+
+        def fake(self: object, message: str) -> Iterator[TurnEvent]:
+            yield TurnEvent(kind="thinking")
+            raise RuntimeError("the provider hung up")
+
+        monkeypatch.setattr(RetailAgent, "stream", fake)
+        with client.stream(
+            "POST", "/chat/stream", json={"session_id": "s-fail", "message": "hello"}
+        ) as response:
+            assert response.status_code == 200
+            events = [
+                json.loads(line[len("data:") :])
+                for line in response.iter_lines()
+                if line.startswith("data:")
+            ]
+        assert [e["kind"] for e in events] == ["thinking", "error"]
+        assert "the provider hung up" in events[-1]["detail"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"session_id": "s1", "message": ""},
+            {"session_id": "s1", "message": "x" * 5000},
+            {"message": "hello"},
+        ],
+    )
+    def test_it_validates_its_input_like_chat_does(
+        self, client: TestClient, body: dict[str, str]
+    ) -> None:
+        assert client.post("/chat/stream", json=body).status_code == 422

@@ -426,6 +426,10 @@ class TestTheApiRefusesUnauthenticatedRequests:
         ("method", "path", "body"),
         [
             ("post", "/chat", {"session_id": "s1", "message": "hello"}),
+            # The streaming route refuses the same way, and it has to refuse before the
+            # response begins: once the first event is out there is no status code left
+            # to send (M7.1).
+            ("post", "/chat/stream", {"session_id": "s1", "message": "hello"}),
             ("get", "/me", None),
             ("get", "/session/s1/audit", None),
             ("post", "/session/s1/reset", None),

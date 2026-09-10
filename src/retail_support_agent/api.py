@@ -23,15 +23,18 @@ assignee works it in a session of their own bound to that ticket.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import uuid
+from collections.abc import Iterator, Mapping
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from retail_support_agent.agent import RetailAgent
+from retail_support_agent.agent import RetailAgent, TurnEvent
 from retail_support_agent.auth import (
     AuthConfig,
     AuthError,
@@ -56,6 +59,32 @@ _QUIET_ROUTES = frozenset({"/health", "/idle"})
 # because it owns both a pending order (cancellable) and a delivered order
 # (returnable), so all three flows can be demonstrated under one identity.
 DEMO_USER_ID = "ava_moore_2033"
+
+
+def _as_payload(event: TurnEvent) -> dict[str, Any]:
+    """One event, in the shape a client parses (M7.1).
+
+    The final event is the whole of what `/chat` answers, under the same field names, so
+    a client can read one branch and be a client of either route.
+    """
+    if event.result is None:
+        return {"kind": event.kind, "tool": event.tool, "detail": event.detail}
+    return {
+        "kind": "reply",
+        "reply": event.result.reply,
+        "status": event.result.status,
+        "tool_calls": list(event.result.tool_calls),
+        "pending_confirmation": event.result.pending_confirmation,
+        "stop_reason": event.result.stop_reason,
+    }
+
+
+def _sse(payload: Mapping[str, Any]) -> str:
+    """One server-sent event. Compact separators, because a newline inside the data
+    field would end the event early."""
+    body = json.dumps(dict(payload), separators=(",", ":"))
+    return f"data: {body}\n\n"
+
 
 # How long one process holds a session before another may take it over. It has to
 # outlast a normal turn (a model call plus tool calls, seconds) and stay well under the
@@ -579,6 +608,38 @@ def create_app(
             tool_calls=result.tool_calls,
             pending_confirmation=result.pending_confirmation,
             stop_reason=result.stop_reason,
+        )
+
+    @app.post("/chat/stream")
+    def chat_stream(request: ChatRequest, identity: CurrentIdentity) -> StreamingResponse:
+        """The same turn as `/chat`, reported step by step as server-sent events (M7.1).
+
+        The agent is resolved before the response begins, so a caller who may not do this
+        gets a 401, a 403 or a 409 rather than a stream that opens and then says it should
+        not have. A client reading only the final event sees exactly what `/chat` returns.
+
+        A disconnected client stops the events, not the turn: it runs to completion and
+        its writes are committed and journaled, because a write already executed cannot
+        be un-executed by hanging up.
+        """
+        agent = session_agent(request.session_id, identity)
+
+        def events() -> Iterator[str]:
+            try:
+                for event in agent.stream(request.message):
+                    yield _sse(_as_payload(event))
+            except Exception as exc:
+                # There is no status code left to send: the response began the moment the
+                # first event went out. The failure becomes an event of its own, in the
+                # shape the client already parses, carrying what a 502 would have said.
+                yield _sse({"kind": "error", "detail": f"Model or tool call failed: {exc}"})
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            # Proxies buffer by default, which would hold every event until the turn ended
+            # and undo the whole point. Caddy honours both.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     @app.get("/session/{session_id}/audit", response_model=list[AuditEvent])
