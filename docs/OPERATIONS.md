@@ -1,477 +1,275 @@
-# Local operation and on-demand AWS demo
+# Operations guide
 
-Status: the three local start/stop scripts are implemented and verified by running them
-(see [M0.5 part two](M0.5_LOCAL_DEMO.md)). The AWS part is not implemented; everything
-about AWS below is an operational contract to be implemented and verified, not a set of
-commands that work today.
+This guide describes the implemented local services and AWS demonstration environment.
+The AWS deployment uses one EC2 instance in `eu-west-1`, with PostgreSQL on the instance,
+Caddy for HTTPS, Cognito for authentication, ECR for images and S3 for database archives.
+Earlier infrastructure proposals are retained in the historical project records; they do
+not describe the deployed topology.
 
-The AWS shape named below - ECS Fargate behind an ALB, RDS, CloudFront - is superseded by
-[M6.1](M6.1_DEPLOYMENT_SHAPE.md), which measured the candidates and chose a single
-instance that is stopped when idle. The sections "AWS technical target", "Separate base
-and demo layers" and "Free URL and HTTPS" are kept here unchanged until the step that
-builds the Terraform rewrites them, so that what was assumed and what was measured stay
-visible side by side. Read M6.1 first.
+Run repository commands from the repository root. Commands for the instance filesystem
+must be run on the instance. Provisioning instructions are in the
+[Terraform guide](../deploy/terraform/README.md).
 
-## Local start and stop
+## Local services
 
-| Script | Behaviour | Status |
-|---|---|---|
-| `scripts/start-local.ps1` | Check dependencies and configuration, start the components this stage needs, wait for health, print the local URLs | implemented |
-| `scripts/stop-local.ps1` | Stop this project's services, keeping data and experiment results | implemented |
-| `scripts/reset-demo.ps1` | Reset an explicit simulated scope, deleting no baseline or other account's data | implemented |
+Install dependencies with `uv sync --locked --group bench`, fetch the verified benchmark
+data with `uv run python scripts/fetch_tau2.py`, and configure `.env` from `.env.example`.
+The process scripts require PowerShell 7 and a configured model API key.
 
-"Control only processes confirmed to belong to this project" is implemented as: at
-startup the PID and the process start time are both recorded under `.local/run/`, and
-both must match before anything is stopped. On a mismatch the stop is refused and the
-record kept. Checking the PID alone is not enough: Windows reuses PIDs, and the most
-likely victim on this machine is an evaluation that runs for tens of minutes.
+| Script | Behavior |
+|---|---|
+| `scripts/start-local.ps1` | Check prerequisites, start the API and UI, wait for health and print local URLs |
+| `scripts/stop-local.ps1` | Stop the processes recorded by this project |
+| `scripts/reset-demo.ps1` | Clear in-process demo sessions; does not delete database records or files |
 
-The scope of a reset is the demo sessions in process memory. M0's demo data lives
-entirely in memory, each session holding its own database copy, so dropping sessions
-restores the initial state. The script deletes no files and offers no way to.
-
-M0 does not require PostgreSQL, Cognito or AWS to run; persistence is enabled later
-through explicit local configuration. Model keys and Langfuse configuration are read
-from an environment that is not under version control. First-time instructions cover the
-Python, uv and Docker requirements, the configuration template, credential setup, the
-simulated identity, the three demo flows and troubleshooting.
-
-The Windows scripts control only processes and containers confirmed to belong to this
-project and never terminate a global Python by fuzzy name. Background processes hide
-their window, and a failed start reports the log location and what was cleaned up.
-
-## The whole stack in containers (from M6.2)
-
-The PowerShell scripts above run the application from a virtual environment on the
-developer's machine, one process at a time. `compose.yaml` now also runs the whole stack -
-PostgreSQL, migrations, the API and the demo UI - from one image built by `Dockerfile`.
-This is the form the AWS demo runs in, so a problem found here is found before it is found
-on an instance.
-
-```
-docker compose up -d --wait      # build if needed, start, wait for every health check
-docker compose down              # stop, keeping the database volume
-docker compose down -v           # stop and delete the data
+```powershell
+pwsh scripts/start-local.ps1
+pwsh scripts/stop-local.ps1
 ```
 
-- **The model key is read from the environment and has no default.** A stack that starts
-  without a key and fails on the first message is worse than one that refuses to start.
-- **Nothing is reachable from outside the machine** unless `RSA_BIND` is set to `0.0.0.0`.
-  The default is the loopback address, the same as the local scripts.
-- **Migrations are their own service** that runs once and exits, so two API containers
-  starting together cannot run them at the same time.
-- **`--wait` means health checks, not process starts.** Both servers are polled until they
-  answer.
+The scripts record process IDs and start times under `.local/run/` and verify both before
+stopping a process. Background windows are hidden. Startup failures report the log
+location and clean up processes started by that invocation.
 
-The repository's test suite can be run against the image's dependency set, which is what
-shows that packaging changed no behaviour:
+The default API and UI addresses are `127.0.0.1:8000` and `127.0.0.1:7860`. Without
+authentication configuration, the service uses a fixed simulated identity and must remain
+local. Without `RSA_DATABASE_URL`, session state is held in memory. Configure PostgreSQL
+and run `uv run alembic upgrade head` to enable application persistence.
 
+`reset-demo.ps1` is intended for the unauthenticated local demo. It sends no bearer token
+and therefore cannot reset an authenticated deployment. With persistent storage, clearing
+in-process sessions is not a database reset. Baselines, evaluation results and `.env` are
+not modified by the reset script.
+
+## Local container stack
+
+The root `compose.yaml` starts PostgreSQL, a migration service, the API and the UI.
+The AWS stack uses the separate `deploy/instance/compose.yaml` packaged in the image.
+
+```bash
+docker compose up -d --wait
+docker compose down
 ```
+
+`down` preserves the named database volume. Use `docker compose down -v` only when
+intentionally deleting the local stack's volumes. The model key is required by the
+container configuration. Published ports bind to loopback unless `RSA_BIND` is changed.
+The migration service completes before application services start, and `--wait` checks
+service health.
+
+The image build requires the verified `third_party/tau2-bench` checkout. To run tests
+using the image's dependency environment from a Bash shell:
+
+```bash
 docker build --target test -t rsa-test:local .
-docker run --rm -v "$PWD":/repo -w /repo   -e TAU2_DATA_DIR=/repo/third_party/tau2-bench/data   rsa-test:local /app/.venv/bin/python -m pytest -q
+docker run --rm -v "$PWD":/repo -w /repo \
+  -e TAU2_DATA_DIR=/repo/third_party/tau2-bench/data \
+  rsa-test:local /app/.venv/bin/python -m pytest -m "not live_model" -q
 ```
 
-Building the image needs `third_party/` to exist, because the demo imports the benchmark's
-retail domain at run time. Run `uv run python scripts/fetch_tau2.py` first; it verifies the
-checkout by SHA256, and the image copies only the retail domain out of it.
+Database tests additionally require a dedicated reachable test database and
+`RSA_TEST_DATABASE_URL`; they are skipped without it. Local startup and health checks do
+not call the model. Chat requests and live evaluations can incur provider charges.
 
-## Starting and stopping a demo (from M6.5)
+## AWS start, status and stop
 
-Three commands. They find the instance by its tags, so they work from any machine with
-credentials, without Terraform's state.
+The operator commands locate the instance by project tags and use AWS credentials;
+Terraform state is not required for these commands.
 
-```
+```bash
 uv run python scripts/demo.py status
 uv run python scripts/demo.py start
 uv run python scripts/demo.py stop
 ```
 
-- **`start` waits for an answer, not for a state.** `running` means the hypervisor has the
-  machine; the demo answers about half a minute later. Measured at 29 and 35 seconds.
-- **`start` prints the URL.** From M6.6 that is one name over TLS and it does not change
-  across a stop; the address underneath does, and the instance rewrites its own A record at
-  every boot.
-- **`stop` asks the application whether it is busy**, using the same verdict the idle
-  watcher uses. It refuses while a write is awaiting confirmation, an approval is awaiting a
-  human, or a ticket is open, and names which.
-- **`stop --force` overrides** and prints what it overrode.
-- **Stopping loses nothing.** The volume, the database and the image stay; the next start
-  reads the same rows. From M6.9 the stop also archives the database on its way down.
+`start` waits for application health and prints the HTTPS URL. Startup duration varies;
+recorded timings are available in the M6 reports. The instance updates its DNS A record
+at boot, so the hostname remains stable when its public IP changes.
 
-Exit codes: 0 done or nothing to do, 1 could not be done, 2 refused because work is
-unfinished. A wrapper may retry on 1 and must not on 2.
+`stop` checks application activity and refuses if confirmations, approvals or open tickets
+remain. `stop --force` overrides the refusal and reports the outstanding work. Stopping
+preserves the instance and its root volume. The shutdown service also attempts a database
+archive; successful archiving must be verified separately.
 
-## What the internet can reach (from M6.6, narrowed in M6.7)
-
-The demo answers on one name over TLS, `rsa.proshot.top`, terminated by Caddy on the
-instance. The certificate lives on a volume, so a stop and a start do not reissue it.
-
-**Less is exposed than runs.** The UI is served at `/`, and `/health` and `/idle` are
-proxied for the operator. The rest of the API is on the compose network and is not routable
-from outside at all: `/chat`, `/tickets` and `/approvals` cannot be called even from an
-address in `allowed_cidrs`. Since M6.7 the UI reaches them itself, over that network,
-carrying the visitor's token.
-
-| Port | Open to | What answers |
-|---|---|---|
-| 443 | `allowed_cidrs`, `0.0.0.0/0` by default since M6.7 | a sign-in form, and the demo once signed in |
-| 80 | everyone | the ACME challenge and a redirect to HTTPS |
-
-Port 80 cannot be restricted, because Let's Encrypt validates from wherever it happens to
-be.
-
-The name is delegated once: see `deploy/terraform/README.md`. Until that is done the
-instance still writes its A record at every boot and nobody can see it.
-
-## Who may use it (from M6.7)
-
-A Cognito user pool holds the accounts. It issues tokens and decides nothing else: the
-token's subject is looked up in `identities`, and `role_memberships` decides what the
-caller may do, so revoking a role takes effect on the next request rather than on the next
-token.
-
-Every route except `/health` and `/idle` requires a token the pool signed. The UI signs the
-visitor in on the server side and holds the tokens in the page's server-side session, so
-the browser never receives one.
-
-| Where a thing lives | |
+| Exit code | Meaning |
 |---|---|
-| The accounts | `demo_accounts` in `deploy/terraform/base/variables.tf` |
-| The passwords | nowhere in this repository and nowhere in Terraform state; set once per account by hand |
-| The subject-to-identity mapping | written by Terraform, applied at every boot by the image's `seed` role |
+| 0 | Completed, or no action required |
+| 1 | Operation failed; inspect diagnostics before retrying |
+| 2 | Refused because work is unfinished; resolve it or explicitly choose an override |
 
-**Passwords are set out of band.** Terraform creates each account with no password, because
-both of its password arguments write the value into state. After the first apply,
-`terraform output set_these_passwords` prints one command per account; run each with a
-password of your choosing. Until then the account exists and cannot sign in.
+Starting EC2 incurs infrastructure charges. Storage and other retained resources may
+continue to incur charges while the instance is stopped. A normal stop does not destroy
+the Terraform environment or reset business data.
 
-To add an account, add it to `demo_accounts`, apply, set its password, and restart the
-instance so the boot re-runs the seeding. To remove a role, remove it from `demo_accounts`
-and restart: a role revoked by hand comes back at the next boot, because the seeding writes
-what the configuration names.
+## Network access and authentication
 
-### The accounts, and what each is for
+Caddy serves the demo at `rsa.proshot.top`. The configured subdomain must be delegated to
+Route 53 before public DNS resolution and certificate issuance can work.
 
-| Account | Retail identity | Roles | What it demonstrates |
+| Port | Source | Service |
+|---|---|---|
+| 443 | `allowed_cidrs`; default `0.0.0.0/0` | HTTPS UI and the exposed health and idle endpoints |
+| 80 | Public | ACME HTTP-01 validation and HTTPS redirect |
+
+The instance API is reachable by the UI over the internal Compose network. Application
+routes such as `/chat`, `/tickets` and `/approvals` are not forwarded by Caddy. The UI
+performs Cognito sign-in on the server and retains tokens in its server-side session.
+When authentication is enabled, application API routes require a valid token; `/health`
+and `/idle` are unauthenticated operational endpoints.
+
+Cognito establishes the caller's identity. The application maps the token subject through
+`identities` and reads permissions from `role_memberships`. It does not grant business
+roles from token group claims. See the [access model](ARCHITECTURE_AND_ACCESS.md).
+
+## Account administration
+
+Account definitions are in `deploy/terraform/base/variables.tf`. Terraform creates the
+Cognito users and publishes the identity mapping. Passwords are set separately and are
+not stored in the repository or Terraform configuration.
+
+```bash
+terraform -chdir=deploy/terraform/base output set_these_passwords
+```
+
+Run the generated password-setting commands with the intended account credentials. To
+add an account, update `demo_accounts`, review and apply the base-layer plan, set its
+password, and restart the application stack to apply identity seeding. Role changes must
+also update that configuration and be applied before restarting; otherwise a manual
+database change can be overwritten by the configured mapping on a subsequent start.
+
+| Account | Retail identity | Role | Demonstration purpose |
 |---|---|---|---|
-| `ava` | `ava_moore_2033` | customer | ordinary use: her own orders, and a write held for confirmation |
-| `ivan` | `ivan_santos_6635` | customer | isolation: he cannot reach Ava's orders |
-| `sam` | `ava_moore_2033` | supervisor | assigning a case and deciding an escalation, and being unable to work one |
-| `mia` | `ivan_santos_6635` | agent | working a case somebody else's customer raised |
-| `nobody` | none | none | a token that verifies for a subject with no account here |
+| `ava` | `ava_moore_2033` | customer | Own-order access and action confirmation |
+| `ivan` | `ivan_santos_6635` | customer | Cross-customer access restrictions |
+| `sam` | `ava_moore_2033` | supervisor | Case assignment and approval decisions |
+| `mia` | `ivan_santos_6635` | agent | Work on an assigned customer's case |
+| `nobody` | No application identity | None | Refusal of an authenticated but unprovisioned account |
 
-`sam` and `ava` share a retail identity on purpose: a supervisor still has orders of their
-own, so the retail identity does not identify the account.
+`sam` and `ava` intentionally share a retail identity while retaining separate account
+subjects. Retail identity and authenticated account identity are distinct.
 
-`mia` was added in M7.3. Before it, the demo could escalate a case and nothing could ever
-pick it up, because a supervisor deliberately holds no `ticket:work`.
+## Case management
 
-## Case work in the page (from M7.3)
+The UI uses permissions returned by `/me` to select available sections. Every API action
+also enforces permissions and resource access independently of UI visibility.
 
-Which sections a signed-in account sees comes from the permissions `/me` reports.
-
-| Section | Permission | customer | agent | supervisor |
+| Section | Required permission | Customer | Agent | Supervisor |
 |---|---|---|---|---|
-| Conversation | - | yes | yes | yes |
-| Cases | `ticket:read` | no | theirs only | all |
-| Work this case | `ticket:work` | no | yes | no |
-| Assign | `ticket:assign` | no | no | yes |
-| Approvals | `escalation:decide` | no | no | yes |
+| Conversation | Authenticated application identity | Yes | Yes | Yes |
+| Cases | `ticket:read` | No | Assigned cases | All cases |
+| Work this case | `ticket:work` | No | Assigned cases | No |
+| Assign | `ticket:assign` | No | No | Yes |
+| Approvals | `escalation:decide` | No | No | Yes |
 
-**Hiding a section is not enforcement.** Every route refuses a caller who lacks the
-permission whatever the page shows. The page hides sections because offering an action
-that will be refused is a bad interface.
+An agent works in a separate session associated with the ticket and their account. The
+customer's conversation remains restricted to its owner. Resolving the case releases the
+customer's session; the customer can continue by sending another message.
 
-**An agent works a case in their own session**, derived from the ticket and their subject,
-not the customer's conversation. The customer's conversation belongs to the customer, and
-the ownership check enforces that against the person helping them too.
+## Releases and rollback
 
-**Closing a case releases the customer's session.** They find out by sending a message.
+Use an exact published image tag and the same deployment variables as the existing
+environment. Review the full refreshed Terraform plan before applying it. The
+[Terraform guide](../deploy/terraform/README.md) provides the commands.
 
-## Changing which version runs (from M6.8)
+When only the image tag changes, Terraform updates the image parameter in Parameter Store.
+`uv run python scripts/demo.py restart` then restarts the application stack on the existing
+instance. `demo.py status` reports both the configured and running versions; verify that
+they match after the restart. The command checks for unfinished work before restarting.
 
-Two commands, and the machine survives both.
+The Compose configuration and Caddyfile are packaged with the image. Rollback targets must
+be from M6.8 or later and must be compatible with the current database schema. Rollback
+across schema changes has not been validated.
 
-```bash
-terraform -chdir=deploy/terraform/demo apply -var="image_tag=<tag>" ...
-uv run python scripts/demo.py restart
-```
+### Instance replacement and user-data differences
 
-The apply writes one Parameter Store value and replaces nothing. The restart brings the
-stack down, reads the parameter again, and brings the version up on the same instance, the
-same volume and the same certificate.
+Instance scripts and systemd units are embedded in Terraform user data. With
+`user_data_replace_on_change = true`, changing those inputs, including comments, can
+propose replacing the instance. Its root volume contains PostgreSQL and is configured for
+deletion on termination. Do not apply a replacement plan as a routine image update.
 
-`demo.py status` prints the configured version and the running one. They differ exactly
-while a version has been applied and not yet picked up, which is the moment worth being
-told about.
-
-**A version carries its own stack definition.** The compose file and the Caddyfile are
-copied into the image at build time and extracted from it at boot, so rolling back moves
-them with the code. One consequence: **no image published before M6.8 can be rolled back
-to**, because none of them contains those files.
-
-**What still replaces the instance**, and therefore still discards its database: changing
-the systemd units, the idle watcher, `update-dns` or `rsa-start`. Those are the machine
-rather than the application. Everything the application needs - the version, the accounts,
-the identity mapping - now changes without one.
-
-**Editing an instance script is one of those changes, including after the fact.** The
-scripts are embedded in the user data with `filebase64`, so correcting a comment in
-`archive.sh` or `restore.sh` is indistinguishable to Terraform from rewriting the machine:
-`user_data_base64` differs, and the instance is replaced. The correction is real and
-belongs in the repository; what does not follow is that it should be delivered by
-destroying the database.
-
-Read the plan before believing a version change is only a version change:
+For an intentional replacement, create and verify an archive first, then validate the
+restored data after provisioning. If an unrelated instance change must be deferred, a
+reviewed targeted image-parameter apply can release the application independently:
 
 ```bash
-terraform -chdir=deploy/terraform/demo plan -var="image_tag=<tag>" ...   # expect 0 to destroy
+terraform -chdir=deploy/terraform/demo apply -target=aws_ssm_parameter.image
 ```
 
-If the instance is in the plan, decide which of the two is true. **A change to how the
-machine behaves** is worth the replacement, and `demo.py archive` before it and
-`demo.py restore` after it are what M6.9 exists for. **A change already installed on the
-machine**, or one that will not matter until the instance is next replaced anyway, is not:
-apply the parameter alone.
+This example assumes the required variables are supplied by the deployment's local
+configuration. A targeted apply does not resolve the deferred user-data difference;
+record it and review the next full plan.
 
-```bash
-terraform -chdir=deploy/terraform/demo apply -target=aws_ssm_parameter.image ...
-```
+A known metadata-only discrepancy can be reconciled by updating the stopped instance's
+user-data attribute. Compare the complete decoded payload, retain the old value for
+rollback, and verify a full plan after the update and refresh-only state synchronization.
+Updating user data does not install or execute the scripts. Do not use it as a substitute
+for a required runtime change, or suppress user-data differences through lifecycle rules
+solely to obtain a clean plan.
 
-**The drift outlives the release.** A targeted apply changes the parameter and leaves the
-user data as it was, so the next untargeted apply still replaces the instance, and does it
-at whatever moment somebody happens to run it. That is the cost of the choice, and the
-reason to record which correction is waiting rather than to rediscover it in a plan.
-
-For a known correction that needs only launch-metadata reconciliation, AWS supports
-updating the user-data attribute while the existing instance is stopped. This keeps
-the instance and its disk, but **does not install or execute the embedded scripts**.
-Compare the complete decoded payload first, keep the previous value for rollback, and
-refuse any unrelated difference. After the attribute update, inspect a full refreshed
-plan, save the refresh-only state update, and require a final full plan with no changes.
-Do not use this procedure as a substitute for installing a runtime fix, or change
-`user_data_replace_on_change` or ignore user data merely to suppress a replacement.
-See the [one-time reconciliation record](USER_DATA_RECONCILIATION.md) for the measured
-scope and the remaining runtime-verification boundary.
-
-**Resolved, 2026-09-10**: the `>/dev/null` correction in `restore.sh` was present in the
-repository but absent from EC2 user data. A live full plan confirmed the resulting
-replacement. The stopped instance's user-data attribute was reconciled in place and
-Terraform state refreshed; the final full plan returned exit code 0 with no changes or
-remaining drift. The instance and root volume IDs were unchanged. The earlier manual
-installation on disk is historical evidence, not something re-verified by this operation.
-Details and rollback-payload hashes are in the
+The discrepancy identified after M7 was resolved on 2026-09-10. The final full plan showed
+no changes, with the instance and root volume preserved. The installed script was not
+re-inspected while the instance was stopped. Evidence is in the
 [reconciliation record](USER_DATA_RECONCILIATION.md).
 
-**The base layer has a second reason to be targeted.** An untargeted apply refreshes the
-Cloudflare records and needs `CLOUDFLARE_API_TOKEN`. Adding or removing an account touches
-two resources and neither is Cloudflare's:
+For the base layer, a full refresh of managed Cloudflare records requires
+`CLOUDFLARE_API_TOKEN`. If a scoped account change is applied with resource targeting,
+review the affected Cognito and identity-parameter resources and document the deferred
+full-plan verification. Resource targeting is an exception, not the default release path.
+
+## Database archives and restore
+
+The shutdown service attempts to archive PostgreSQL to the S3 state bucket under
+`archives/` before stopping the stack. Operators can also request an archive explicitly:
 
 ```bash
-terraform -chdir=deploy/terraform/base apply \
-  -target='aws_cognito_user.demo["<name>"]' \
-  -target='aws_ssm_parameter.identities' ...
+uv run python scripts/demo.py archive
+uv run python scripts/demo.py status
+uv run python scripts/demo.py restore latest
 ```
 
-## What survives the machine (from M6.9)
+`restore` requires an explicit archive selection: `latest` or a specific archive key.
+It replaces the database and refuses while work remains unfinished unless explicitly
+overridden. API and UI services stop during restoration, and users must sign in again.
 
-The database is archived to the state bucket, under `archives/`, on **every stop**. That
-includes the idle watcher's stops, which are most of them, so the newest archive is never
-much older than the last time anyone used the demo.
+Before a teardown, create an archive and verify its result and timestamp. The automatic
+shutdown archive is bounded by a 120-second timeout; failure is logged but does not block
+instance shutdown. Use `status` to inspect the latest archive and inspect
+`journalctl -u rsa.service` on the instance when an archive is missing or stale.
 
-```bash
-uv run python scripts/demo.py archive              # now, rather than at the next stop
-uv run python scripts/demo.py restore latest       # or an archives/... key
-```
+Archives include application identity records. Restoring those records does not recreate
+a deleted Cognito account. Archives currently have no automatic expiry policy. Retain
+archives required for recovery or evaluation, and review storage use as they accumulate.
+Caddy certificate data, including its private key, is not included in database archives.
 
-- **`archive` is for the minute before a teardown.** Archive, check the age in `status`,
-  then destroy.
-- **`restore` names its archive.** There is no default: it replaces the database, and a
-  command that does that on a bare word is one somebody runs by accident.
-- **`restore` refuses on unfinished work**, like `stop` and `restart`, and for one more
-  reason than either: the work would be overwritten rather than merely lost.
-- **Everyone signed in is signed out** by a restore. The UI holds sessions in memory and
-  the API and the UI are stopped while the database is replaced.
+## Automatic shutdown
 
-**How a failed archive is noticed.** `status` prints the newest archive and its age. The
-instance is stopping when the archive runs, so there is nowhere on it to report to; an age
-that keeps growing across stops is what a silently broken archive looks like. The archive
-is bounded at 120 seconds and its failure does not block the stop, because a machine that
-will not shut down bills by the hour.
+`deploy/instance/idle_shutdown.py` checks application activity through `/idle`.
+`rsa-idle.timer` runs the check every minute, starting two minutes after boot.
+Confirmations, pending approvals, open tickets and recent activity prevent an idle verdict.
+Health and idle polling do not count as user activity.
 
-**Restoring an identity is not a way back in.** The dump includes `identities`, so a
-restore can reinstate a row for an account that was removed from `demo_accounts`. That row
-grants nothing: reaching it requires a token the user pool signed, and Terraform removed
-the account from the pool. The archive is the record of what happened; the pool is the
-record of who may act.
-
-**Nothing expires.** The interesting archive is the last one before a teardown, and a
-lifecycle rule that deletes objects after ninety days would delete exactly that one. A few
-hundred kilobytes several times a day is cheaper than the rule that would manage it.
-
-**The certificate is not archived.** Caddy's `/data` holds a private key, which belongs in
-a secret manager rather than in an archive that exists to be read. Reissuing takes two
-minutes.
-
-## Stopping the instance when nobody is using it (from M6.3)
-
-M6.1 chose a shape whose idle cost is a stopped instance's disk. That number is only real
-if something stops the instance, and `deploy/instance/` is that something.
-
-| File | |
-|---|---|
-| `idle_shutdown.py` | asks the application whether it is idle, and stops the stack and then the machine |
-| `rsa-idle.service` | runs it once, as root |
-| `rsa-idle.timer` | every minute, starting two minutes after boot |
-
-**Idle is what the application says it is, not what the CPU says.** A request blocked on a
-model call uses almost no CPU, and a write waiting for confirmation looks like an empty
-machine from outside. `GET /idle` answers with the verdict and, when it is not idle, what
-is holding it open: writes awaiting confirmation, approvals awaiting a human, open tickets,
-and time since the last request. The health and idle routes do not count as requests, or
-the watcher's own polling would keep the machine alive.
-
-Two independent reasons to stop, both configurable through `/etc/rsa-idle.env`:
-
-| Variable | Default | |
+| Variable | Default | Purpose |
 |---|---|---|
-| `RSA_IDLE_MINUTES` | 15 | continuous idleness before stopping |
-| `RSA_MAX_UPTIME_MINUTES` | 240 | stop regardless, whatever the application says |
-| `RSA_IDLE_URL` | `http://127.0.0.1:8000/idle` | where to ask |
-| `RSA_IDLE_DRY_RUN` | unset | `1` logs the decision and changes nothing |
+| `RSA_IDLE_MINUTES` | `15` | Required continuous idle period |
+| `RSA_MAX_UPTIME_MINUTES` | `240` | Maximum runtime, including when work remains pending |
+| `RSA_IDLE_URL` | `http://127.0.0.1:8000/idle` | Application activity endpoint |
+| `RSA_IDLE_DRY_RUN` | Unset | Set to `1` to log decisions without stopping the instance |
 
-The cap is what bounds the cost of the first reason being wrong: one session that never
-closes would otherwise keep a machine running until someone reads the bill. An application
-that does not answer is never treated as idle, so a broken service stays up for someone to
-look at, and the cap catches it.
+A failed activity check is not treated as idle. The maximum-runtime limit still bounds
+instance uptime. Inspect the current decision on the instance without taking action:
 
-To see the current verdict without acting on it:
-
-```
+```bash
 python3 /opt/rsa/idle_shutdown.py --check
 curl -s http://127.0.0.1:8000/idle
 ```
 
-The instance is stopped, not terminated, so the disk, the database and the image survive
-and the next start is 41 seconds rather than 122.
+## Operational validation limits
 
-## AWS technical target
+The current environment has no database replication or high availability. Complete browser
+acceptance, concurrent-load testing and cross-schema rollback remain unverified. GitHub
+Actions runs verification, not automated AWS deployment. The implemented operator commands
+and Terraform configuration remain the deployment entry points.
 
-Region initially `eu-west-1`. Containers run on ECS Fargate with images in ECR;
-application data and checkpoints in RDS PostgreSQL; secrets in Secrets Manager; runtime
-logs in CloudWatch; baselines and archives in S3; GitHub Actions runs Terraform with
-temporary OIDC credentials.
-
-CPU, memory, concurrency and DB size are decided from local measurements before
-deployment. The AWS move gets its own performance reference, so cross-region model
-latency is not mistaken for a code regression.
-
-## Separate base and demo layers
-
-| Layer | Resources and rules |
-|---|---|
-| Base | ECR, S3 and the state file, secrets, Cognito, deployment IAM/OIDC, and any stable entry point required; long-lived with restricted permissions |
-| Demo | ECS service, ALB, RDS, temporary networking; created and deleted on demand |
-
-Two Terraform states, with dependencies output explicitly. The state store has
-versioning, encryption, access control and a supported locking mechanism, and must not
-be managed by the demo layer's destroy. Start and stop operations share one deployment
-lock so an apply and a destroy cannot run at once.
-
-Keeping the base layer does not mean zero cost. Images, objects and secrets incur
-storage or service charges, and after shutdown the remaining resources are listed. No
-promise is made that the bill drops to zero immediately. No budget cap is set, but
-running time, leftovers and model experiment usage are recorded.
-
-## Free URL and HTTPS
-
-A free URL was chosen, so the stable CloudFront default `*.cloudfront.net` domain is
-verified first, needing no purchased domain or separate Route 53 zone. It is a candidate
-architecture, not a current configuration.
-
-Before deploying, verify:
-
-- The CloudFront plan and billing suit a dynamic API: cookie and Authorization
-  forwarding, all required methods, caching disabled for personal data, SSE/streaming,
-  and the Gradio paths.
-- Cognito callback and logout URLs and FastAPI's external URL are correct, and proxy
-  headers are trusted only from a trusted proxy.
-- A CloudFront certificate covers browser to edge and does not encrypt edge to ALB by
-  itself. An ALB default domain has no matching public certificate.
-- If a VPC origin is used, verify availability, protocol and streaming limits, and cost.
-  Free-tier support cannot be assumed.
-- If a free entry point cannot provide the required protection with the current ALB
-  architecture, propose an adjusted entry design with tests in M6 rather than silently
-  falling back to sending credentials over public HTTP.
-- The origin backend must not be reachable without login and resource authorization. A
-  free URL does not mean public registration is allowed.
-
-ACM and Route 53 are therefore not resources that must exist; whether they are needed
-depends on the verified origin design. Do not introduce unverified security or cost
-assumptions in order to show a free URL.
-
-## AWS Start Demo
-
-A manual GitHub Actions entry point, planned to take a release or image digest that has
-passed the gates, a demo duration marker and an environment identifier. Order of
-operations:
-
-1. Verify the base layer, OIDC, secrets, the accounts allowed access, and the release
-   manifest.
-2. Allow only an image that passed the corresponding gate. No live retuning and no full
-   model evaluation at this point.
-3. Terraform plan, then apply the demo layer, recording the actual resource list.
-4. Run database migrations and initialize the fixed simulated data. Starting an existing
-   environment again must not reset its data.
-5. Deploy the application, update the entry point, and verify HTTPS, login,
-   authorization, streaming and a side-effect-free smoke test.
-6. Print the URL, version, status and the stop entry point. On failure keep the
-   diagnostics and clean up only this run's temporary resources, never an older
-   environment.
-
-One command is not instant. Creating RDS and networking takes time; M6 measures and
-records cold-start and restart times. Allow preparation time before a demonstration and
-keep the local version as a fallback.
-
-## AWS Stop Demo
-
-1. Stop accepting new work and wait for running operations to finish or reach an
-   archivable state.
-2. Export the demo audit, the state needed and the run manifest; upload to S3 and verify
-   checksums and readability.
-3. If archiving fails, stop the deletion and report. Never lose the only copy.
-4. Terraform destroy the dedicated demo layer, including RDS, ALB, tasks and billed
-   temporary networking resources.
-5. Query the resource inventory to confirm cleanup, and print what the base layer keeps
-   and what may still be billed.
-
-Stopping a demo ends that demo environment, and the next start begins again from fixed
-simulated data. That is different from a service restart recovering tasks within one
-environment. Pausing RDS is not a long-term shutdown strategy: a stopped instance starts
-itself again after 7 days and still incurs storage charges while stopped, and an ALB
-stops costing only once deleted.
-
-Source, images, baselines and archives must not be deleted along with a demo cleanup.
-Image cleanup keeps the first baseline, the current version and any needed rollback.
-
-## First-time setup and release acceptance
-
-The first setup configures the AWS account and region, OIDC with minimal deployment
-permissions, the S3 state backend, simulated accounts, the secrets in Secrets Manager,
-and the Langfuse project. Cognito users are created by a controlled process with public
-registration disabled.
-
-Complete local checks and a concrete Terraform plan before any real deployment. Git
-releases and the creation of billed resources happen under explicit authorization at the
-time. Test rollback, a failed migration, a partially failed apply, an interrupted
-destroy and a failed archive separately. Terraform manages resources, Actions sequences
-the process, and Python handles migrations and data operations.
-
-## Official references (checked during this discussion; re-check at implementation time)
-
-- [GitHub manual workflows](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-workflow)
-- [GitHub OIDC to AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
-- [Temporarily stopping RDS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_StopInstance.html)
-- [Deleting an ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-delete.html)
-- [CloudFront default domain and certificates](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesGeneral.html)
-- [CloudFront pricing and plans](https://aws.amazon.com/cloudfront/pricing/)
+Use the stage reports for historical measurements and the current guides for operational
+procedures. Record the image, configuration and verification results for each deployment;
+do not infer runtime correctness solely from a successful infrastructure plan.

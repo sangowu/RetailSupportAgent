@@ -1,19 +1,30 @@
-# Creating and destroying the demo environment
+# Terraform deployment guide
 
-Two layers. The base layer holds what a teardown must not take with it: the image registry
-and the role the instance runs under. The demo layer holds the instance. The bucket that
-keeps the state and the archives sits outside both, for the reason in the next section.
+The AWS demonstration environment has two Terraform layers. The base layer manages shared
+resources, including ECR, Cognito, IAM, Route 53 and the identity parameter. The demo layer
+manages EC2, its security group and rules, and the deployed image parameter. The S3 bucket
+for state and archives is created separately so that destroying either layer does not
+delete its recovery data.
 
-Between `apply` and `destroy` the instance is **stopped**, not destroyed. Applying takes
-minutes and pulls a 722 MB image; starting a stopped instance takes 41 seconds, and that is
-the demo path. Terraform does not track an instance's power state, so a stopped instance
-does not show as drift.
+Routine start and stop operations preserve the instance and its database. Provisioning and
+teardown are separate operations. This is a single-instance demonstration environment;
+PostgreSQL is stored on the instance's root volume.
 
-## Once per account
+## Prerequisites
 
-The bucket that holds Terraform's state is not a Terraform resource. It cannot hold the
-state of its own creation, and every way around that is a bootstrap dance. Three commands
-create it instead, and both layers then have a real backend from their first `init`.
+Use Terraform 1.10 or later, AWS CLI credentials for the intended account, Docker and a
+configured domain delegation. Install the project's Python dependencies for the operator
+commands. The command examples use Bash and assume the repository root as the working
+directory. For PowerShell, use equivalent environment-variable syntax; the Terraform
+variable files shown below are shell-independent.
+
+The examples use `eu-west-1`. Keep the backend region and both Terraform layers consistent.
+Do not commit credentials, state, plan files or deployment-specific variable files.
+Provisioning and running AWS resources incur charges.
+
+## State bucket and base layer
+
+Create the state bucket once per account:
 
 ```bash
 REGION=eu-west-1
@@ -21,181 +32,197 @@ BUCKET="rsa-$(aws sts get-caller-identity --query Account --output text)"
 
 aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
   --create-bucket-configuration LocationConstraint="$REGION"
-# Versioning, so a truncated state can be rolled back to the version before it.
-aws s3api put-bucket-versioning --bucket "$BUCKET" \
+aws s3api put-bucket-versioning --bucket "$BUCKET" --region "$REGION" \
   --versioning-configuration Status=Enabled
-aws s3api put-public-access-block --bucket "$BUCKET" \
+aws s3api put-public-access-block --bucket "$BUCKET" --region "$REGION" \
   --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-```
 
-Then the base layer, which creates the registry and the role the instance runs under:
-
-```bash
-cd deploy/terraform/base
-terraform init \
+terraform -chdir=deploy/terraform/base init \
   -backend-config="bucket=$BUCKET" \
   -backend-config="key=base/terraform.tfstate" \
   -backend-config="region=$REGION" \
   -backend-config="use_lockfile=true"
-
-terraform apply -var="state_bucket=$BUCKET"
 ```
 
-`use_lockfile` is S3-native locking. DynamoDB-based locking is deprecated and would be a
-second billed resource for no gain.
+Create an untracked `deploy/terraform/base/terraform.tfvars` with the actual deployment
+values. The repository ignores files named `terraform.tfvars`.
 
-Last, put the model key where the instance can read it. Terraform is never told the value:
-anything a variable carries ends up in state in clear.
+```hcl
+state_bucket = "rsa-<account-id>"
+region       = "eu-west-1"
+demo_domain  = "rsa.example.com"
+```
+
+If Terraform should manage the parent domain's Cloudflare delegation, also configure
+`cloudflare_zone_id` and provide `CLOUDFLARE_API_TOKEN` through the environment. Otherwise,
+configure delegation manually as described below.
 
 ```bash
-aws ssm put-parameter --region "$REGION" \
+terraform -chdir=deploy/terraform/base plan
+terraform -chdir=deploy/terraform/base apply
+```
+
+Review the complete plan and the account definitions before applying. The backend uses
+S3 state locking through `use_lockfile`. Retain the bucket and its version history after
+tearing down a demo.
+
+## Model credentials and user accounts
+
+Store the model API key separately from Terraform. With `DASHSCOPE_API_KEY` already set
+in the shell environment:
+
+```bash
+aws ssm put-parameter --region eu-west-1 \
   --name /rsa/demo/dashscope-api-key --type SecureString \
   --value "$DASHSCOPE_API_KEY"
 ```
 
-## Setting the demo's passwords
+The instance retrieves this parameter at startup. Terraform receives only the parameter
+name. Avoid passing secret values through Terraform variables, which can be recorded in
+state.
 
-The base layer also creates the user pool and its accounts. Each is created **without a
-password**: both of the arguments that would set one write the value into Terraform state,
-and a credential in state is a credential in the bucket.
+Terraform creates Cognito users without assigning passwords. Inspect the generated
+commands and set a password for each intended account:
 
 ```bash
 terraform -chdir=deploy/terraform/base output set_these_passwords
 ```
 
-That prints one command per account with the password left blank. Run each with a password
-of your choosing. Until an account has one it exists and cannot sign in, and the sign-in
-form says so rather than reporting a wrong password.
+Account definitions are controlled by `demo_accounts`. Changes require a reviewed
+base-layer apply and an application restart to load the updated identity mapping. New
+accounts also require password setup. See [account administration](../../docs/OPERATIONS.md#account-administration).
 
-Adding an account later means adding it to `demo_accounts`, applying, setting its password,
-and restarting the instance so the boot re-runs the seeding.
+## Domain delegation
 
-## Delegating the demo's name
-
-The base layer creates a Route 53 hosted zone for a subdomain. Nothing resolves until that
-subdomain is delegated to it, once, at whoever hosts the parent domain.
+The base layer creates the Route 53 subdomain zone. If delegation is managed manually,
+obtain its name servers and add the corresponding NS records at the parent DNS provider:
 
 ```bash
 terraform -chdir=deploy/terraform/base output delegate_these_name_servers
 ```
 
-Add each of those as an `NS` record for the subdomain at the parent's DNS host. For a
-parent on Cloudflare that is four `NS` records named `rsa`, with proxying off; `NS` records
-cannot be proxied anyway.
-
-Check it before expecting a certificate:
+Verify the chosen hostname's delegation before starting the demo. For the repository's
+configured demonstration domain:
 
 ```bash
 nslookup -type=NS rsa.proshot.top 8.8.8.8
 ```
 
-Until this is done the instance still writes its A record at every boot, and the record is
-simply invisible to the world. The demo is then reachable only by address, and Let's
-Encrypt cannot validate the name.
+The instance writes its A record at startup. Public DNS delegation must be correct for
+hostname resolution and ACME certificate validation.
 
-## Publishing an image
+## Publish an image
 
-The registry rejects a tag that already exists, so a tag names one image for good and a
-rollback is applying an older tag.
+Fetch the pinned benchmark data before building. Select a new release tag: the ECR
+repository uses immutable tags and rejects attempts to overwrite an existing tag.
 
 ```bash
+uv run python scripts/fetch_tau2.py
 REGISTRY=$(terraform -chdir=deploy/terraform/base output -raw ecr_repository_url)
+IMAGE_TAG="<unique-release-tag>"
 aws ecr get-login-password --region eu-west-1 \
   | docker login --username AWS --password-stdin "${REGISTRY%%/*}"
-
-docker build -t "$REGISTRY:m6.4" .
-docker push "$REGISTRY:m6.4"
+docker build -t "$REGISTRY:$IMAGE_TAG" .
+docker push "$REGISTRY:$IMAGE_TAG"
 ```
 
-`scripts/fetch_tau2.py` has to have run first: the demo imports the benchmark's retail
-domain, and the image copies it out of the verified checkout.
+Use a verified application revision and record the image tag and digest. Retain images
+needed for the accepted baseline, current deployment and rollback.
 
-## Creating an environment
+## Provision the demo layer
+
+Initialize the demo backend using the existing state bucket:
 
 ```bash
-cd deploy/terraform/demo
-BUCKET=$(terraform -chdir=../base output -raw bucket)
-
-terraform init \
+BUCKET=$(terraform -chdir=deploy/terraform/base output -raw bucket)
+terraform -chdir=deploy/terraform/demo init \
   -backend-config="bucket=$BUCKET" \
   -backend-config="key=demo/terraform.tfstate" \
   -backend-config="region=eu-west-1" \
   -backend-config="use_lockfile=true"
-
-terraform apply \
-  -var="state_bucket=$BUCKET" \
-  -var="image_tag=m6.6" \
-  -var="acme_email=you@example.com" \
-  -var='allowed_cidrs=["203.0.113.4/32"]'
-
-terraform output url
 ```
 
-`allowed_cidrs` is open by default since M6.7, because there is now something behind it:
-every route requires a token the pool signed, and what the holder may do is read from the
-database. Pass `-var='allowed_cidrs=["203.0.113.4/32"]'` to narrow it anyway; an empty list
-still closes the environment to everyone.
+Create an untracked `deploy/terraform/demo/terraform.tfvars` with the actual bucket,
+published image tag, ACME contact email and allowed HTTPS source addresses:
 
-`acme_email` is where Let's Encrypt sends expiry warnings. It appears in the certificate's
-public issuance records, so use an address meant to be seen.
+```hcl
+state_bucket  = "rsa-<account-id>"
+image_tag     = "<published-release-tag>"
+acme_email    = "operations@example.com"
+allowed_cidrs = ["203.0.113.4/32"]
+```
 
-The first boot takes about two minutes: installing Docker, pulling the image, running
-migrations, starting the servers and obtaining a certificate. After that use the commands
-in `docs/OPERATIONS.md`:
+Replace every placeholder, including the example source address, before planning.
+Without an override, `allowed_cidrs` defaults to `0.0.0.0/0`; authentication still applies
+to application access. An empty list disables external HTTPS access. Port 80 remains
+available for ACME validation and HTTPS redirection. The contact email is supplied to
+ACME for certificate administration.
 
 ```bash
-uv run python scripts/demo.py start    # about half a minute, prints the URL
+terraform -chdir=deploy/terraform/demo plan
+terraform -chdir=deploy/terraform/demo apply
+terraform -chdir=deploy/terraform/demo output url
 uv run python scripts/demo.py status
+```
+
+Initial startup installs Docker, pulls the image, runs migrations, seeds identities and
+starts the application and HTTPS proxy. Allow for initialization and verify application
+health. For subsequent operation:
+
+```bash
+uv run python scripts/demo.py start
 uv run python scripts/demo.py stop
 ```
 
-The URL does not change across a stop. The address does, and the instance rewrites its own
-A record at every boot.
+A stop preserves the database volume. The hostname remains stable, while its A record is
+updated when the instance receives a different public IP.
 
-## Changing the version, and rolling back
+## Release and rollback
+
+Update `image_tag` in the demo variable file, retaining the other deployed values. Review
+the full plan before applying, then restart the application stack:
 
 ```bash
-terraform -chdir=deploy/terraform/demo apply   -var="state_bucket=$BUCKET"   -var="image_tag=m6.8.1"   -var="acme_email=you@example.com"
-
+terraform -chdir=deploy/terraform/demo plan
+terraform -chdir=deploy/terraform/demo apply
 uv run python scripts/demo.py restart
+uv run python scripts/demo.py status
 ```
 
-When the only difference is the image tag, the apply writes one Parameter Store value;
-the plan reads `0 to add, 1 to change, 0 to destroy`. Always inspect a refreshed full
-plan first: a change to an embedded instance script can also propose replacing the
-instance and deleting its database volume. See the
-[user-data reconciliation record](../../docs/USER_DATA_RECONCILIATION.md) and the
-[operations procedure](../../docs/OPERATIONS.md) before applying such a plan.
-The instance reads the image parameter at every start, so the restart picks up the image.
+When the image tag is the only difference, the plan updates one Parameter Store value
+without replacing the instance. Embedded script changes can also propose instance
+replacement and deletion of its database volume. Follow the
+[replacement procedure](../../docs/OPERATIONS.md#instance-replacement-and-user-data-differences)
+before applying any such plan. The [reconciliation record](../../docs/USER_DATA_RECONCILIATION.md)
+documents the resolved M7 user-data discrepancy.
 
-The plan cannot show which version it is moving to: the provider marks a parameter's value
-sensitive. `uv run python scripts/demo.py status` prints the configured version and the
-running one, which is the check worth doing.
+The parameter value may be redacted in plan output. Use `demo.py status` to compare the
+configured and running images after restart. A rollback target must contain the packaged
+Compose configuration and Caddyfile, available from M6.8 onward, and remain compatible
+with the database schema. Cross-schema rollback has not been validated.
 
-**A rollback target has to be an image from M6.8 or later.** The compose file and the
-Caddyfile ship inside the image and are extracted at boot, so an older image carries no
-stack definition and cannot be started.
+## Teardown
 
-## Destroying it
+Teardown deletes the demo instance and its root volume. Create and verify a database
+archive before proceeding; the automatic shutdown archive can fail and must not be the
+only recovery assumption.
 
 ```bash
-uv run python scripts/demo.py archive      # the last write, before the volume goes
-terraform -chdir=deploy/terraform/demo destroy -var="state_bucket=$BUCKET" -var="image_tag=m6.4"
-uv run python scripts/aws_inventory.py     # confirm, do not assume
+uv run python scripts/demo.py archive
+uv run python scripts/demo.py status
+terraform -chdir=deploy/terraform/demo plan -destroy
+terraform -chdir=deploy/terraform/demo destroy
+uv run python scripts/aws_inventory.py
 ```
 
-The archive first, from M6.9. A stop archives on its own way down, and a termination runs
-the same shutdown path, but that is not a thing to find out afterwards about the only copy
-of the demo's record of who did what.
+These Terraform commands use the same local variable file as provisioning. Review the
+destroy plan and retain the base layer, state bucket, required archives and rollback
+images. The inventory command checks which resources remain; it does not remove them.
 
-The base layer is not destroyed by that. Its bucket is not a Terraform resource at all, so
-no `destroy` can reach the archives; removing them is an explicit `aws s3 rm`.
+## Deployment boundaries
 
-## What is deliberately not here
-
-- **A `terraform.tfvars` in version control.** The addresses allowed to reach a demo are
-  not a property of the project.
-- **Anything holding the model key.** It reaches the instance from Parameter Store at boot.
-- **GitHub Actions and OIDC.** Who runs Terraform is a separate question from what it
-  describes, and is a later step.
+Terraform is run by an operator. GitHub Actions currently runs verification and does not
+provide an AWS deployment workflow or deployment OIDC role. Runtime permissions are
+scoped through the instance IAM role. The instance reads credentials from Parameter
+Store, and deployment-specific variables remain outside version control.

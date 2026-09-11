@@ -1,182 +1,197 @@
 # RetailSupportAgent
 
-A retail customer-support agent: order lookup, order cancellation and return requests,
-with business correctness, reliability and cost demonstrated through reproducible
-evaluation.
+A retail support application built with LangGraph, FastAPI and Gradio. It handles
+simulated order enquiries, cancellations and return requests, with explicit confirmation
+for state-changing actions, role-based access and human escalation workflows.
 
-**Status: M0 frozen (M0.1-M0.6), M1 to M4 implemented, M5.1 measurement in place, M5.2 and M5.3 tested and rejected three ways to spend less on thinking, M6.1 chose the AWS deployment shape from measurements, M6.2 packaged the application and timed its start, M6.3 made the instance stop itself when nobody is using it, M6.4 put the environment in Terraform, M6.5 gave it start and stop commands, M6.6 put it behind one name over TLS, M6.7 put a login in front of it, M6.8 made a version change a restart rather than a rebuild, and M6.9 made the demo's record outlive the machine that recorded it, completing M6. M7.1 made a turn visible while it runs, M7.2 made every state the page can be in say what it is and what to do, and M7.3 put the case work on screen, completing M7. The deployed demo runs `m7.3`, which carries all of M7, and stops itself when nobody is using it, so its idle cost is its volume and its hosted zone.**
+The project demonstrates how an LLM application can combine tool use with application-level
+authorization, persistent state, recovery and reproducible evaluation. It uses simulated
+retail data; it does not process real payments or connect to a production order system.
 
-The model is `deepseek-v4-pro` with thinking at effort=high.
+## Current capabilities
 
-| Subject under test | Full set (114 tasks) | Unconfirmed writes | Cost per task | Per successful task |
+- **Customer support:** order lookup, cancellation and return requests, with streaming
+  responses and explicit action confirmation.
+- **Access control:** Cognito authentication, database-managed roles, session ownership
+  and order-access checks enforced by the backend.
+- **Human handoff:** case creation, supervisor assignment, agent work sessions, approval
+  decisions and resumption of the customer's conversation after resolution.
+- **Persistence and recovery:** PostgreSQL records for sessions, messages, confirmations,
+  operations and audit events, with idempotent writes and session recovery.
+- **Deployment:** containerized local services and a Terraform-managed AWS demonstration
+  environment with HTTPS, automatic idle shutdown, database archives and image rollback.
+
+M0 through M7 delivery records are available below. The AWS deployment is configured for
+image `m7.3`; it is operated on demand and is not continuously available. CI runs static
+checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
+checks. CI does not run paid model evaluations or deploy the application.
+
+## Evaluation results
+
+The accepted configuration uses `deepseek-v4-pro` with reasoning effort `high`. The table
+reports recorded results on the pinned 114-task tau2-bench Retail set, using simulated
+user `glm-5.3-flash` and judge `qwen3.7-flash` with JSON Schema.
+
+| Agent | Successful tasks | Unconfirmed write events | Cost per task | Cost per successful task |
 |---|---|---|---|---|
-| upstream `llm_agent` (`baseline-v2`) | 97/114 = 0.8509 | 168 | 0.0855 CNY | 0.1004 CNY |
-| this project's guarded agent (`baseline-v3`) | 102/114 = 0.8947 | **0** | 0.0954 CNY | 0.1066 CNY |
+| Upstream `llm_agent` (`baseline-v2`) | 97/114 (85.09%) | 168 | 0.0855 CNY | 0.1004 CNY |
+| Project agent with write controls (`baseline-v3`) | 102/114 (89.47%) | 0 | 0.0954 CNY | 0.1066 CNY |
 
-Costs are what each run actually spent, priced call by call at the rate in force when the
-call was made; both ran off peak. See [M5.1](docs/M5.1_MEASUREMENT.md).
+These are benchmark observations, not production service guarantees. Costs reflect the
+recorded runs and pricing periods; both runs used off-peak pricing. The full benchmark
+includes tasks beyond the three primary workflows; the declared-scope subset contains
+42 tasks. See the [measurement report](docs/M5.1_MEASUREMENT.md) for definitions and results.
 
-The same configuration repeated on 2026-09-09 scored 101/114, so the score's own spread is
-about one task. Disabling thinking costs a third less and answers in a quarter of the time
-at p95, and it was rejected: it gets six database outcomes wrong that the incumbent gets
-right every time. See [M5.2](docs/M5.2_THINKING_EFFORT.md). Spending thinking only on the
-turns that need it is refused by the provider mid-turn, and its ceiling is 24% of cost and
-nothing at all on p95. See [M5.3](docs/M5.3_THINKING_ROUTING.md).
+The paired McNemar exact test returned `p = 0.3018`. The observed success-rate difference
+was not statistically significant; this does not establish equivalence or non-inferiority.
+No unconfirmed write events were observed for the guarded agent in that run.
 
-Paired McNemar exact test p = 0.3018, not significant: enforced confirmation did not
-lower the score. The measurable gain is that 168 unconfirmed writes became 0.
+A repeat run on 2026-09-09 scored 101/114. This provides an additional observation, not an
+estimate of the configuration's overall variance. Lower-cost reasoning configurations
+were evaluated and rejected under the project's acceptance criteria; see
+[M5.2](docs/M5.2_THINKING_EFFORT.md) and [M5.3](docs/M5.3_THINKING_ROUTING.md).
+The available evidence does not establish superiority over other models because a
+controlled comparison on the same evaluation stack has not been completed.
 
-M0's scores measured upstream's agent, not this project's; see
-[M0 report §1.1](docs/M0_REPORT.md). `baseline-v1` (holdout 40 tasks, 0.8750) is
-archived.
+## Local setup
 
-**Not built yet**: streaming output, archiving before a teardown, and any screen for the
-people who work the handoff queue. Authentication runs
-against a real Cognito user pool from M6.7; the demo UI signs in against it and calls the
-API as the signed-in account. See [M0 report §9](docs/M0_REPORT.md).
-
-Model selection was a cost decision, not a quality comparison: the other candidates
-were never measured on the same evaluation stack, and on the same holdout the cost
-differed by 4.8x. Cross-model numbers from an earlier round were discarded because the
-judge was not held constant; see
-[M0.4 §9.9.1](docs/M0.4_EXPERIMENT_PLAN.md).
-
-## Reading order
-
-1. **[M0 report](docs/M0_REPORT.md)** - start here; conclusions and limits in one page
-2. **[Delivery report: M1 to M7](docs/DELIVERY_REPORT.md)** - what each stage proved, what it cost, and what is not covered
-3. [Project goals and settled decisions](PROJECT_CONTEXT.md)
-4. [M0.1 protocol and environment freeze](docs/M0.1_PROTOCOL_FREEZE.md)
-5. [M0.2 model capability verification](docs/M0.2_MODEL_CAPABILITY.md)
-6. [M0.3 minimal business loop](docs/M0.3_BUSINESS_LOOP.md)
-7. [M0.4 selection experiment and cost estimate](docs/M0.4_EXPERIMENT_PLAN.md)
-8. [M0.5 part one: cost accounting and observability](docs/M0.5_OBSERVABILITY.md)
-9. [M0.5 part two: local start/stop and demo flows](docs/M0.5_LOCAL_DEMO.md)
-10. [M0.5 part three: frozen baselines](docs/M0.5_BASELINE.md)
-11. [M0.6 putting this project's agent under test](docs/M0.6_AGENT_UNDER_TEST.md)
-12. [M1 application state in PostgreSQL](docs/M1_PERSISTENCE.md)
-13. [M2 cross-process recovery](docs/M2_RECOVERY.md)
-14. [M3 authentication, roles and resource permissions](docs/M3_AUTH.md)
-15. [M4 tickets, assignment, approval and handoff](docs/M4_HANDOFF.md)
-16. [M5.1 cost priced by the run's clock, and latency](docs/M5.1_MEASUREMENT.md)
-17. [M5.2 how much thinking the task set needs](docs/M5.2_THINKING_EFFORT.md)
-18. [M5.3 routing thinking per turn, and why it stops](docs/M5.3_THINKING_ROUTING.md)
-19. [M6.1 choosing the AWS deployment shape](docs/M6.1_DEPLOYMENT_SHAPE.md)
-20. [M6.2 packaging the application, and whether it starts in time](docs/M6.2_CONTAINER_AND_START.md)
-21. [M6.3 deciding nobody is using this, and turning it off](docs/M6.3_IDLE_SHUTDOWN.md)
-22. [M6.4 the demo environment as code](docs/M6.4_TERRAFORM.md)
-23. [M6.5 two commands an operator actually runs](docs/M6.5_START_STOP.md)
-24. [M6.6 a name that survives a stop, and a certificate](docs/M6.6_HTTPS.md)
-25. [M6.7 a login, and a demo that goes through it](docs/M6.7_LOGIN.md)
-26. [M6.8 changing the version without rebuilding the machine](docs/M6.8_ROLLBACK.md)
-27. [M6.9 what survives the machine](docs/M6.9_ARCHIVE.md)
-28. [M7.1 showing the work while it happens](docs/M7.1_STREAMING.md)
-29. [M7.2 what happened, and what to do about it](docs/M7.2_STATES.md)
-30. [M7.3 the case a human owns, on screen](docs/M7.3_TICKETS.md)
-31. [MVP and staged development plan](docs/DEVELOPMENT_PLAN.md)
-32. [Model capability checks and selection experiments](docs/MODEL_EXPERIMENTS.md)
-33. [Baselines, metrics and CI gates](docs/EVALUATION_AND_GATES.md)
-34. [Architecture, data and permissions](docs/ARCHITECTURE_AND_ACCESS.md)
-35. [Local and AWS start/stop design](docs/OPERATIONS.md)
-36. [Per-step change report template](docs/CHANGE_REPORT_TEMPLATE.md)
-
-Developers and coding agents should read [AGENTS.md](AGENTS.md) first.
-
-## Scope currently in progress
-
-M0 established the evaluation protocol, the minimal business loop, and the model and
-thinking-parameter experiments, and froze the baselines. M1 added application-state
-persistence, M2 made a session survive a restart, M3 established who is calling and what
-they may do, and M4 turned a handoff into a case a human owns and decides. M5.1 made
-cost and latency measurable before anything is optimized against them. Each step
-changes one theme and reports its effect against the current baseline and the previous
-passing version. The roadmap is not an instruction to build
-everything at once.
-
-A quotable score requires naming its evaluation stack: simulated user `glm-5.3-flash`
-plus judge `qwen3.7-flash` with JSON Schema. Replacing any role in that stack makes the
-number incomparable: on 2026-09-07 the same tasks went from 0.600 to 0.875 with the
-stack as the only difference.
-
-## Local development
+Requirements: Python 3.12, uv and Git. PowerShell 7 is required for the local process
+scripts; Docker is required for the container stack and a local PostgreSQL service.
+Run commands from the repository root unless a guide specifies otherwise.
 
 ```bash
-uv sync --group bench                        # includes the upstream τ²-bench package
-uv run python scripts/fetch_tau2.py          # fetch the pinned commit and verify SHA256
-uv run ruff check . && uv run mypy && uv run pytest
-uv run python scripts/freeze_baseline.py --verify   # verify the baselines are unaltered
+uv sync --locked --group bench
+uv run python scripts/fetch_tau2.py
 ```
 
-Commands that need `DASHSCOPE_API_KEY` and spend real money:
+Copy `.env.example` to `.env` and configure the required values, including
+`DASHSCOPE_API_KEY`. Credentials must remain outside version control.
 
-```bash
-uv run python scripts/probe_models.py --dry-run   # capability probes: see the request count first
-uv run python scripts/demo_flows.py               # the three flows plus an ownership refusal
-uv run python scripts/run_eval.py --pilot         # 2-task evaluation smoke run
-uv run python scripts/analyze_eval.py --project 74  # usage and cost projection
-```
-
-Local services (bound to 127.0.0.1, fixed simulated identity, no public registration):
+For the local API and UI processes:
 
 ```powershell
-pwsh scripts/start-local.ps1     # check prerequisites, start :8000 and :7860, print URLs
-pwsh scripts/reset-demo.ps1      # reset demo sessions (deletes no files)
-pwsh scripts/stop-local.ps1      # stop only the processes this project recorded
+pwsh scripts/start-local.ps1
+pwsh scripts/stop-local.ps1
 ```
 
-Starting costs nothing; only sending a message is billed. What the scripts do and why
-is in [M0.5 part two](docs/M0.5_LOCAL_DEMO.md).
+The default addresses are `http://127.0.0.1:8000` for the API and
+`http://127.0.0.1:7860` for the UI. Without authentication settings, the application uses
+a fixed simulated identity and must remain local. Startup and health checks do not call
+the model; sending chat messages can incur provider charges.
 
-Application state (M1) needs PostgreSQL:
+To enable application persistence:
 
 ```bash
-docker compose up -d db                      # local instance, loopback only
-uv run alembic upgrade head                  # RSA_DATABASE_URL must be set
+docker compose up -d db
+# Set RSA_DATABASE_URL in .env to the intended local PostgreSQL database.
+uv run alembic upgrade head
 ```
 
-Without `RSA_DATABASE_URL` the service still runs with M0's in-memory sessions.
+Without `RSA_DATABASE_URL`, sessions use in-memory storage. Alternatively,
+`docker compose up -d --wait` starts the containerized database, migrations, API and UI.
+See [operations](docs/OPERATIONS.md) for configuration, reset scope and shutdown behavior.
 
-Authentication (M3) is off until an issuer and an audience are configured. With
-`RSA_AUTH_ISSUER` and `RSA_AUTH_AUDIENCE` set, every route requires a bearer token, the
-retail identity comes from the token's subject, and roles come from the database - never
-from the token's group claims:
+## Verification
 
 ```bash
-uv run python scripts/provision_identity.py --subject <sub> --user-id ava_moore_2033 --role customer
-uv run python scripts/provision_identity.py --subject <sub> --show
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy
+uv run pytest -m "not live_model"
+uv run python scripts/freeze_baseline.py --verify
 ```
 
-There is no HTTP route to provisioning: a caller cannot create an account or pick a role.
-`/health` reports which mode is live.
+Database tests require `RSA_TEST_DATABASE_URL` pointing to a dedicated PostgreSQL test
+database. Without it, database-dependent tests are skipped. Do not use an application or
+shared database for tests. CI supplies an isolated PostgreSQL service. Tests that require
+untracked historical evaluation traces may also skip in a fresh checkout.
 
-Human handoff (M4): a transfer opens a ticket and suspends the customer's session until a
-person closes it. A supervisor assigns the case and decides the escalations raised against
-it; the assignee works it in a session of their own. A supervisor cannot assign a case to
-themselves, nobody decides their own escalation, and a decision expires after
-`RSA_APPROVAL_TTL_SECONDS` (30 minutes by default). `GET /session/{id}/timing` reports
-system time and human waiting as separate numbers.
+The following commands inspect existing results or preview requests without model calls:
 
-Keys are read from `.env` (see `.env.example`). `.env` is gitignored and must not be
-committed.
+```bash
+uv run python scripts/probe_models.py --dry-run
+uv run python scripts/analyze_eval.py --project 74
+```
 
-## Start and stop
+The following commands make model calls and incur provider charges:
 
-| Environment | Start | Stop | Status |
-|---|---|---|---|
-| local | `scripts/start-local.ps1` | `scripts/stop-local.ps1` | implemented and verified by running it |
-| AWS | `scripts/demo.py start` | `scripts/demo.py stop` | deployed since M6.4, behind a login since M6.7 |
+```bash
+uv run python scripts/demo_flows.py
+uv run python scripts/run_eval.py --pilot
+```
 
-The local scripts control only processes this project recorded, verified by PID and
-start time, and never guess which python belongs to the project. The AWS demo is one
-instance that stops itself when nobody is using it, archives its database on every stop,
-and is reached over TLS at one name. Both are described in
-[operations](docs/OPERATIONS.md).
+Evaluation comparisons must identify the agent, simulated user, evaluator, task set and
+model parameters. Changing the evaluation stack can invalidate a direct score comparison.
+
+## Deployment and operational limits
+
+The AWS demo uses a single EC2 instance with PostgreSQL on its root volume, ECR images,
+Cognito authentication, Caddy HTTPS and S3 database archives. It is a demonstration
+topology without database replication or high availability.
+
+```bash
+uv run python scripts/demo.py status
+uv run python scripts/demo.py start
+uv run python scripts/demo.py stop
+```
+
+AWS operation requires an existing environment and appropriate credentials. Starting an
+instance incurs infrastructure charges; retained resources can incur charges while it is
+stopped. Review the [Terraform setup guide](deploy/terraform/README.md) for provisioning
+and the [operations guide](docs/OPERATIONS.md) for release and archive procedures.
+
+Current validation limits include a complete browser-based acceptance run, concurrent-load
+measurements and rollback across database schema changes. Approval expiry is covered at
+the database and API levels, but not by a complete browser workflow. An audit API exists;
+an audit-viewing page has not been implemented. The recent user-data reconciliation
+verified deployment metadata, not the installed script or application behavior at runtime.
+
+## Documentation
+
+| Guide | Purpose |
+|---|---|
+| [Architecture and access control](docs/ARCHITECTURE_AND_ACCESS.md) | Components, persistence, authorization and recovery |
+| [Operations](docs/OPERATIONS.md) | Local services, AWS commands, account management and archives |
+| [Terraform setup](deploy/terraform/README.md) | Environment provisioning, image publishing and teardown |
+| [Evaluation and gates](docs/EVALUATION_AND_GATES.md) | Metrics, baselines and acceptance criteria |
+| [Project context](PROJECT_CONTEXT.md) | Recorded goals and scope decisions |
+| [Development plan](docs/DEVELOPMENT_PLAN.md) | Staged delivery plan |
+
+### Historical reports
+
+Reports retain the findings and limitations recorded at each stage. Statements about
+pending work in an older report describe that revision; use the current guides and later
+repair records for the present status.
+
+- **Baseline and experiments:** [M0 report](docs/M0_REPORT.md),
+  [protocol](docs/M0.1_PROTOCOL_FREEZE.md), [model capabilities](docs/M0.2_MODEL_CAPABILITY.md),
+  [business loop](docs/M0.3_BUSINESS_LOOP.md), [selection experiments](docs/M0.4_EXPERIMENT_PLAN.md),
+  [observability](docs/M0.5_OBSERVABILITY.md), [local demo](docs/M0.5_LOCAL_DEMO.md),
+  [baseline freeze](docs/M0.5_BASELINE.md), [agent evaluation](docs/M0.6_AGENT_UNDER_TEST.md),
+  [model experiment plan](docs/MODEL_EXPERIMENTS.md).
+- **Application foundations:** [persistence](docs/M1_PERSISTENCE.md),
+  [recovery](docs/M2_RECOVERY.md), [authentication](docs/M3_AUTH.md),
+  [handoff and approvals](docs/M4_HANDOFF.md).
+- **Measurement and optimization:** [cost and latency](docs/M5.1_MEASUREMENT.md),
+  [reasoning effort](docs/M5.2_THINKING_EFFORT.md), [reasoning routing](docs/M5.3_THINKING_ROUTING.md).
+- **Deployment:** [topology](docs/M6.1_DEPLOYMENT_SHAPE.md),
+  [containers](docs/M6.2_CONTAINER_AND_START.md), [idle shutdown](docs/M6.3_IDLE_SHUTDOWN.md),
+  [Terraform](docs/M6.4_TERRAFORM.md), [operator commands](docs/M6.5_START_STOP.md),
+  [HTTPS](docs/M6.6_HTTPS.md), [login](docs/M6.7_LOGIN.md),
+  [rollback](docs/M6.8_ROLLBACK.md), [archives](docs/M6.9_ARCHIVE.md).
+- **User interface:** [streaming](docs/M7.1_STREAMING.md),
+  [interaction states](docs/M7.2_STATES.md), [case management](docs/M7.3_TICKETS.md).
+- **Delivery and maintenance:** [M1–M7 delivery report](docs/DELIVERY_REPORT.md),
+  [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
+
+Contributors should read [AGENTS.md](AGENTS.md). The
+[change report template](docs/CHANGE_REPORT_TEMPLATE.md) defines the per-step evidence format.
 
 ## Benchmark attribution
 
-Uses [Sierra τ²-bench Retail](https://github.com/sierra-research/tau2-bench), pinned to
-`v1.0.1` / commit `fc0055dc4e0a316c3f83133267fbd6faaa770992` (MIT, Copyright (c) 2025
-Sierra Research), with per-file SHA256 in `evaluation/tau2_manifest.json`. Upstream
-attribution is preserved, and upstream data, tools and evaluators must not be presented
-as original work. Standard benchmark scores and this project's own permission, approval
-and recovery tests are reported separately.
+This project uses [Sierra tau2-bench Retail](https://github.com/sierra-research/tau2-bench),
+pinned to `v1.0.1` / commit `fc0055dc4e0a316c3f83133267fbd6faaa770992`
+(MIT, Copyright (c) 2025 Sierra Research). Per-file checksums are recorded in
+`evaluation/tau2_manifest.json`. Upstream data, tools and evaluators retain their original
+attribution. Standard benchmark results and project-specific authorization, approval and
+recovery tests are reported separately.
