@@ -179,7 +179,6 @@ class AccessScope:
             return content
         return json.dumps(_redact(payload, self.hidden_fields), ensure_ascii=False, default=str)
 
-
     def withhold(self, reply: str, disclosed: frozenset[str]) -> tuple[str, frozenset[str]]:
         """Replace identifiers the turn did not actually read, and say which those were.
 
