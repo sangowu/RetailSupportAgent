@@ -130,3 +130,60 @@ class TestStopConditions:
 
     def test_fresh_session_can_proceed(self) -> None:
         assert SessionState(user_id="alice").stop_reason() is None
+
+
+class TestRefusedActionsAreBounded:
+    """A session that keeps reaching for things it may not have is probing, and the
+    refusals alone do not stop it: each one is correct and the next one is free. What
+    this bounds is how many a single session may collect.
+    """
+
+    def test_repeated_refusals_stop_the_session(self, guard: WriteGuard) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits(max_denials=3))
+        for _ in range(3):
+            call = ProposedCall("cancel_pending_order", {"order_id": "#W002"})
+            assert guard.review(call, state).decision is Decision.DENIED_OWNERSHIP
+        assert state.denials == 3
+        assert "refused-action limit" in (state.stop_reason() or "")
+
+    def test_one_refusal_does_not(self, guard: WriteGuard, state: SessionState) -> None:
+        guard.review(ProposedCall("cancel_pending_order", {"order_id": "#W002"}), state)
+        assert state.stop_reason() is None
+
+    def test_confirmations_are_not_refusals(self, guard: WriteGuard) -> None:
+        """Asking the user to confirm is the system working, not a probe. Counting it
+        would end every careful conversation at the fifth write."""
+        state = SessionState(user_id="alice", limits=SessionLimits(max_denials=3))
+        for _ in range(5):
+            verdict = guard.review(
+                ProposedCall("cancel_pending_order", {"order_id": "#W001"}), state
+            )
+            assert verdict.decision is Decision.NEEDS_CONFIRMATION
+        assert state.denials == 0
+        assert state.stop_reason() is None
+
+    def test_an_invented_tool_name_is_not_a_probe(self, guard: WriteGuard) -> None:
+        """A model that made up a tool name is a model making a mistake. Ending the
+        session over it would punish the user for the model's error."""
+        state = SessionState(user_id="alice", limits=SessionLimits(max_denials=2))
+        for _ in range(4):
+            guard.review(ProposedCall("delete_everything", {}), state)
+        assert state.denials == 0
+
+    def test_a_permission_refusal_counts_too(self) -> None:
+        """Whether the account lacks the permission or the resource is someone else's,
+        a session collecting refusals is the same signal."""
+        from retail_support_agent.auth import Permission
+
+        state = SessionState(
+            user_id="alice",
+            limits=SessionLimits(max_denials=2),
+            permissions=frozenset({Permission.ORDER_READ}),
+        )
+        guard = WriteGuard(KNOWN_TOOLS, OWNERS.get)
+        for _ in range(2):
+            verdict = guard.review(
+                ProposedCall("cancel_pending_order", {"order_id": "#W001"}), state
+            )
+            assert verdict.decision is Decision.DENIED_PERMISSION
+        assert state.stop_reason() is not None

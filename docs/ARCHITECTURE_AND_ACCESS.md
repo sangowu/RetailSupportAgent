@@ -108,6 +108,25 @@ keeps a permissive scope: it discovers the customer's identity mid-conversation 
 on and invalidate the recorded baselines. Slice verdicts are recorded per session in
 `SessionState.slice_audit`; they are not yet written to `audit_events`.
 
+### Availability of the permission source
+
+Roles and identities are read from the database on every request; nothing caches them.
+The consequence is that there is no stale permission to fall back on when the database
+is unreachable, and the request is refused rather than answered. Specifically, an outage
+does not fall back to the demo identity, does not reuse the permissions an earlier turn
+resolved, and does not report which component failed. With authentication configured and
+no database URL, the service refuses to start rather than refusing one request at a time.
+
+This is a property of not caching, not of an added circuit breaker, which is why
+`tests/test_fail_secure.py` states it as a contract: an identity cache added later to
+make a slow database feel faster would fail those tests.
+
+A session also has a bounded number of refusals (`SessionLimits.max_denials`, default 5).
+Each refusal is already correct, but the next one costs an attacker nothing, so a session
+that keeps proposing calls it may not make is stopped. Confirmation and approval requests
+are not counted - they mean "not yet", not "not allowed" - and neither is an invented tool
+name, which is the model's mistake rather than an account reaching for data.
+
 Roles are provisioned through administrative configuration and scripts, not a public
 registration route. Business roles do not grant AWS infrastructure permissions. UI
 visibility improves usability but does not replace backend enforcement.
@@ -169,7 +188,9 @@ reported results without publishing credentials.
 Stage reports document database rollback and duplicate-submission checks in
 [M1](M1_PERSISTENCE.md), session recovery in [M2](M2_RECOVERY.md), authentication and
 cross-user access checks in [M3](M3_AUTH.md), and assignment, approval and expiry checks in
-[M4](M4_HANDOFF.md). Access-scope behaviour is covered by `tests/test_scope.py`: slice
+[M4](M4_HANDOFF.md). Permission-source outage behaviour is covered by `tests/test_fail_secure.py`, which needs
+no database: it drives the API with a store that raises. Access-scope behaviour is covered
+by `tests/test_scope.py`: slice
 derivation against all 1,000 upstream order records, scope logic, guard refusals,
 redaction as the model sees it, and a regression check that the benchmark adapter's scope
 stays permissive. The effect of an enforcing scope on benchmark scores has not been
