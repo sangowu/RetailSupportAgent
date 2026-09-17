@@ -48,6 +48,7 @@ from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.domain import RetailDomain
 from retail_support_agent.guardrails import SessionLimits, SessionState
 from retail_support_agent.llm import ModelConfig, make_chat_fn
+from retail_support_agent.scope import AccessScope
 from retail_support_agent.store import Store, TicketSummary
 
 # Routes that do not count as someone using the service. The idle watcher polls these
@@ -222,6 +223,11 @@ def make_auth(settings: Settings) -> AuthConfig | None:
     )
 
 
+def _csv_set(raw: str) -> frozenset[str]:
+    """A comma-separated setting as a set, ignoring blanks and surrounding spaces."""
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
 def demo_identity(user_id: str) -> Identity:
     """The identity the service uses when authentication is not configured.
 
@@ -337,6 +343,10 @@ class SessionRegistry:
         # it waits for it to expire, which is the correct behaviour when the previous
         # process may still be finishing a turn.
         self._owner = owner or f"p-{uuid.uuid4().hex[:12]}"
+        # Parsed once. Both are comma-separated settings, and an empty entry means the
+        # slice is not narrowed on that axis.
+        self._hidden_fields = _csv_set(settings.scope_redact_fields)
+        self._write_statuses = _csv_set(settings.scope_write_statuses) or None
         self._agents: dict[str, RetailAgent] = {}
 
     @property
@@ -377,6 +387,12 @@ class SessionRegistry:
                 raise TicketAccessError(session_id)
             acting_user = ticket.user_id
 
+        # The slice this turn may reach. Derived from the identity the token established
+        # and the assignment the database holds - never from the request - and rebuilt
+        # every turn for the same reason roles are: a released case must lose its access
+        # at the next message, not at the next restart.
+        scope = self._scope_for(acting_user, ticket_id)
+
         if session_id not in self._agents:
             # Each session gets its own domain environment and database copy.
             domain = RetailDomain()
@@ -384,6 +400,7 @@ class SessionRegistry:
                 user_id=acting_user,
                 limits=SessionLimits(),
                 permissions=identity.permissions,
+                scope=scope,
             )
             chat_fn = make_chat_fn(self._settings, self._config)
             agent = RetailAgent(
@@ -404,9 +421,26 @@ class SessionRegistry:
         # reason roles are not read from the token, so it would be strange to reintroduce
         # it here.
         agent.apply_context(
-            identity.permissions, subject=identity.subject or None, ticket_id=ticket_id
+            identity.permissions,
+            subject=identity.subject or None,
+            ticket_id=ticket_id,
+            scope=scope,
         )
         return agent
+
+    def _scope_for(self, acting_user: str, ticket_id: int | None) -> AccessScope:
+        """The access scope for one turn.
+
+        `acting_user` is already the customer when a case is being worked, so one
+        principal is right in both cases; `source` is what distinguishes them in the
+        audit record, and "allowed under ticket 12" is the part a reviewer needs.
+        """
+        return AccessScope.for_user(
+            acting_user,
+            statuses=self._write_statuses,
+            hidden_fields=self._hidden_fields,
+            source="self" if ticket_id is None else f"ticket:{ticket_id}",
+        )
 
     def assert_owner(self, session_id: str, identity: Identity) -> None:
         """Refuse if the session belongs to another subject.

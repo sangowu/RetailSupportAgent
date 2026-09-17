@@ -13,7 +13,8 @@ retail data; it does not process real payments or connect to a production order 
 - **Customer support:** order lookup, cancellation and return requests, with streaming
   responses and explicit action confirmation.
 - **Access control:** Cognito authentication, database-managed roles, session ownership
-  and order-access checks enforced by the backend.
+  and order-access checks enforced by the backend, with reads and writes held to a
+  per-session data slice and sensitive fields hidden from the model.
 - **Human handoff:** case creation, supervisor assignment, agent work sessions, approval
   decisions and resumption of the customer's conversation after resolution.
 - **Persistence and recovery:** PostgreSQL records for sessions, messages, confirmations,

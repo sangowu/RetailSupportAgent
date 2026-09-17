@@ -10,7 +10,7 @@ simulated retail data and does not integrate with a production order or payment 
 Gradio UI / API client
   -> FastAPI: authentication, session ownership and request validation
   -> LangGraph agent: model calls, tool proposals and conversation state
-  -> WriteGuard: permissions, order ownership, approval and confirmation checks
+  -> WriteGuard: permissions, access scope, order ownership, approval and confirmation
   -> RetailDomain: pinned tau2-bench tools, policy and simulated data
   -> tool result: response to the agent and user
 
@@ -76,6 +76,38 @@ grant access to another account's conversation. An agent's access to a customer'
 requires a current ticket assignment. Audit access is permission-based across application
 sessions; it is not protected by an organization boundary in this single-organization demo.
 
+### Access scope
+
+A permission states that an account may read order data. The access scope states whose.
+`src/retail_support_agent/scope.py` defines the slice one session may reach, and
+`WriteGuard` applies it to reads as well as writes:
+
+| Axis | Derived from | Default |
+|---|---|---|
+| Row: identity | The authenticated identity, or the customer named by an assigned ticket | The caller's own data |
+| Row: order stage | `status` on the order record | Every stage (`RSA_SCOPE_WRITE_STATUSES`) |
+| Column | The field name in the tool result | `email` hidden (`RSA_SCOPE_REDACT_FIELDS`) |
+
+The simulated dataset has no tenant, sensitivity or date column, and it is SHA256-verified,
+so a marker cannot be written into it. Row slices are therefore derived from fields the
+records already carry (`scope.slice_key`), and column slices use the field name as the
+label. Catalog reads (`get_product_details`, `get_item_details`, `list_all_product_types`,
+`calculate`) are outside the slice: that data is identical for every account. Identity
+lookups by email or by name and zip are refused under an enforcing scope, because the
+identity already came from a verified token.
+
+Redaction applies to what the model is shown, not to what is recorded: operation results
+are stored unredacted, because recovery replays them. A refused read returns the same
+wording whether the order belongs to somebody else or does not exist, so refusals cannot
+be used to enumerate order ids.
+
+The scope is rebuilt on every turn from the identity and the current assignment, for the
+same reason roles are re-read rather than taken from the token. The benchmark adapter
+keeps a permissive scope: it discovers the customer's identity mid-conversation through
+`find_user_id_*`, so an enforcing default would deny the lookups the evaluation depends
+on and invalidate the recorded baselines. Slice verdicts are recorded per session in
+`SessionState.slice_audit`; they are not yet written to `audit_events`.
+
 Roles are provisioned through administrative configuration and scripts, not a public
 registration route. Business roles do not grant AWS infrastructure permissions. UI
 visibility improves usability but does not replace backend enforcement.
@@ -137,7 +169,11 @@ reported results without publishing credentials.
 Stage reports document database rollback and duplicate-submission checks in
 [M1](M1_PERSISTENCE.md), session recovery in [M2](M2_RECOVERY.md), authentication and
 cross-user access checks in [M3](M3_AUTH.md), and assignment, approval and expiry checks in
-[M4](M4_HANDOFF.md). UI behavior has handler-level tests and API-backed exercises; a
+[M4](M4_HANDOFF.md). Access-scope behaviour is covered by `tests/test_scope.py`: slice
+derivation against all 1,000 upstream order records, scope logic, guard refusals,
+redaction as the model sees it, and a regression check that the benchmark adapter's scope
+stays permissive. The effect of an enforcing scope on benchmark scores has not been
+measured, because the benchmark does not run under one. UI behavior has handler-level tests and API-backed exercises; a
 complete browser acceptance workflow remains outstanding.
 
 Approval expiry has database and API coverage. A process restart during an approval flow

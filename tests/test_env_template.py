@@ -71,6 +71,9 @@ def test_template_carries_no_secret_values() -> None:
         # The approval validity window in seconds (M4), the default the architecture
         # document fixes. A number, not a secret.
         "1800",
+        # The default column slice: the name of a field to hide from the model, not a
+        # value of one. Prefilled because an empty setting silently disables the control.
+        "email",
     }
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
         if not re.match(r"^[A-Z][A-Z0-9_]*=", line):

@@ -85,6 +85,7 @@ class FakeDomain:
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict[str, Any]]] = []
         self.owners = {"#W001": "alice", "#W002": "bob"}
+        self.statuses = {"#W001": "pending", "#W002": "delivered"}
 
     @property
     def policy(self) -> str:
@@ -98,6 +99,9 @@ class FakeDomain:
 
     def order_owner(self, order_id: str) -> str | None:
         return self.owners.get(order_id)
+
+    def order_status(self, order_id: str) -> str | None:
+        return self.statuses.get(order_id)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         self.executed.append((name, arguments))

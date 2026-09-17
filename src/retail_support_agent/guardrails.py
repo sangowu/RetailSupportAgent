@@ -19,6 +19,7 @@ from typing import Any
 
 from retail_support_agent.auth import DEFAULT_PERMISSIONS, Permission
 from retail_support_agent.domain import WRITE_TOOLS
+from retail_support_agent.scope import CATALOG_TOOLS, DISCOVERY_TOOLS, AccessScope, SliceAudit
 
 # Argument names that may carry an order or user id. Used by the ownership check.
 ORDER_ID_FIELDS = ("order_id",)
@@ -34,6 +35,7 @@ class Decision(StrEnum):
     DENIED_PERMISSION = "denied_permission"  # the account's roles do not grant this action
     NEEDS_APPROVAL = "needs_approval"  # acting for another user: a human has not decided yet
     DENIED_UNKNOWN_TOOL = "denied_unknown_tool"  # not in the upstream tool list
+    DENIED_SLICE = "denied_slice"  # outside the session's access scope (reads, status, lookups)
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,11 @@ class SessionState:
     # from the database each turn rather than accumulated in memory, so a decision that
     # has run out of time stops authorizing anything.
     approved_fingerprints: set[str] = field(default_factory=set)
+    # The slice of retail data this session may reach. The permissive default keeps the
+    # benchmark adapter and every pre-existing caller behaving exactly as before; the
+    # API replaces it per turn, from the same identity and assignment it reads roles from.
+    scope: AccessScope = field(default_factory=AccessScope.permissive)
+    slice_audit: SliceAudit = field(default_factory=SliceAudit)
     pending: ProposedCall | None = None
 
     def elapsed(self) -> float:
@@ -144,10 +151,22 @@ class WriteGuard:
     the caller was entitled to ask.
     """
 
-    def __init__(self, known_tools: set[str], owner_lookup: Any) -> None:
-        """`owner_lookup(order_id) -> user_id | None`, supplied by RetailDomain."""
+    def __init__(
+        self,
+        known_tools: set[str],
+        owner_lookup: Any,
+        status_lookup: Any = None,
+    ) -> None:
+        """`owner_lookup(order_id) -> user_id | None`, supplied by RetailDomain.
+
+        `status_lookup(order_id) -> status | None` is optional and only consulted when
+        the session scope narrows writes to a lifecycle stage. It stays optional because
+        the benchmark adapter answers ownership from what the conversation already looked
+        up and must not be made to spend a tool call on a status it never asked for.
+        """
         self._known_tools = known_tools
         self._owner_lookup = owner_lookup
+        self._status_lookup = status_lookup
 
     def review(self, call: ProposedCall, state: SessionState) -> GuardVerdict:
         if call.name not in self._known_tools:
@@ -163,7 +182,7 @@ class WriteGuard:
                     f"This account is not allowed to read order data, so {call.name} will not run.",
                     call,
                 )
-            return GuardVerdict(Decision.ALLOW, call=call)
+            return self._check_read_scope(call, state)
 
         # Permission before ownership, and both before the confirmation. An account
         # with no write permission must be refused whether or not it owns the order,
@@ -181,6 +200,12 @@ class WriteGuard:
         ownership = self._check_ownership(call, state)
         if ownership is not None:
             return ownership
+
+        # The row slice, checked after ownership so that "not yours" is still the answer
+        # to someone else's order, and only then "yours, but not at this stage".
+        stage = self._check_status_slice(call, state)
+        if stage is not None:
+            return stage
 
         # Acting for someone else needs a human decision on this exact argument set. It
         # is checked before the confirmation and never instead of it: an approval is one
@@ -202,6 +227,89 @@ class WriteGuard:
             f"{call.describe()}",
             call,
         )
+
+    def _check_read_scope(self, call: ProposedCall, state: SessionState) -> GuardVerdict:
+        """Hold a read to the session's slice. Catalog reads are always allowed.
+
+        This is the check the earlier stages did not make: a read used to pass on the
+        `order:read` permission alone, so any authenticated account could read any
+        order by id. The permission says *that* the account may read order data; the
+        scope says *whose*.
+        """
+        scope = state.scope
+        if not scope.enforce_reads or call.name in CATALOG_TOOLS:
+            return GuardVerdict(Decision.ALLOW, call=call)
+
+        if call.name in DISCOVERY_TOOLS:
+            # Under an enforcing scope the identity came from a verified token, so a
+            # lookup by email or by name and zip can only be aimed at somebody else.
+            return self._refuse_slice(
+                call,
+                state,
+                f"{call.name} looks up other accounts and is not available to this "
+                "session: the authenticated identity is already known.",
+            )
+
+        for field_name in USER_ID_FIELDS:
+            target = call.arguments.get(field_name)
+            if target is not None and not scope.covers_user(str(target)):
+                return self._refuse_slice(
+                    call,
+                    state,
+                    f"This read targets user {target}, which is outside this session's "
+                    "access scope.",
+                )
+
+        for field_name in ORDER_ID_FIELDS:
+            order_id = call.arguments.get(field_name)
+            if order_id is None:
+                continue
+            owner = self._owner_lookup(str(order_id))
+            if owner is None:
+                return self._refuse_slice(
+                    call,
+                    state,
+                    f"Order {order_id} does not exist or its owner cannot be confirmed.",
+                )
+            if not scope.covers_user(owner):
+                # Same wording whether the order belongs to somebody else or does not
+                # exist, so a refused read cannot be used to enumerate order ids.
+                return self._refuse_slice(
+                    call,
+                    state,
+                    f"Order {order_id} does not exist or its owner cannot be confirmed.",
+                )
+
+        state.slice_audit.record(call.name, "allow", "within scope", state.scope.source)
+        return GuardVerdict(Decision.ALLOW, call=call)
+
+    def _check_status_slice(self, call: ProposedCall, state: SessionState) -> GuardVerdict | None:
+        """Hold a write to the order lifecycle stages the scope names.
+
+        Returns None when the scope names no stage, when no status can be looked up, or
+        when the call passes. `covers_status` itself fails closed on an unknown status;
+        the absence of a lookup is different from a lookup that answered "unknown".
+        """
+        if state.scope.statuses is None or self._status_lookup is None:
+            return None
+        order_id = call.arguments.get("order_id")
+        if order_id is None:
+            return None
+        status = self._status_lookup(str(order_id))
+        if state.scope.covers_status(status):
+            return None
+        allowed = ", ".join(sorted(state.scope.statuses))
+        return self._refuse_slice(
+            call,
+            state,
+            f"Order {order_id} is {status or 'of an undetermined status'}; this session "
+            f"may only change orders in these states: {allowed}.",
+        )
+
+    def _refuse_slice(self, call: ProposedCall, state: SessionState, reason: str) -> GuardVerdict:
+        """One refusal, recorded once. Every slice denial goes through here."""
+        state.slice_audit.record(call.name, "deny", reason, state.scope.source)
+        return GuardVerdict(Decision.DENIED_SLICE, reason, call)
 
     def _check_ownership(self, call: ProposedCall, state: SessionState) -> GuardVerdict | None:
         """A write may only touch resources owned by the session identity.

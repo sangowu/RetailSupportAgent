@@ -32,6 +32,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
+from retail_support_agent.scope import AccessScope
 from retail_support_agent.store import APPROVAL_TTL_SECONDS, Store
 
 # This prompt is for the application demo only.
@@ -177,7 +178,7 @@ class RetailAgent:
         self._approval_ttl = approval_ttl_seconds
         if self._store is not None and self._session_id is not None:
             self._store.ensure_session(self._session_id, session.user_id)
-        self._guard = WriteGuard(domain.tool_names(), domain.order_owner)
+        self._guard = WriteGuard(domain.tool_names(), domain.order_owner, domain.order_status)
         # Tools actually executed during this turn. This must accumulate across the
         # whole turn, not just the last step: a turn is usually think (request tool)
         # -> act (execute) -> think (answer), and the last step has no tool calls.
@@ -202,6 +203,7 @@ class RetailAgent:
         permissions: frozenset[Permission],
         subject: str | None = None,
         ticket_id: int | None = None,
+        scope: AccessScope | None = None,
     ) -> None:
         """Set who is driving this session and what they may do, before the turn runs.
 
@@ -215,6 +217,12 @@ class RetailAgent:
         Recovery gets this for free: a rebuilt session reads the same rows.
         """
         self._session.permissions = permissions
+        # The access scope is refreshed here for the same reason as the permissions: an
+        # agent cached in this process would otherwise keep the slice it was built with.
+        # None means "leave it alone", which is what the callers that predate the scope
+        # want; the API always passes one.
+        if scope is not None:
+            self._session.scope = scope
         self._subject = subject
         self._ticket_id = ticket_id
         self._session.acting_for_other = ticket_id is not None
@@ -626,7 +634,7 @@ class RetailAgent:
         changes nothing, and a row per read would bury the audit table in noise.
         """
         if self._store is None or self._session_id is None or proposed.name not in WRITE_TOOLS:
-            return self._domain.execute(proposed.name, proposed.arguments)
+            return self._project(self._domain.execute(proposed.name, proposed.arguments))
 
         outcome = self._store.execute_once(
             self._session_id,
@@ -636,7 +644,20 @@ class RetailAgent:
         )
         # A replay does not touch the domain environment. That second change is
         # exactly what idempotency exists to prevent.
-        return ToolResult(name=proposed.name, content=outcome.result, ok=True)
+        return self._project(ToolResult(name=proposed.name, content=outcome.result, ok=True))
+
+    def _project(self, result: ToolResult) -> ToolResult:
+        """Apply the column slice to what the model is about to read.
+
+        Deliberately after `execute_once`, not inside it: the recorded operation result
+        is what recovery replays, and storing a redacted copy would rebuild the session
+        from data with holes in it. The redaction is for the model's view only.
+        """
+        if not result.ok or not self._session.scope.redacts:
+            return result
+        return ToolResult(
+            name=result.name, ok=result.ok, content=self._session.scope.project(result.content)
+        )
 
     def _maybe_consume_confirmation(self, user_message: str) -> None:
         """Record an affirmative reply as a confirmation of the pending argument set."""
