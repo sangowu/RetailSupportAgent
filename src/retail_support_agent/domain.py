@@ -128,6 +128,24 @@ class RetailDomain:
         Returns None when the order does not exist or the payload is malformed;
         callers treat None as a denial.
         """
+        return self._order_field(order_id, "user_id")
+
+    def order_status(self, order_id: str) -> str | None:
+        """The order's lifecycle stage: pending, processed, delivered or cancelled.
+
+        The dataset has no slice column, so this field is the slice: "pending orders
+        only" is derived from the record rather than from a marker stored beside it.
+        Returns None on a missing or malformed order, which an enforcing scope treats
+        as a denial.
+        """
+        return self._order_field(order_id, "status")
+
+    def _order_field(self, order_id: str, field_name: str) -> str | None:
+        """One string field of an order, or None if it cannot be read.
+
+        A failed parse returns None rather than raising: the callers are access checks,
+        and an unreadable order must deny rather than crash the turn.
+        """
         result = self.execute("get_order_details", {"order_id": order_id})
         if not result.ok:
             return None
@@ -137,5 +155,5 @@ class RetailDomain:
             return None
         if not isinstance(payload, dict):
             return None
-        owner = payload.get("user_id")
-        return str(owner) if owner is not None else None
+        value = payload.get(field_name)
+        return str(value) if value is not None else None

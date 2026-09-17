@@ -92,6 +92,9 @@ class HandoffDomain:
     def order_owner(self, order_id: str) -> str | None:
         return CUSTOMER
 
+    def order_status(self, order_id: str) -> str | None:
+        return "pending"
+
     def db_hash(self) -> str:
         return json.dumps(sorted(self.cancelled))
 

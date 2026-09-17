@@ -103,6 +103,19 @@ class Settings(BaseSettings):
     # window, and one handling refunds may want a much shorter one.
     approval_ttl_seconds: float = Field(default=1800.0, validation_alias="RSA_APPROVAL_TTL_SECONDS")
 
+    # The column slice: fields hidden from the model in every tool result. Comma
+    # separated, empty to disable. The default hides the customer's email, which no tool
+    # consumes as input. `payment_methods` is available but deliberately not default:
+    # a return needs the payment_method_id, so hiding it would break the workflow rather
+    # than protect it, and a control that breaks the task gets turned off in practice.
+    scope_redact_fields: str = Field(default="email", validation_alias="RSA_SCOPE_REDACT_FIELDS")
+
+    # The row slice: order lifecycle stages a session may write to. Comma separated,
+    # empty for every stage, which is the default because the upstream tools already
+    # restrict themselves (a cancellation needs a pending order, a return a delivered
+    # one) and naming a single stage here would deny one of them outright.
+    scope_write_statuses: str = Field(default="", validation_alias="RSA_SCOPE_WRITE_STATUSES")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
