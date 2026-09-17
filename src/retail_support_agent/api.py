@@ -347,6 +347,7 @@ class SessionRegistry:
         # slice is not narrowed on that axis.
         self._hidden_fields = _csv_set(settings.scope_redact_fields)
         self._write_statuses = _csv_set(settings.scope_write_statuses) or None
+        self._check_output = settings.scope_check_output
         self._agents: dict[str, RetailAgent] = {}
 
     @property
@@ -439,6 +440,7 @@ class SessionRegistry:
             acting_user,
             statuses=self._write_statuses,
             hidden_fields=self._hidden_fields,
+            check_output=self._check_output,
             source="self" if ticket_id is None else f"ticket:{ticket_id}",
         )
 

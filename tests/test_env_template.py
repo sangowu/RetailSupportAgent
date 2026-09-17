@@ -74,6 +74,9 @@ def test_template_carries_no_secret_values() -> None:
         # The default column slice: the name of a field to hide from the model, not a
         # value of one. Prefilled because an empty setting silently disables the control.
         "email",
+        # Whether the output check runs. A boolean, and the template shows the default
+        # so that turning it off is a visible edit rather than an absent line.
+        "true",
     }
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
         if not re.match(r"^[A-Z][A-Z0-9_]*=", line):
