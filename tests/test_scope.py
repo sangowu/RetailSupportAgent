@@ -26,6 +26,7 @@ from retail_support_agent.guardrails import Decision, ProposedCall, SessionState
 from retail_support_agent.scope import (
     REDACTED,
     AccessScope,
+    identifiers_in,
     slice_key,
 )
 
@@ -382,3 +383,142 @@ class TestBenchmarkAdapterUnaffected:
             ProposedCall("find_user_id_by_email", {"email": "a@example.com"}),
         )
         assert verdict.allowed
+
+
+# ---- 6. what may leave the turn ------------------------------------------
+
+
+class TestIdentifierDetection:
+    def test_it_finds_orders_users_and_payment_methods(self) -> None:
+        found = identifiers_in("order #W2611340 for ava_moore_2033, paid with gift_card_1725971")
+        assert found == frozenset({"#W2611340", "ava_moore_2033", "gift_card_1725971"})
+
+    def test_catalog_identifiers_are_left_alone(self) -> None:
+        """Item and product ids name stock every account can read. Withholding one would
+        damage an answer without protecting anything."""
+        assert identifiers_in("product 8310926033, item 6469567736") == frozenset()
+
+    def test_ordinary_prose_yields_nothing(self) -> None:
+        assert identifiers_in("Your order has been cancelled and refunded.") == frozenset()
+
+
+class TestWithholding:
+    def test_it_is_off_unless_the_scope_asks_for_it(self) -> None:
+        scope = AccessScope.for_user("alice")
+        reply, withheld = scope.withhold("your order #W9999", frozenset())
+        assert reply == "your order #W9999"
+        assert withheld == frozenset()
+
+    def test_an_identifier_the_turn_did_not_read_is_withheld(self) -> None:
+        scope = AccessScope.for_user("alice", check_output=True)
+        reply, withheld = scope.withhold("order #W9999 belongs to bob_smith_1234", frozenset())
+        assert "#W9999" not in reply
+        assert "bob_smith_1234" not in reply
+        assert withheld == frozenset({"#W9999", "bob_smith_1234"})
+
+    def test_what_the_turn_read_survives(self) -> None:
+        scope = AccessScope.for_user("alice", check_output=True)
+        reply, withheld = scope.withhold("your order #W001 is pending", frozenset({"#W001"}))
+        assert reply == "your order #W001 is pending"
+        assert withheld == frozenset()
+
+
+class TestOutputCheckInTheAgentFlow:
+    """The last gate in the turn. Everything before it decides what the model may reach;
+    this decides what may leave."""
+
+    @staticmethod
+    def _agent(script: list[Any], *, check_output: bool = True) -> Any:
+        from retail_support_agent.agent import RetailAgent
+        from retail_support_agent.domain import ToolResult
+        from test_agent_flow import FakeDomain, ScriptedModel
+
+        class OrderDomain(FakeDomain):
+            def tool_names(self) -> set[str]:
+                return {"get_order_details"}
+
+            def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+                return ToolResult(
+                    name=name,
+                    ok=True,
+                    content=json.dumps(
+                        {"order_id": "#W001", "user_id": "alice", "status": "pending"}
+                    ),
+                )
+
+        state = SessionState(
+            user_id="alice",
+            scope=AccessScope.for_user("alice", check_output=check_output),
+        )
+        return RetailAgent(ScriptedModel(script), OrderDomain(), state)  # type: ignore[arg-type]
+
+    def test_an_identifier_the_turn_never_read_is_withheld(self) -> None:
+        from test_agent_flow import reply
+
+        agent = self._agent([reply("I found order #W777 under bob_smith_1234.")])
+        result = agent.send("what is my order status?")
+        assert "#W777" not in result.reply
+        assert "bob_smith_1234" not in result.reply
+
+    def test_the_alteration_is_recorded_for_review(self) -> None:
+        """An answer that was changed on the way out is exactly the event a reviewer
+        needs to see; silently fixing it would hide the model's behaviour."""
+        from test_agent_flow import reply
+
+        agent = self._agent([reply("Order #W777 is on its way.")])
+        agent.send("where is my order?")
+        rows = [row for row in agent._session.slice_audit.rows if row["verdict"] == "withheld"]
+        assert rows and "#W777" in rows[0]["reason"]
+
+    def test_an_identifier_the_turn_read_survives(self) -> None:
+        from test_agent_flow import reply, tool_call
+
+        agent = self._agent(
+            [
+                tool_call("get_order_details", {"order_id": "#W001"}),
+                reply("Order #W001 is pending."),
+            ]
+        )
+        # The user does not name the order, so the only way the id can legitimately
+        # appear in the answer is the tool result. Naming it in the question would make
+        # this test pass with the tool call removed.
+        result = agent.send("what is the status of my latest order?")
+        assert "#W001" in result.reply
+
+    def test_an_identifier_the_user_typed_may_be_echoed_back(self) -> None:
+        """Repeating an id to the person who just supplied it discloses nothing, and
+        refusing to would make every refusal unintelligible."""
+        from test_agent_flow import reply
+
+        agent = self._agent([reply("I could not find order #W555.")])
+        result = agent.send("what happened to #W555?")
+        assert "#W555" in result.reply
+
+    def test_a_later_turn_may_not_answer_from_an_earlier_one(self) -> None:
+        """The check is per turn, and this is why. The conversation history still holds
+        what the first turn read, and permissions can be revoked between two turns. A
+        model answering the second turn from the first turn's reading would be answering
+        under permissions the account may no longer have.
+        """
+        from test_agent_flow import reply, tool_call
+
+        agent = self._agent(
+            [
+                tool_call("get_order_details", {"order_id": "#W001"}),
+                reply("Order #W001 is pending."),
+                reply("As I said, #W001 is pending."),
+            ]
+        )
+        first = agent.send("what is the status of my latest order?")
+        assert "#W001" in first.reply
+
+        second = agent.send("remind me again?")
+        assert "#W001" not in second.reply
+
+    def test_a_permissive_scope_leaves_the_answer_alone(self) -> None:
+        """The benchmark adapter's default. Rewriting answers there would change what is
+        being measured."""
+        from test_agent_flow import reply
+
+        agent = self._agent([reply("Order #W777 is on its way.")], check_output=False)
+        assert "#W777" in agent.send("where is my order?").reply

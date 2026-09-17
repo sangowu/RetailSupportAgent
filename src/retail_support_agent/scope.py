@@ -20,6 +20,7 @@ directly, without a model, a database or a network.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -45,6 +46,27 @@ DISCOVERY_TOOLS: frozenset[str] = frozenset({"find_user_id_by_email", "find_user
 SENSITIVE_FIELDS: frozenset[str] = frozenset({"email", "payment_methods"})
 
 REDACTED = "[redacted by access scope]"
+WITHHELD = "[withheld: not read in this turn]"
+
+# Identifiers whose appearance in an answer is a disclosure: retail order ids
+# (`#W2611340`), user ids (`ava_moore_2033`) and payment method ids
+# (`gift_card_1725971`). Item and product ids are deliberately absent - they name catalog
+# entries every account can already read, so withholding one would damage an answer
+# without protecting anything.
+IDENTIFIER_PATTERN = re.compile(
+    r"#W\d+"
+    r"|\b(?:gift_card|credit_card|paypal)_\d+\b"
+    r"|\b[a-z]+_[a-z]+_\d{3,5}\b"
+)
+
+
+def identifiers_in(text: str) -> frozenset[str]:
+    """Every identifier appearing in a piece of text.
+
+    Used on both sides of the output check: on tool results to learn what this turn was
+    allowed to see, and on the model's answer to find what it is about to say.
+    """
+    return frozenset(IDENTIFIER_PATTERN.findall(text))
 
 
 def slice_key(order: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -84,6 +106,12 @@ class AccessScope:
     # would deny every lookup made before `find_user_id_*` returned. The application
     # turns it on explicitly, where the identity arrives with the request.
     enforce_reads: bool = False
+    # Whether the model's answer is checked against what this turn actually read. Off by
+    # default with the rest of the scope, and separately switchable because it is the
+    # riskiest of these controls: it can withhold an identifier from an answer that was
+    # in fact legitimate, and an operator who sees that happen needs a way to turn it off
+    # without giving up the row and column slices as well.
+    check_output: bool = False
     source: str = "default"
 
     @classmethod
@@ -98,6 +126,7 @@ class AccessScope:
         *,
         statuses: frozenset[str] | None = None,
         hidden_fields: frozenset[str] = frozenset(),
+        check_output: bool = False,
         source: str = "self",
     ) -> AccessScope:
         """The slice of one retail identity."""
@@ -106,6 +135,7 @@ class AccessScope:
             statuses=statuses,
             hidden_fields=hidden_fields,
             enforce_reads=True,
+            check_output=check_output,
             source=source,
         )
 
@@ -148,6 +178,32 @@ class AccessScope:
         except (json.JSONDecodeError, TypeError):
             return content
         return json.dumps(_redact(payload, self.hidden_fields), ensure_ascii=False, default=str)
+
+
+    def withhold(self, reply: str, disclosed: frozenset[str]) -> tuple[str, frozenset[str]]:
+        """Replace identifiers the turn did not actually read, and say which those were.
+
+        `disclosed` is what this turn was allowed to see: the identifiers in the tool
+        results it actually received, plus the ones the user typed themselves - echoing
+        an id back to the person who supplied it discloses nothing.
+
+        The check is per turn, not per session, and that is the point of it. The
+        conversation history still holds what earlier turns read, and permissions can be
+        revoked between two turns; without this, a model could answer the second turn
+        from what it learned in the first, under permissions the account no longer has.
+
+        What this does and does not catch is worth stating plainly: it finds identifiers,
+        so a fabricated or carried-over order number is caught. Content paraphrased
+        without its identifier is not. It narrows the channel; it does not close it.
+        """
+        if not self.check_output:
+            return reply, frozenset()
+        leaked = identifiers_in(reply) - disclosed
+        if not leaked:
+            return reply, frozenset()
+        for identifier in leaked:
+            reply = reply.replace(identifier, WITHHELD)
+        return reply, leaked
 
 
 def _redact(value: Any, hidden: frozenset[str]) -> Any:

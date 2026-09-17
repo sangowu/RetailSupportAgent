@@ -142,6 +142,10 @@ class SessionState:
     # Refused proposals so far. Counted by `WriteGuard.review`, not by the callers, so
     # that no refusal path can forget to count itself.
     denials: int = 0
+    # Identifiers this turn is entitled to say back: what its tool results contained,
+    # plus what the user typed. Cleared at the start of every turn, so an answer cannot
+    # be assembled from what an earlier turn read under permissions since revoked.
+    disclosed_ids: set[str] = field(default_factory=set)
     pending: ProposedCall | None = None
 
     def elapsed(self) -> float:

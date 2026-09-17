@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -32,7 +32,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
-from retail_support_agent.scope import AccessScope
+from retail_support_agent.scope import AccessScope, identifiers_in
 from retail_support_agent.store import APPROVAL_TTL_SECONDS, Store
 
 # This prompt is for the application demo only.
@@ -453,6 +453,9 @@ class RetailAgent:
         self._journal("user", user_message, [])
         self._last = None
         self._turn_tools = []
+        # The turn may say back what it reads from here on, and what the user just typed.
+        # Cleared rather than accumulated: see AccessScope.withhold.
+        self._session.disclosed_ids = set(identifiers_in(user_message))
 
         # Before the first model call, not after it. The point of this route is that
         # something appears immediately, and the first model call is the longest silence
@@ -477,6 +480,7 @@ class RetailAgent:
             status="answered",
             tool_calls=list(self._turn_tools),
         )
+        result = self._check_output(result)
         self._journal("assistant", result.reply, result.tool_calls)
         self._save_progress()
         yield TurnEvent(kind="reply", result=result)
@@ -523,12 +527,16 @@ class RetailAgent:
         self._journal("user", user_message, [])
         self._last = None
         self._turn_tools = []
+        # The turn may say back what it reads from here on, and what the user just typed.
+        # Cleared rather than accumulated: see AccessScope.withhold.
+        self._session.disclosed_ids = set(identifiers_in(user_message))
         self._graph.invoke({"messages": []})
         result = self._last or TurnResult(
             reply="(the model returned no answer)",
             status="answered",
             tool_calls=list(self._turn_tools),
         )
+        result = self._check_output(result)
         self._journal("assistant", result.reply, result.tool_calls)
         self._save_progress()
         return result
@@ -634,7 +642,9 @@ class RetailAgent:
         changes nothing, and a row per read would bury the audit table in noise.
         """
         if self._store is None or self._session_id is None or proposed.name not in WRITE_TOOLS:
-            return self._project(self._domain.execute(proposed.name, proposed.arguments))
+            return self._disclose(
+                self._project(self._domain.execute(proposed.name, proposed.arguments))
+            )
 
         outcome = self._store.execute_once(
             self._session_id,
@@ -644,7 +654,42 @@ class RetailAgent:
         )
         # A replay does not touch the domain environment. That second change is
         # exactly what idempotency exists to prevent.
-        return self._project(ToolResult(name=proposed.name, content=outcome.result, ok=True))
+        return self._disclose(
+            self._project(ToolResult(name=proposed.name, content=outcome.result, ok=True))
+        )
+
+    def _check_output(self, result: TurnResult) -> TurnResult:
+        """Hold the answer to what this turn actually read.
+
+        The last gate in the turn. Everything before it decides what the model may
+        *reach*; this decides what may leave, which is the only place a fabricated or
+        carried-over identifier can still be caught. A withheld identifier is recorded in
+        the slice audit, because an answer that was altered on the way out is exactly the
+        event a reviewer needs to see.
+        """
+        scope = self._session.scope
+        if not scope.check_output or not result.reply:
+            return result
+        reply, withheld = scope.withhold(result.reply, frozenset(self._session.disclosed_ids))
+        if not withheld:
+            return result
+        self._session.slice_audit.record(
+            "(reply)",
+            "withheld",
+            f"identifiers not read in this turn: {', '.join(sorted(withheld))}",
+            scope.source,
+        )
+        return replace(result, reply=reply)
+
+    def _disclose(self, result: ToolResult) -> ToolResult:
+        """Record the identifiers this tool result put in front of the model.
+
+        Called on the projected result, not the raw one: a field the column slice hid is
+        not something the turn was shown, so it must not license saying it back.
+        """
+        if result.ok:
+            self._session.disclosed_ids |= identifiers_in(result.content)
+        return result
 
     def _project(self, result: ToolResult) -> ToolResult:
         """Apply the column slice to what the model is about to read.

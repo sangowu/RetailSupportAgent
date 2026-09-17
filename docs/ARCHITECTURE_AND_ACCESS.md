@@ -12,7 +12,8 @@ Gradio UI / API client
   -> LangGraph agent: model calls, tool proposals and conversation state
   -> WriteGuard: permissions, access scope, order ownership, approval and confirmation
   -> RetailDomain: pinned tau2-bench tools, policy and simulated data
-  -> tool result: response to the agent and user
+  -> tool result: response to the agent
+  -> output check: identifiers the turn did not read are withheld from the reply
 
 PostgreSQL: application state, operation records, approvals and audit events
 ```
@@ -87,6 +88,7 @@ A permission states that an account may read order data. The access scope states
 | Row: identity | The authenticated identity, or the customer named by an assigned ticket | The caller's own data |
 | Row: order stage | `status` on the order record | Every stage (`RSA_SCOPE_WRITE_STATUSES`) |
 | Column | The field name in the tool result | `email` hidden (`RSA_SCOPE_REDACT_FIELDS`) |
+| Output | Identifiers the turn actually read | Checked (`RSA_SCOPE_CHECK_OUTPUT`) |
 
 The simulated dataset has no tenant, sensitivity or date column, and it is SHA256-verified,
 so a marker cannot be written into it. Row slices are therefore derived from fields the
@@ -95,6 +97,23 @@ label. Catalog reads (`get_product_details`, `get_item_details`, `list_all_produ
 `calculate`) are outside the slice: that data is identical for every account. Identity
 lookups by email or by name and zip are refused under an enforcing scope, because the
 identity already came from a verified token.
+
+There is a fourth check, on the way out. Everything above decides what the model may
+*reach*; `AccessScope.withhold` decides what may leave. The model's answer is compared
+against the identifiers this turn actually read - those in its tool results, plus those
+the user typed, since echoing an id back to the person who supplied it discloses nothing -
+and anything else is replaced before the reply is returned or journaled.
+
+The comparison is per turn, not per session, and that is the point of it. The
+conversation history still holds what earlier turns read, and a role can be revoked
+between two turns; without this, a model could answer the second turn from what it
+learned in the first, under permissions the account no longer holds. What it catches is
+worth stating plainly: identifiers, so a fabricated or carried-over order number is
+caught, while content paraphrased without its identifier is not. It narrows the channel;
+it does not close it. It is the riskiest of these controls - it can withhold an identifier
+from an answer that was in fact legitimate - so `RSA_SCOPE_CHECK_OUTPUT` turns it off
+without giving up the row and column slices. Withheld identifiers are recorded in the
+slice audit: an answer altered on the way out is exactly the event a reviewer needs.
 
 Redaction applies to what the model is shown, not to what is recorded: operation results
 are stored unredacted, because recovery replays them. A refused read returns the same

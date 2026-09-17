@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     # one) and naming a single stage here would deny one of them outright.
     scope_write_statuses: str = Field(default="", validation_alias="RSA_SCOPE_WRITE_STATUSES")
 
+    # Whether the model's answer is checked against what the turn actually read, with
+    # identifiers it did not read withheld. On by default, and separately switchable
+    # because it is the riskiest of the scope controls: it can withhold an identifier
+    # from an answer that was in fact legitimate, and an operator who sees that needs a
+    # way to turn it off without losing the row and column slices too.
+    scope_check_output: bool = Field(default=True, validation_alias="RSA_SCOPE_CHECK_OUTPUT")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
