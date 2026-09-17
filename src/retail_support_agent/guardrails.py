@@ -38,6 +38,17 @@ class Decision(StrEnum):
     DENIED_SLICE = "denied_slice"  # outside the session's access scope (reads, status, lookups)
 
 
+# Refusals that mean "you may not reach this", and so count towards the probe limit.
+# NEEDS_CONFIRMATION and NEEDS_APPROVAL are excluded: they mean "not yet", and a session
+# that patiently confirms each action is the behaviour this system wants. So is
+# DENIED_UNKNOWN_TOOL, which is a model that invented a tool name rather than an account
+# reaching for data - ending the session over the model's own mistake would be a worse
+# answer than telling it the tool does not exist.
+COUNTED_DENIALS: frozenset[Decision] = frozenset(
+    {Decision.DENIED_OWNERSHIP, Decision.DENIED_PERMISSION, Decision.DENIED_SLICE}
+)
+
+
 @dataclass(frozen=True)
 class ProposedCall:
     """One tool call proposed by the model."""
@@ -91,6 +102,13 @@ class SessionLimits:
     max_steps: int = 20
     max_tool_calls: int = 15
     timeout_seconds: float = 180.0
+    # A session that keeps proposing calls it is not allowed to make is probing, whether
+    # a person is steering it or the model is looping. Five is above what a confused
+    # model produces in a legitimate conversation and far below what mapping somebody
+    # else's orders would take. Reaching it stops the session rather than the call: the
+    # refusals themselves are already correct, and what this bounds is how many of them
+    # one session may collect.
+    max_denials: int = 5
 
 
 @dataclass
@@ -121,6 +139,9 @@ class SessionState:
     # API replaces it per turn, from the same identity and assignment it reads roles from.
     scope: AccessScope = field(default_factory=AccessScope.permissive)
     slice_audit: SliceAudit = field(default_factory=SliceAudit)
+    # Refused proposals so far. Counted by `WriteGuard.review`, not by the callers, so
+    # that no refusal path can forget to count itself.
+    denials: int = 0
     pending: ProposedCall | None = None
 
     def elapsed(self) -> float:
@@ -134,6 +155,8 @@ class SessionState:
             return f"Reached the tool-call limit of {self.limits.max_tool_calls}."
         if self.elapsed() >= self.limits.timeout_seconds:
             return f"Exceeded the session time limit of {self.limits.timeout_seconds:.0f}s."
+        if self.denials >= self.limits.max_denials:
+            return f"Reached the refused-action limit of {self.limits.max_denials}."
         return None
 
     def confirm(self, call: ProposedCall) -> None:
@@ -169,6 +192,18 @@ class WriteGuard:
         self._status_lookup = status_lookup
 
     def review(self, call: ProposedCall, state: SessionState) -> GuardVerdict:
+        """Judge one call and count it if it was refused.
+
+        The counting is here rather than at the call sites so that a refusal path added
+        later cannot forget to count itself, which is the way a probe limit stops
+        working without anyone noticing.
+        """
+        verdict = self._review(call, state)
+        if verdict.decision in COUNTED_DENIALS:
+            state.denials += 1
+        return verdict
+
+    def _review(self, call: ProposedCall, state: SessionState) -> GuardVerdict:
         if call.name not in self._known_tools:
             return GuardVerdict(
                 Decision.DENIED_UNKNOWN_TOOL,
