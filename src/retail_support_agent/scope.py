@@ -233,3 +233,26 @@ class SliceAudit:
 
     def record(self, tool: str, verdict: str, reason: str, source: str) -> None:
         self.rows.append({"tool": tool, "verdict": verdict, "reason": reason, "source": source})
+
+    def drain(self) -> list[dict[str, str]]:
+        """Take the rows recorded so far and forget them.
+
+        Called once per turn by the agent, which persists what belongs in the audit
+        trail. Draining rather than accumulating keeps a long session from growing this
+        list without bound, and means a row cannot be written to the database twice.
+        """
+        taken, self.rows = self.rows, []
+        return taken
+
+
+# Verdicts that belong in the durable audit trail. Allowed reads are deliberately
+# excluded: a row per read would bury the table in noise, which is the same reason
+# reads are not recorded as operations. What a reviewer needs is the refusals - an
+# account reaching for data it may not have - and the answers that were altered on the
+# way out.
+AUDITED_VERDICTS: frozenset[str] = frozenset({"deny", "withheld"})
+
+
+def audited(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The subset of slice-audit rows that is worth keeping after the process exits."""
+    return [row for row in rows if row["verdict"] in AUDITED_VERDICTS]

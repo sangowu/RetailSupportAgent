@@ -715,7 +715,11 @@ def create_app(
 
     @app.get("/session/{session_id}/audit", response_model=list[AuditEvent])
     def audit(session_id: str, identity: CurrentIdentity) -> list[AuditEvent]:
-        """The write actions recorded for one session.
+        """The write actions and access decisions recorded for one session.
+
+        Three kinds appear: `write_executed`, `access_denied` and `output_withheld`.
+        Allowed reads are not among them - a row per read would bury the table, which is
+        the same reason reads are not recorded as operations.
 
         Deliberately not restricted to the session's own subject: reading someone
         else's audit trail is exactly what a supervisor role is for. What restricts it

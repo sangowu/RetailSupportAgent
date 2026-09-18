@@ -40,7 +40,7 @@ records in PostgreSQL:
 | `sessions`, `session_claims` | Session ownership, execution counters and worker leases |
 | `messages` | Persist visible conversation turns |
 | `confirmations` | Track confirmation of a specific tool and argument fingerprint |
-| `operations`, `audit_events` | Record idempotency keys, operation results and audit events |
+| `operations`, `audit_events` | Record idempotency keys, operation results, executed writes and refused access |
 | `tickets`, `ticket_assignments` | Track cases, current assignments and assignment history |
 | `approvals` | Record escalation requests, decisions and expiry |
 
@@ -125,7 +125,14 @@ same reason roles are re-read rather than taken from the token. The benchmark ad
 keeps a permissive scope: it discovers the customer's identity mid-conversation through
 `find_user_id_*`, so an enforcing default would deny the lookups the evaluation depends
 on and invalidate the recorded baselines. Slice verdicts are recorded per session in
-`SessionState.slice_audit`; they are not yet written to `audit_events`.
+`SessionState.slice_audit`, and the agent drains that list at the end of every turn into
+`audit_events` as `access_denied` and `output_withheld`. Allowed reads are not written: a
+row per read would bury the table, which is the same reason reads are not recorded as
+operations. The guard itself never touches the database - it stays pure logic that a test
+can drive without one - so the draining happens in the agent. Access records are written
+after the turn, in their own transaction: an audit failure must not roll back a write the
+customer already confirmed, and the cost of that choice is that a crash between the turn
+and the write loses that turn's access records.
 
 ### Availability of the permission source
 
@@ -190,8 +197,9 @@ Concurrent-user capacity and deployment-level load limits have not been measured
 
 ## Audit and observability
 
-PostgreSQL stores the application audit trail. `GET /session/{session_id}/audit` requires
-`audit:read`; the deployed UI does not yet provide an audit-viewing page. The configured
+PostgreSQL stores the application audit trail: executed writes, refused access and
+answers altered on the way out. `GET /session/{session_id}/audit` requires `audit:read`;
+the deployed UI does not yet provide an audit-viewing page. The configured
 demo accounts include a supervisor with audit permission but no dedicated auditor account.
 
 Langfuse is used for evaluation tracing; the application service does not currently depend
