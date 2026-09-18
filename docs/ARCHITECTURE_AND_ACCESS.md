@@ -215,7 +215,9 @@ reported results without publishing credentials.
 Stage reports document database rollback and duplicate-submission checks in
 [M1](M1_PERSISTENCE.md), session recovery in [M2](M2_RECOVERY.md), authentication and
 cross-user access checks in [M3](M3_AUTH.md), and assignment, approval and expiry checks in
-[M4](M4_HANDOFF.md). Permission-source outage behaviour is covered by `tests/test_fail_secure.py`, which needs
+[M4](M4_HANDOFF.md). The controls are measured end to end by the frozen scenario set in
+[M8 access evaluation](M8_ACCESS_EVAL.md) - twenty attempts, including three that must
+still succeed. Permission-source outage behaviour is covered by `tests/test_fail_secure.py`, which needs
 no database: it drives the API with a store that raises. Access-scope behaviour is covered
 by `tests/test_scope.py`: slice
 derivation against all 1,000 upstream order records, scope logic, guard refusals,
