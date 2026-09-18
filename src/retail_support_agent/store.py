@@ -537,6 +537,36 @@ class Store:
             )
             return list(db.scalars(stmt))
 
+    def record_access_events(self, session_id: str, rows: list[dict[str, str]]) -> int:
+        """Persist this turn's access decisions. Returns how many were written.
+
+        Written after the turn rather than inside it, and in their own transaction: an
+        access decision is not part of the business change the way `write_executed` is,
+        and a failure to record one must not roll back a write the customer already
+        confirmed. The cost of that choice is stated plainly - a crash between the turn
+        and this call loses the turn's access records, and the alternative would have
+        been to let audit bookkeeping undo real work.
+
+        `operation_id` stays null: a refusal has no operation, which is the point of it.
+        """
+        if not rows:
+            return 0
+        with self._sessions.begin() as db:
+            for row in rows:
+                db.add(
+                    AuditEventRow(
+                        session_id=session_id,
+                        operation_id=None,
+                        kind="access_denied" if row["verdict"] == "deny" else "output_withheld",
+                        detail={
+                            "tool": row["tool"],
+                            "reason": row["reason"],
+                            "authority": row["source"],
+                        },
+                    )
+                )
+        return len(rows)
+
     def audit_events(self, session_id: str) -> list[AuditEventRow]:
         with self._sessions() as db:
             stmt = (

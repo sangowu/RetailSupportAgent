@@ -26,6 +26,7 @@ from retail_support_agent.guardrails import Decision, ProposedCall, SessionState
 from retail_support_agent.scope import (
     REDACTED,
     AccessScope,
+    audited,
     identifiers_in,
     slice_key,
 )
@@ -466,9 +467,23 @@ class TestOutputCheckInTheAgentFlow:
         from test_agent_flow import reply
 
         agent = self._agent([reply("Order #W777 is on its way.")])
+        # The turn drains its audit rows on the way out, so they are captured here as
+        # they leave rather than read back afterwards. What is drained is exactly what
+        # the store is handed.
+        drained: list[dict[str, str]] = []
+        original = agent._session.slice_audit.drain
+
+        def capture() -> list[dict[str, str]]:
+            taken: list[dict[str, str]] = original()
+            drained.extend(taken)
+            return taken
+
+        agent._session.slice_audit.drain = capture
         agent.send("where is my order?")
-        rows = [row for row in agent._session.slice_audit.rows if row["verdict"] == "withheld"]
-        assert rows and "#W777" in rows[0]["reason"]
+
+        kept = audited(drained)
+        assert [row["verdict"] for row in kept] == ["withheld"]
+        assert "#W777" in kept[0]["reason"]
 
     def test_an_identifier_the_turn_read_survives(self) -> None:
         from test_agent_flow import reply, tool_call

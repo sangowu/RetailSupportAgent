@@ -32,7 +32,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
-from retail_support_agent.scope import AccessScope, identifiers_in
+from retail_support_agent.scope import AccessScope, audited, identifiers_in
 from retail_support_agent.store import APPROVAL_TTL_SECONDS, Store
 
 # This prompt is for the application demo only.
@@ -482,6 +482,7 @@ class RetailAgent:
         )
         result = self._check_output(result)
         self._journal("assistant", result.reply, result.tool_calls)
+        self._record_access_decisions()
         self._save_progress()
         yield TurnEvent(kind="reply", result=result)
 
@@ -538,6 +539,7 @@ class RetailAgent:
         )
         result = self._check_output(result)
         self._journal("assistant", result.reply, result.tool_calls)
+        self._record_access_decisions()
         self._save_progress()
         return result
 
@@ -680,6 +682,19 @@ class RetailAgent:
             scope.source,
         )
         return replace(result, reply=reply)
+
+    def _record_access_decisions(self) -> None:
+        """Persist the turn's refusals and withholdings, and forget the rest.
+
+        The guard records its verdicts in memory and knows nothing about a database:
+        it is pure logic that a test can drive without one, and handing it a store would
+        give that up. Draining here is what turns those verdicts into an audit trail that
+        survives the process.
+        """
+        rows = self._session.slice_audit.drain()
+        if self._store is None or self._session_id is None:
+            return
+        self._store.record_access_events(self._session_id, audited(rows))
 
     def _disclose(self, result: ToolResult) -> ToolResult:
         """Record the identifiers this tool result put in front of the model.
