@@ -205,6 +205,12 @@ class WriteGuard:
         verdict = self._review(call, state)
         if verdict.decision in COUNTED_DENIALS:
             state.denials += 1
+            # Recorded here for the same reason it is counted here. An ownership refusal
+            # is raised deep in the write path and a slice refusal in the read path; a
+            # recording call at each site is one that a later refusal path will not make,
+            # and the access-control evaluation found exactly that gap - refused writes
+            # were reaching no audit trail at all.
+            state.slice_audit.record(call.name, "deny", verdict.reason, state.scope.source)
         return verdict
 
     def _review(self, call: ProposedCall, state: SessionState) -> GuardVerdict:
@@ -346,8 +352,7 @@ class WriteGuard:
         )
 
     def _refuse_slice(self, call: ProposedCall, state: SessionState, reason: str) -> GuardVerdict:
-        """One refusal, recorded once. Every slice denial goes through here."""
-        state.slice_audit.record(call.name, "deny", reason, state.scope.source)
+        """One slice refusal. Recording happens in `review`, which sees every refusal."""
         return GuardVerdict(Decision.DENIED_SLICE, reason, call)
 
     def _check_ownership(self, call: ProposedCall, state: SessionState) -> GuardVerdict | None:

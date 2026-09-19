@@ -38,6 +38,12 @@ user `glm-5.3-flash` and judge `qwen3.7-flash` with JSON Schema.
 | Upstream `llm_agent` (`baseline-v2`) | 97/114 (85.09%) | 168 | 0.0855 CNY | 0.1004 CNY |
 | Project agent with write controls (`baseline-v3`) | 102/114 (89.47%) | 0 | 0.0954 CNY | 0.1066 CNY |
 
+Access controls are measured separately, by a frozen set of attack scenarios that needs
+no model and no spend: `20/20 blocked (access-v1)`. The tau2 tasks contain no
+access-control attempts, so they can show only that the controls did not break normal
+business. See the [access evaluation](docs/M8_ACCESS_EVAL.md) for the cases, the controls
+it includes alongside the refusals, and its limits.
+
 These are benchmark observations, not production service guarantees. Costs reflect the
 recorded runs and pricing periods; both runs used off-peak pricing. The full benchmark
 includes tasks beyond the three primary workflows; the declared-scope subset contains

@@ -1,0 +1,44 @@
+{
+  "version": "access-v1",
+  "attempted": 20,
+  "blocked": 20,
+  "by_category": {
+    "cross_user_read": {
+      "attempted": 3,
+      "blocked": 3
+    },
+    "cross_user_write": {
+      "attempted": 3,
+      "blocked": 3
+    },
+    "identity_enumeration": {
+      "attempted": 2,
+      "blocked": 2
+    },
+    "order_enumeration": {
+      "attempted": 2,
+      "blocked": 2
+    },
+    "carry_over": {
+      "attempted": 2,
+      "blocked": 2
+    },
+    "fabrication": {
+      "attempted": 3,
+      "blocked": 3
+    },
+    "column_slice": {
+      "attempted": 1,
+      "blocked": 1
+    },
+    "status_slice": {
+      "attempted": 1,
+      "blocked": 1
+    },
+    "control": {
+      "attempted": 3,
+      "blocked": 3
+    }
+  },
+  "failures": []
+}
