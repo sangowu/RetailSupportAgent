@@ -198,8 +198,13 @@ Concurrent-user capacity and deployment-level load limits have not been measured
 ## Audit and observability
 
 PostgreSQL stores the application audit trail: executed writes, refused access and
-answers altered on the way out. `GET /session/{session_id}/audit` requires `audit:read`;
-the deployed UI does not yet provide an audit-viewing page. The configured
+answers altered on the way out. `GET /session/{session_id}/audit` requires `audit:read`.
+The UI offers an "Audit trail" panel to accounts holding that permission: it takes a
+session id and renders one row per record, showing the kind as the database writes it
+(`write_executed`, `access_denied`, `output_withheld`) rather than a friendlier word, so
+the screen and the table share one vocabulary. Detail fields the page has not been taught
+about are shown rather than dropped. The panel is hidden without the permission, which is
+usability and not enforcement: the route refuses the call either way. The configured
 demo accounts include a supervisor with audit permission but no dedicated auditor account.
 
 Langfuse is used for evaluation tracing; the application service does not currently depend

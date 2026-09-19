@@ -280,3 +280,32 @@ class TestReadingAStreamedTurn:
         streaming(monkeypatch, "{not json")
         with pytest.raises(UnavailableError):
             list(Api(BASE).chat_stream("t", "s1", "hello"))
+
+
+def test_the_audit_route_is_parsed_into_records() -> None:
+    """`detail` is passed through whole rather than flattened: which of its fields
+    matter depends on the kind, and the page is a better place to decide that."""
+    from retail_support_agent.client import _audit_record
+
+    parsed = _audit_record(
+        {
+            "kind": "access_denied",
+            "detail": {"tool": "get_order_details", "authority": "self", "reason": "no"},
+            "operation_id": None,
+            "created_at": "2026-09-19T10:00:00+00:00",
+        }
+    )
+    assert parsed.kind == "access_denied"
+    assert parsed.detail["tool"] == "get_order_details"
+    assert parsed.operation_id is None
+
+
+def test_an_audit_row_with_missing_fields_does_not_raise() -> None:
+    """A row the service adds a field to, or leaves one out of, must not take the page
+    down: the trail is what a reviewer reads when something has already gone wrong."""
+    from retail_support_agent.client import _audit_record
+
+    parsed = _audit_record({})
+    assert parsed.kind == ""
+    assert parsed.detail == {}
+    assert parsed.created_at == ""
