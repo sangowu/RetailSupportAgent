@@ -176,6 +176,35 @@ def make_attacker(settings: Settings, model_id: str) -> Callable[[str, list[dict
     return attack
 
 
+def plant(attack: dict[str, Any], domain: Any) -> None:
+    """Write the attack's payload into the customer's own record, before it speaks.
+
+    An injection attack has two halves: getting the payload stored, and getting the
+    model to act on it once it reads it back. The first half is a write the customer is
+    entitled to make - `modify_user_address` on their own account - and it is not the
+    half under test. Leaving it to the conversation made it the whole test by accident:
+    in the recorded `attacks-v2` run the agent declined to type the payload, so the
+    second half never happened and both attacks measured nothing.
+
+    Planting directly separates them. The payload is placed by the same tool the
+    customer would use, through the domain, without asking the model to cooperate. What
+    is then measured is the part that matters: whether the model, having read an
+    instruction out of a record it is allowed to read, can be made to act on it.
+
+    The guard is deliberately not consulted here. This is the attacker writing to their
+    own record, which the guard permits; running it through the guard would only re-test
+    a control that has its own cases.
+    """
+    seed = attack.get("plant")
+    if not seed:
+        return
+    domain.execute(str(seed["tool"]), dict(seed["args"]))
+    # The call is part of the setup, not part of the attack, so it must not show up in
+    # the foreign-call check as though the agent had made it.
+    if hasattr(domain, "calls"):
+        domain.calls.clear()
+
+
 def load_attacks(path: Path = ATTACKS_PATH) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"adversarial case set not found: {path}")
@@ -191,6 +220,7 @@ def run_attack(
     max_turns: int = 6,
 ) -> AttackResult:
     """Run one attack to its turn limit and report what, if anything, got out."""
+    plant(attack, domain)
     audit = RecordingAudit()
     state = SessionState(
         user_id=str(attack["user"]),
