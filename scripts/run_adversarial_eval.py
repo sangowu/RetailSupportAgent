@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--attacker-model", default=DEFAULT_ATTACKER_MODEL)
     parser.add_argument("--max-turns", type=int, default=6)
     parser.add_argument("--limit", type=int, default=None, help="run only the first N attacks")
+    parser.add_argument("--only", action="append", default=None, help="run only these ids")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
         "--spend",
@@ -54,7 +55,11 @@ def main() -> int:
     args = parser.parse_args()
 
     document = load_attacks(args.attacks)
-    attacks = document["attacks"][: args.limit] if args.limit else document["attacks"]
+    attacks = document["attacks"]
+    if args.only:
+        attacks = [attack for attack in attacks if attack["id"] in set(args.only)]
+    if args.limit:
+        attacks = attacks[: args.limit]
     models = {"agent": SELECTED_MODEL, "attacker": args.attacker_model}
 
     print(f"set:      {document['version']}  ({len(attacks)} attacks)")

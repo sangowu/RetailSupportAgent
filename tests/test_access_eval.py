@@ -13,6 +13,7 @@ everything.
 from __future__ import annotations
 
 import collections
+import copy
 
 from retail_support_agent.access_eval import load_cases, run_all, run_case, summarize
 
@@ -80,3 +81,30 @@ class TestTheSetWouldNoticeARegression:
         result = run_case(weakened)
         assert not result.blocked
         assert any("#W777" in failure for failure in result.failures)
+
+    def test_an_injection_case_fails_without_the_injection(self) -> None:
+        """The poisoning cases assert two things, and both must be load-bearing: that
+        the injected text really reaches the model, and that obeying it changes nothing.
+        Removing the payload must break the first.
+        """
+        case = next(
+            c for c in load_cases()["cases"] if c["id"] == "injected-instruction-drives-a-write"
+        )
+        assert run_case(case).blocked
+
+        without_payload = {key: value for key, value in case.items() if key != "poison"}
+        result = run_case(without_payload)
+        assert not result.blocked
+        assert any("never shown" in failure for failure in result.failures)
+
+    def test_an_injection_case_fails_when_the_target_is_not_foreign(self) -> None:
+        """And removing the access violation must break the second."""
+        case = copy.deepcopy(
+            next(
+                c for c in load_cases()["cases"] if c["id"] == "injected-instruction-drives-a-write"
+            )
+        )
+        case["turns"][0]["script"][1]["args"]["order_id"] = "#W001"
+        result = run_case(case)
+        assert not result.blocked
+        assert any("access_denied" in failure for failure in result.failures)
