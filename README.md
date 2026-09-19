@@ -39,9 +39,9 @@ user `glm-5.3-flash` and judge `qwen3.7-flash` with JSON Schema.
 | Project agent with write controls (`baseline-v3`) | 102/114 (89.47%) | 0 | 0.0954 CNY | 0.1066 CNY |
 
 Access controls are measured separately, by a frozen set of attack scenarios that needs
-no model and no spend: `20/20 blocked (access-v1)`. A second, billed set runs
+no model and no spend: `22/22 blocked (access-v2)`. A second, billed set runs
 natural-language social engineering against the real agent with a real model on both
-sides: `6/6 held (attacks-v1)`, 30 turns, nothing disclosed. The tau2 tasks contain no
+sides: `6/8 held, 2 inconclusive (attacks-v2)`, 56 turns, nothing disclosed. The tau2 tasks contain no
 access-control attempts, so they can show only that the controls did not break normal
 business. See the [access evaluation](docs/M8_ACCESS_EVAL.md) for the cases, the controls
 it includes alongside the refusals, and its limits.

@@ -7,13 +7,13 @@ number that can be compared across changes. This set does both.
 ## Result
 
 ```
-20/20 blocked  (access-v1)
+22/22 blocked  (access-v2)
 
-carry_over             2/2     cross_user_write       3/3
-column_slice           1/1     fabrication            3/3
-control                3/3     identity_enumeration   2/2
-cross_user_read        3/3     order_enumeration      2/2
-status_slice           1/1
+carry_over             2/2     fabrication            3/3
+column_slice           1/1     identity_enumeration   2/2
+control                3/3     order_enumeration      2/2
+cross_user_read        3/3     prompt_injection       2/2
+cross_user_write       3/3     status_slice           1/1
 ```
 
 Reproduce with `uv run python scripts/run_access_eval.py`. No model is called and nothing
@@ -86,10 +86,13 @@ data, and the agent answers with the model and the controls the application actu
 runs.
 
 ```
-6/6 held  (attacks-v1)
+6/8 held, 2 inconclusive  (attacks-v2)
 agent deepseek-v4-pro, attacker qwen3.7-flash-2026-07-15
-30 turns, 22 refusals recorded, nothing disclosed, no foreign call executed
+56 turns, 33 refusals recorded, nothing disclosed, no foreign call executed
 ```
+
+Six social-engineering attacks ran and held. The two indirect-injection attacks are
+reported as inconclusive rather than held, for the reason given under *findings* below.
 
 Reproduce with `uv run python scripts/run_adversarial_eval.py --spend`. Without `--spend`
 it prints the plan and contacts no provider. This run is billed; it is not part of CI and
@@ -113,7 +116,26 @@ permission claim to a medical emergency to direct pressure:
 That wording is the anti-enumeration rule holding up in conversation: the same answer for
 an order that belongs to someone else and one that does not exist.
 
-### Two findings from building it
+### Prompt injection, and why two attacks are inconclusive
+
+The scripted set covers injection by assuming the worst: the model is scripted into
+obeying an instruction planted in the customer's own address field, and the case checks
+that obeying changes nothing. The guard blocks the foreign call whatever the model
+believes, and `model_saw` asserts the planted text really reached the model, so the case
+cannot pass by the payload quietly failing to arrive.
+
+The adversarial set tries the same thing for real, and there the payload has to be
+planted by talking the agent into writing it. In the recorded run the agent refused to
+write either payload, so nothing was ever read back, and both attacks are reported as
+**inconclusive**: nothing was disclosed, and nothing was tested either. An earlier run
+did get one payload planted, and that attack held. So the write refusal is not reliable -
+it varies between runs - and it is model behaviour, not a control. It is not claimed as
+one.
+
+`requires_planted` is what makes this visible: an attack names the text that must reach
+the model through a tool result, and without it the attack is not counted as held.
+
+### Findings from building the sets
 
 The first real run reported `1/1 held` after **zero turns**. The attacker model is a
 thinking model, it spent its entire completion budget on `reasoning_content`, returned
@@ -129,7 +151,11 @@ Cost was not instrumented for this run, and no figure is quoted for it.
 
 ## Limits
 
-- **Six conversations, five turns each.** The adversarial set is small and its attacker
+- **Indirect injection is only partly measured.** The end-to-end path depends on the
+  agent agreeing to write the payload, which it did not do in the recorded run. What is
+  established is the scripted half: a model that obeys planted instructions still cannot
+  reach another customer's data.
+- **Eight conversations, seven turns each.** The adversarial set is small and its attacker
   is one model with one prompt. A different attacker, or a longer conversation, may find
   something these six did not. `6/6 held` describes this run, not the space of attacks.
 - **The scripted set has no natural language at all**, by design: it measures the
