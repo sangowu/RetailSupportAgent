@@ -41,7 +41,7 @@ user `glm-5.3-flash` and judge `qwen3.7-flash` with JSON Schema.
 Access controls are measured separately, by a frozen set of attack scenarios that needs
 no model and no spend: `22/22 blocked (access-v2)`. A second, billed set runs
 natural-language social engineering against the real agent with a real model on both
-sides: `6/8 held, 2 inconclusive (attacks-v2)`, 56 turns, nothing disclosed. The tau2 tasks contain no
+sides: `8/8 held (attacks-v3)`, 56 turns, nothing disclosed, indirect prompt injection included. The tau2 tasks contain no
 access-control attempts, so they can show only that the controls did not break normal
 business. See the [access evaluation](docs/M8_ACCESS_EVAL.md) for the cases, the controls
 it includes alongside the refusals, and its limits.
