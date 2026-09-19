@@ -36,6 +36,7 @@ from retail_support_agent.client import (
     Api,
     ApiError,
     Approval,
+    AuditRecord,
     ConflictError,
     Event,
     ForbiddenError,
@@ -324,6 +325,7 @@ CASES = "ticket:read"
 WORK = "ticket:work"
 ASSIGN = "ticket:assign"
 DECIDE = "escalation:decide"
+AUDIT = "audit:read"
 
 
 def holds(account: Account | None, permission: str) -> bool:
@@ -364,6 +366,32 @@ def approvals_table(approvals: Sequence[Approval]) -> list[list[str]]:
 
 
 APPROVAL_COLUMNS = ["request", "action", "arguments", "session", "expires"]
+
+
+def audit_table(records: Sequence[AuditRecord]) -> list[list[str]]:
+    """The audit trail, as rows.
+
+    `kind` is shown as written rather than prettified: `access_denied` is the value a
+    reviewer will grep the database for, and a page that renames it to "Refused" makes
+    the screen and the table two different vocabularies.
+
+    `detail` varies by kind, so it is rendered generically. The interesting fields are
+    pulled out where they exist - the tool, and the authority the session was acting
+    under - and whatever is left is shown rather than dropped, because a field this page
+    has not been taught about is exactly the one worth seeing.
+    """
+    rows: list[list[str]] = []
+    for record in records:
+        detail = dict(record.detail)
+        tool = str(detail.pop("tool", detail.pop("tool_name", "")))
+        authority = str(detail.pop("authority", ""))
+        reason = str(detail.pop("reason", ""))
+        rest = ", ".join(f"{key}={value!r}" for key, value in sorted(detail.items()))
+        rows.append([record.created_at, record.kind, tool, authority, reason or rest])
+    return rows
+
+
+AUDIT_COLUMNS = ["when", "what happened", "action", "authority", "detail"]
 
 
 def assignee_choices(accounts: Sequence[Account]) -> list[tuple[str, str]]:
@@ -439,6 +467,19 @@ def build_demo() -> gr.Blocks:
                     approve = gr.Button("Approve", variant="primary", scale=1)
                     reject = gr.Button("Reject", scale=1)
                 approvals_message = gr.Markdown("")
+
+            # Loaded on demand rather than with every refresh. The trail belongs to one
+            # session and the supervisor has to say which, so there is nothing sensible
+            # to show until they do - and fetching it on every page event would be a
+            # request per keystroke elsewhere on the page.
+            with gr.Accordion("Audit trail", open=False, visible=False) as audit_panel:
+                with gr.Row():
+                    audit_session = gr.Textbox(label="Session", placeholder="session id", scale=3)
+                    show_audit = gr.Button("Show", scale=1)
+                audit = gr.Dataframe(
+                    headers=AUDIT_COLUMNS, interactive=False, wrap=True, label=None
+                )
+                audit_message = gr.Markdown("")
 
         # ---- handlers ---------------------------------------------------
         #
@@ -731,6 +772,61 @@ def build_demo() -> gr.Blocks:
                 return _approvals_note(visitor, history, render(situation_of_failure(exc)))
             return _approvals_note(visitor, history, f"**Request {request} is {state}.**")
 
+        def do_show_audit(
+            visitor: Visitor, history: list[dict[str, Any]], session_id: str
+        ) -> tuple[Any, ...]:
+            """Fetch one session's audit trail.
+
+            It answers with the whole page tuple like every other handler. The first
+            version wrote only its own two components, which looked tidier and was
+            wrong: a 401 here would have left the page showing a signed-in account while
+            the token was gone, and the audit panel is precisely where that would matter.
+
+            An empty trail is reported as empty rather than left as a blank table. For a
+            session where nothing was refused, empty is the correct answer, and it must
+            not look identical to a request that failed.
+            """
+            wanted = (session_id or "").strip()
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            if not wanted:
+                return _audit_note(visitor, history, [], "**Name a session to look at.**")
+            try:
+                visitor, records = retrying(
+                    visitor, cognito, lambda token: api.audit(token, wanted)
+                )
+            except UnauthenticatedError as exc:
+                return _signed_out(render(situation_of_failure(exc)))
+            except ApiError as exc:
+                # 403 when the account lacks audit:read. The panel is hidden in that
+                # case, so this is the path where the permission was revoked between the
+                # page loading and the button being pressed - which is the behaviour
+                # roles-from-the-database exists to give.
+                return _audit_note(visitor, history, [], render(situation_of_failure(exc)))
+            if not records:
+                return _audit_note(visitor, history, [], f"**No records for `{wanted}`.**")
+            return _audit_note(
+                visitor,
+                history,
+                audit_table(records),
+                f"**{len(records)} record(s) for `{wanted}`.**",
+            )
+
+        def _audit_note(
+            visitor: Visitor,
+            history: list[dict[str, Any]],
+            rows: list[list[str]],
+            note: str,
+        ) -> tuple[Any, ...]:
+            return _stay(
+                visitor,
+                history,
+                "",
+                situation_of(Reply(reply="", status="answered")),
+                audit_rows=rows,
+                audit_note=note,
+            )
+
         def _approvals_note(
             visitor: Visitor, history: list[dict[str, Any]], note: str
         ) -> tuple[Any, ...]:
@@ -769,9 +865,18 @@ def build_demo() -> gr.Blocks:
                 gr.update(visible=False),
                 [],
                 "",
+                gr.update(visible=False),
+                [],
+                "",
             )
 
-        def _sections(visitor: Visitor, cases_note: str, approvals_note: str) -> tuple[Any, ...]:
+        def _sections(
+            visitor: Visitor,
+            cases_note: str,
+            approvals_note: str,
+            audit_rows: list[list[str]] | None = None,
+            audit_note: str = "",
+        ) -> tuple[Any, ...]:
             """The case sections for one account.
 
             Visible exactly when the permission is held. Hiding is not enforcement - every
@@ -789,6 +894,9 @@ def build_demo() -> gr.Blocks:
                 gr.update(visible=visitor.may(DECIDE)),
                 approvals_table(visitor.approvals),
                 approvals_note,
+                gr.update(visible=visitor.may(AUDIT)),
+                audit_rows if audit_rows is not None else [],
+                audit_note,
             )
 
         def _signed_out(message: str) -> tuple[Any, ...]:
@@ -827,6 +935,8 @@ def build_demo() -> gr.Blocks:
             situation: Situation,
             cases_note: str = "",
             approvals_note: str = "",
+            audit_rows: list[list[str]] | None = None,
+            audit_note: str = "",
         ) -> tuple[Any, ...]:
             assert visitor.account is not None
             return (
@@ -843,7 +953,7 @@ def build_demo() -> gr.Blocks:
                 ),
                 gr.update(interactive=situation.can_send),
                 render(situation),
-                *_sections(visitor, cases_note, approvals_note),
+                *_sections(visitor, cases_note, approvals_note, audit_rows, audit_note),
             )
 
         outputs = [
@@ -866,6 +976,9 @@ def build_demo() -> gr.Blocks:
             approvals_panel,
             approvals,
             approvals_message,
+            audit_panel,
+            audit,
+            audit_message,
         ]
 
         demo.load(enter, visitor_state, outputs)
@@ -894,6 +1007,8 @@ def build_demo() -> gr.Blocks:
             [visitor_state, chatbot, approval_id],
             outputs,
         )
+        show_audit.click(do_show_audit, [visitor_state, chatbot, audit_session], outputs)
+        audit_session.submit(do_show_audit, [visitor_state, chatbot, audit_session], outputs)
 
     assert isinstance(demo, gr.Blocks)
     return demo

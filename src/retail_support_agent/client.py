@@ -121,6 +121,23 @@ class Approval:
 
 
 @dataclass(frozen=True)
+class AuditRecord:
+    """One line of the audit trail.
+
+    `kind` is the vocabulary the backend writes: `write_executed` for an action that
+    ran, `access_denied` for one that was refused, `output_withheld` for an answer
+    altered on the way out. `detail` is passed through whole rather than flattened here,
+    because which of its fields matter depends on the kind and the page is a better
+    place to decide that than the transport.
+    """
+
+    kind: str
+    detail: Mapping[str, Any]
+    operation_id: int | None = None
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
 class AgentSession:
     """The session in which an assignee works a case.
 
@@ -263,6 +280,12 @@ class Api:
         body = self._call_list("GET", "/approvals", token=token)
         return tuple(_approval(row) for row in body)
 
+    def audit(self, token: str | None, session_id: str) -> tuple[AuditRecord, ...]:
+        """The audit trail for one session. Requires `audit:read`, which the API
+        enforces; a caller without it gets a 403 and the page says so."""
+        body = self._call_list("GET", f"/session/{session_id}/audit", token=token)
+        return tuple(_audit_record(row) for row in body)
+
     def decide(self, token: str | None, approval_id: int, approve: bool) -> str:
         body = self._call(
             "POST",
@@ -347,6 +370,15 @@ def _ticket(body: Mapping[str, Any]) -> Ticket:
         resolution=body.get("resolution"),
         created_at=str(body.get("created_at", "")),
         closed_at=body.get("closed_at"),
+    )
+
+
+def _audit_record(body: Mapping[str, Any]) -> AuditRecord:
+    return AuditRecord(
+        kind=str(body.get("kind", "")),
+        detail=dict(body.get("detail") or {}),
+        operation_id=body.get("operation_id"),
+        created_at=str(body.get("created_at", "")),
     )
 
 
