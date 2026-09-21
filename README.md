@@ -24,7 +24,7 @@ retail data; it does not process real payments or connect to a production order 
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
 
 M0 through M8 delivery records are available below. The AWS deployment is configured for
-image `m8.1`; it is operated on demand and is not continuously available. CI runs static
+image `m8.4`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 
@@ -150,15 +150,18 @@ instance incurs infrastructure charges; retained resources can incur charges whi
 stopped. Review the [Terraform setup guide](deploy/terraform/README.md) for provisioning
 and the [operations guide](docs/OPERATIONS.md) for release and archive procedures.
 
-Current validation limits include a complete browser-based acceptance run, concurrent-load
-measurements and rollback across database schema changes. Approval expiry is covered at
-the database and API levels, but not by a complete browser workflow. Browser acceptance
-covers one path, recorded in the [M8 release](docs/M8_RELEASE.md): sign-in, the sections
-each account is offered, refusing a cross-customer read, and reading the resulting record
-in the audit page. It found a defect that no test in this repository could have found.
-Assignment, working and closing a case, and deciding an escalation are not covered by it.
-The user-data reconciliation
-verified deployment metadata, not the installed script or application behavior at runtime.
+Browser acceptance now covers sign-in, the sections each account is offered, refusing a
+cross-customer read and reading the resulting audit record, plus handing a case off,
+assigning it, working it, escalating a write, deciding it and closing the case. It is
+recorded in the [M8 release](docs/M8_RELEASE.md), and it found eight defects that no test
+in this repository could have found - two of them in earlier fixes for the same defects.
+
+Current validation limits include approval expiry and the intermediate streaming states,
+which are covered at the database and API levels but not by a browser workflow;
+concurrent-load measurements; and rollback across a schema change on the deployed
+instance, which was validated locally against a database the previous image had built but
+has not been exercised in the deployed environment. The user-data reconciliation verified
+deployment metadata, not the installed script or application behavior at runtime.
 
 ## Documentation
 

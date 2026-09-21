@@ -19,6 +19,9 @@ worth doing at all.
 |---|---|---|---|
 | `m8` | `0aa338b` (#48) | `sha256:6454ff11525c75d5adc0b5a2578b50dd7a895888421909fcfcf43ab3567e5d0a` | 2026-09-21T10:29:12Z |
 | `m8.1` | `503a840` (#49) | `sha256:c75ae33c8d39f0d718d97562f17d134783257251335849e9208cdf2d5bfb64ed` | 2026-09-21T11:31:23Z |
+| `m8.2` | `97a68d8` (#52, #53, #54, #55, #56) | `sha256:5edefcde9a7c8300591aaac9010d53998ee9de165160840ec5e2cf1b2f74e44e` | 2026-09-21T16:56:26Z |
+| `m8.3` | `9915644` (#57, #58) | `sha256:66a87465797f0ccdd41bfc0f3259191a497647c64ac8a3ea4ffbee54821c6f57` | 2026-09-21T21:27:43Z |
+| `m8.4` | `e1915aa` (#59) | `sha256:7303763d87d8fe24224e7f0fa47fac2cb48357cdeeb080349c4695c5f2847999` | 2026-09-21T22:55:20Z |
 
 The repository's ECR tags are immutable, so each digest is the only image that tag has
 ever named. `m7.3` and `m6.8.1` are retained for rollback.
@@ -167,29 +170,143 @@ one account only. The four workflows remain covered at the API and database leve
 unverified in a browser; the sign-in refusal for the account that could not be used was
 itself correct, giving the same message for a wrong password as for an unknown username.
 
+## 5a. The full acceptance, and the eight defects it found
+
+Section 5 walked one path. A later pass walked the rest - sign in as each role, read the
+case list, hand a case off, assign it, work it, propose a write, escalate it, decide it,
+close it - and found a defect at almost every step. None of them was reachable from the
+test suite, and one of them the suite actively asserted.
+
+| # | What a person saw | What was wrong |
+|---|---|---|
+| #52 | A closed case could not be audited | The case row did not carry its session id, so the only ids a supervisor could reach were the one they were in and any with an approval still pending |
+| #53 | A customer sat in front of a disabled box, told an answer was on its way | `handed_off` and `waiting_for_human` closed the input. Nothing pushes to this page, so the only state that could have discovered the resolution was the one the closed box prevented |
+| #55 | `order_id: [withheld: not read in this turn]` on an escalation | The guard's own quoted call was passing through output attribution, which exists for what the *model* says |
+| #56 | `Case 3 is with 3275a474-60b1-70e8-...` | The page held the name and showed the subject |
+| #58 | The same, still, for an agent | #56 resolved the subject against a roster gated on `ticket:assign`. A supervisor holds it; an agent does not, and an agent's whole view is their own cases |
+| #54 | A session died mid-escalation | A supervisor's deliberation was charged to a budget meant to bound a runaway model |
+| #57 | The same, still, in production | #54 hooked `send`. The page uses `stream`. Two hand-written routes, one changed |
+| #59 | A case session was dead on its first message, permanently | The budget was read as the age of the session row, and a case session is reached again by an id derived from the ticket and the agent |
+
+The shape they share: **correct at every layer and unusable by the person who has to act
+on it.** The permission was held, the row was written, the route answered.
+
+### Two of them were fixes for the previous fix
+
+#58 repaired #56, and #57 repaired #54. Both first attempts were verified - by unit tests
+that passed, and in #56's case by a browser - and both were verified against the half
+that was visible from the screen in front of them. The corrections generalise:
+
+- **A fix verified only by unit tests has been verified against the mechanism, not
+  against the entry point the product calls.** #54's tests constructed a `SessionState`
+  and called its methods; they never went through `stream()`, which is what the page
+  uses. #57 added a parity test parametrised over both routes, and its mutation check
+  removes the hook from one route and fails only that route's case.
+- **A fix verified from one role's screen has been verified for one role.** #56 was
+  confirmed as a supervisor, where it worked. The column it repaired belongs to the role
+  it did not repair.
+
+### What the suite could not have caught, and what it got wrong
+
+`test_a_state_that_cannot_be_advanced_closes_the_box` asserted the #53 defect. It was
+replaced by two tests that state what the page is for: waiting on a person leaves the box
+open, and the advice does not promise delivery the page has no mechanism to make.
+
+The `send`/`stream` parity tests compare the reply and the database after one
+conversation. The session clock is neither, so the two routes were already inconsistent
+while every comparison passed.
+
+### Two measurement errors of my own, recorded because the method matters
+
+**Reading a table through the DOM.** A Gradio dataframe renders a horizontally scrolling
+grid whose rows do not map cleanly onto `tbody tr`. Scraping it produced cells
+concatenated across rows, from which two defects were reported that did not exist - a
+missing open case, and a closed case that had regained an assignee - and several rounds
+were spent looking for a cause in `_summarize` and `close_ticket`. A single full-page
+screenshot ended it. Both claims were retracted.
+
+**Diagnosing from the previous diagnosis.** The 180s death observed on `m8.2` was
+attributed to the `send`/`stream` split. That split was real and #57 fixes it, but it was
+almost certainly not the cause of what was on screen: #59's defect kills a case session on
+its first message regardless of route. The method that worked was the one used for #59 -
+a discriminating test before any code was read. A message to the case session was refused
+instantly; **New session**, same account, same minute, same instance, ran tools and
+answered. One variable.
+
+### Skipping the four workflows was the wrong call
+
+Before this pass, the four unverified workflows were recommended for skipping, on the
+evidence that M8 had not touched the code behind them - checked with
+`git diff 3663d2d..HEAD`, so the evidence was real. Walking them anyway found four
+defects. **Untouched is not the same as working**, and for a path no browser had ever
+walked there was no prior observation for "untouched" to preserve.
+
+## 5b. `m8.4` crosses a schema boundary
+
+The first four M8 images added no migration, so each release was a parameter change and a
+restart, and rollback was the same in reverse. `m8.4` adds `0005_session_worked_seconds`.
+
+What was checked before publishing, against a database built by the previous image rather
+than a fresh one - a fresh database proves the migration runs, not that it migrates:
+
+| Step | Result |
+|---|---|
+| Build a database with the `m8.3` image | at `0004_tickets` |
+| Insert a session row with counters | `steps=7, tool_calls=4` |
+| Upgrade with the `m8.4` image | `0004_tickets -> 0005_session_worked_seconds`; the row intact, the new column `0` |
+| Downgrade with the `m8.4` image | column gone, the row and its counters intact |
+| Run `m8.3`'s `migrate` against the downgraded database | reaches head without applying anything |
+| Upgrade again, start `api` | `/health` answers; `Ticket.assignee_user_id` present in the OpenAPI document |
+
+Existing rows start at `0` rather than being seeded from `created_at`. Seeding would
+carry the defect forward into exactly the rows it broke.
+
+### The restart guard did its job
+
+`demo.py restart` refused: `not restarting, work is unfinished: 1 open ticket(s)`. The
+acceptance case was still open, and restarting would have dropped work in flight. It was
+closed through the page rather than overridden with `--force` - which also walked the one
+remaining unverified workflow, correctly: `Case 3 is rejected. The customer's session
+runs again.`
+
 ## 6. What this release does not establish
 
-- **The rest of the interface.** Two passes walked one path in a browser: sign in,
-  refusal, audit panel, plus which sections each account is offered. Assignment, working
-  a case, closing it, deciding an escalation, approval expiry and the streaming states
-  remain covered at the API and database levels only. Section 5 says why the second pass
-  stopped where it did.
+- **Approval expiry and the streaming states.** A later pass walked assignment, working
+  a case, escalation and closure in a browser (section 5a), so those are no longer
+  browser-unverified. Approval expiry - a decision that runs out of time before it is
+  used - and the intermediate streaming states are still covered at the API and database
+  levels only.
 - **The benchmark under an enforcing scope.** The tau2 adapter still runs with a
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
   describe a variant rather than this application's token-derived identity control.
 - **Concurrency and load.** Unchanged and unmeasured.
-- **Rollback across a schema change.** Not engaged by this release and still unvalidated.
+- **Rollback across a schema change on the deployed database.** `m8.4` engages it, and
+  the sequence was validated locally against a database the previous image had built
+  (section 5b). It has not been exercised on the deployed instance, and doing so would
+  mean rolling the demo back on purpose.
 
 ## 7. Rollback
 
-`m7.3` remains published and predates no schema this release introduced, so rollback is
-the documented parameter change and a restart:
+Every M8 image through `m8.3` is still published, and so is `m7.3`. Rolling back to any of
+them is the documented parameter change and a restart:
 
 ```
-terraform -chdir=deploy/terraform/demo apply -var="image_tag=m7.3"
+terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.3"
 uv run python scripts/demo.py restart
 ```
+
+**One step comes first when rolling back past `m8.4`**, the only M8 image that added a
+migration. The schema has to be moved before the older code sees it:
+
+```
+docker run --rm -e RSA_DATABASE_URL="<the deployed database>" \
+  --entrypoint alembic 569260897196.dkr.ecr.eu-west-1.amazonaws.com/rsa-app:m8.4 \
+  downgrade 0004_tickets
+```
+
+Section 5b records that sequence being run in both directions against a database the
+previous image had built.
 
 That returns the deployment to a version with no access scope, no refusal audit trail and
 no audit page. It is a rollback of the application, not of a security control that exists
