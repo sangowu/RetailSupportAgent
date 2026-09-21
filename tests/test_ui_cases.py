@@ -10,6 +10,8 @@ The other half - who may actually do these things - is the service's, and
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from retail_support_agent.auth import ROLE_PERMISSIONS, Permission
@@ -131,18 +133,24 @@ class TestWhatTheTablesShow:
                     state="assigned",
                     summary="x",
                     assignee="sub-mia",
+                    assignee_user_id="ivan_santos_6635",
                 )
-            ],
-            [
-                Account(
-                    user_id="ivan_santos_6635", roles=("agent",), permissions=(), subject="sub-mia"
-                )
-            ],
+            ]
         )
         assert rows[0][4] == "ivan_santos_6635"
 
+    def test_the_name_is_not_read_through_a_permission_the_viewer_may_lack(self) -> None:
+        """The first fix resolved the subject against the account roster the page had
+        been given. That roster is fetched only under `ticket:assign`, which an agent
+        does not hold, so the column stayed opaque for the role that lives in it. The
+        table now takes tickets alone - there is no roster left to be missing.
+        """
+        assert "accounts" not in inspect.signature(cases_table).parameters
+
     def test_a_subject_nobody_can_resolve_is_still_shown(self) -> None:
-        """An identifier that cannot be looked up beats an empty cell."""
+        """An identifier that cannot be looked up beats an empty cell. The service leaves
+        `assignee_user_id` unset when the subject has no identity row - a provisioning
+        gap, not a reason to render nothing."""
         rows = cases_table(
             [
                 Ticket(
@@ -153,8 +161,7 @@ class TestWhatTheTablesShow:
                     summary="x",
                     assignee="sub-unknown",
                 )
-            ],
-            [],
+            ]
         )
         assert rows[0][4] == "sub-unknown"
 

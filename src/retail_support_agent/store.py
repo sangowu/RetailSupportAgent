@@ -82,6 +82,7 @@ class TicketSummary:
     summary: str
     requested_by: str | None
     assignee: str | None
+    assignee_user_id: str | None
     resolution: str
     created_at: dt.datetime
     closed_at: dt.datetime | None
@@ -682,7 +683,7 @@ class Store:
         assignment must stop granting access immediately, the same rule M3 applies to
         roles."""
         with self._sessions() as db:
-            return self._assignee(db, ticket_id)
+            return self._assignee(db, ticket_id)[0]
 
     def open_approval(
         self,
@@ -825,14 +826,30 @@ class Store:
         return SessionTiming(total_seconds=total, waiting_seconds=min(waiting, total))
 
     # ---- shared helpers -------------------------------------------------
-    def _assignee(self, db: Session, ticket_id: int) -> str | None:
-        stmt = select(TicketAssignmentRow.assignee).where(
-            TicketAssignmentRow.ticket_id == ticket_id,
-            TicketAssignmentRow.released_at.is_(None),
+    def _assignee(self, db: Session, ticket_id: int) -> tuple[str | None, str | None]:
+        """The subject holding the ticket, and the retail identity that subject maps to.
+
+        Both are read here because only this layer can read both. The subject is what
+        every access check compares against; the retail identity is the only half a
+        person can recognise, and resolving it anywhere else meant reading the account
+        roster, which is gated on `ticket:assign`. An agent does not hold that, so the
+        assignee arrived at their page as a raw subject - the one role that reads it all
+        day. The join is outer: an assignment to a subject with no identity row is a
+        provisioning gap, not a reason to drop the case from the list.
+        """
+        stmt = (
+            select(TicketAssignmentRow.assignee, IdentityRow.user_id)
+            .outerjoin(IdentityRow, IdentityRow.subject == TicketAssignmentRow.assignee)
+            .where(
+                TicketAssignmentRow.ticket_id == ticket_id,
+                TicketAssignmentRow.released_at.is_(None),
+            )
         )
-        return db.scalar(stmt)
+        held = db.execute(stmt).one_or_none()
+        return (None, None) if held is None else (held[0], held[1])
 
     def _summarize(self, db: Session, row: TicketRow) -> TicketSummary:
+        assignee, assignee_user_id = self._assignee(db, int(row.id))
         return TicketSummary(
             id=int(row.id),
             session_id=row.session_id,
@@ -840,7 +857,8 @@ class Store:
             state=row.state,
             summary=row.summary,
             requested_by=row.requested_by,
-            assignee=self._assignee(db, int(row.id)),
+            assignee=assignee,
+            assignee_user_id=assignee_user_id,
             resolution=row.resolution,
             created_at=row.created_at,
             closed_at=row.closed_at,

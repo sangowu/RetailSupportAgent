@@ -98,6 +98,7 @@ class Ticket:
     summary: str
     requested_by: str = ""
     assignee: str | None = None
+    assignee_user_id: str | None = None
     resolution: str | None = None
     created_at: str = ""
     closed_at: str | None = None
@@ -367,6 +368,7 @@ def _ticket(body: Mapping[str, Any]) -> Ticket:
         summary=str(body.get("summary", "")),
         requested_by=str(body.get("requested_by", "")),
         assignee=body.get("assignee"),
+        assignee_user_id=body.get("assignee_user_id"),
         resolution=body.get("resolution"),
         created_at=str(body.get("created_at", "")),
         closed_at=body.get("closed_at"),
