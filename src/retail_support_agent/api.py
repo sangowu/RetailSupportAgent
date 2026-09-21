@@ -152,6 +152,9 @@ class Ticket(BaseModel):
     summary: str
     requested_by: str | None
     assignee: str | None
+    # The retail identity behind `assignee`. Resolved here because the page cannot: the
+    # account roster is gated on `ticket:assign`, which an agent does not hold.
+    assignee_user_id: str | None
     resolution: str
     created_at: str
     closed_at: str | None
@@ -756,6 +759,7 @@ def create_app(
             summary=summary.summary,
             requested_by=summary.requested_by,
             assignee=summary.assignee,
+            assignee_user_id=summary.assignee_user_id,
             resolution=summary.resolution,
             created_at=summary.created_at.isoformat(),
             closed_at=summary.closed_at.isoformat() if summary.closed_at else None,

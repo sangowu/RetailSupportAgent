@@ -793,6 +793,48 @@ class TestAssignmentThroughTheApi:
     def test_a_customer_cannot_read_tickets(self, secure_client: TestClient, cast: Cast) -> None:
         assert secure_client.get("/tickets", headers=cast.token(cast.customer)).status_code == 403
 
+    def test_an_assigned_case_names_the_person_holding_it(
+        self, store: Store, secure_client: TestClient, cast: Cast
+    ) -> None:
+        """Found in the deployed demo, and then found again half-fixed.
+
+        The first pass resolved the subject on the page, against the roster of accounts
+        the page had fetched. That roster is gated on `ticket:assign`, so it named the
+        holder for a supervisor and left an agent reading
+        `3275a474-60b1-70e8-41c0-d228e5d2bb10` down their own queue - every row, the one
+        view that role has. Only this layer can read both halves, so it sends both: the
+        subject every access check compares against, and the identity a person can read.
+        """
+        store.provision_identity(cast.agent, "mia_jackson_9042", ["agent"])
+        secure_client.post(
+            f"/tickets/{cast.ticket.id}/assign",
+            json={"assignee": cast.agent},
+            headers=cast.token(cast.supervisor),
+        )
+
+        for viewer in (cast.supervisor, cast.agent):
+            listed = secure_client.get("/tickets", headers=cast.token(viewer)).json()
+            [row] = [t for t in listed if t["id"] == cast.ticket.id]
+            assert row["assignee"] == cast.agent, viewer
+            assert row["assignee_user_id"] == "mia_jackson_9042", viewer
+
+    def test_an_unassigned_case_names_nobody(self, secure_client: TestClient, cast: Cast) -> None:
+        listed = secure_client.get("/tickets", headers=cast.token(cast.supervisor)).json()
+        [row] = [t for t in listed if t["id"] == cast.ticket.id]
+        assert row["assignee"] is None
+        assert row["assignee_user_id"] is None
+
+    def test_a_holder_with_no_identity_row_still_leaves_the_case_listed(
+        self, store: Store, cast: Cast
+    ) -> None:
+        """An outer join, deliberately. A subject holding a case without a provisioned
+        identity is a provisioning gap; dropping the case from every list would hide the
+        gap behind a second, worse symptom."""
+        assert store.assign_ticket(cast.ticket.id, "sub-never-provisioned", cast.supervisor)
+        [summary] = [t for t in store.tickets() if t.id == cast.ticket.id]
+        assert summary.assignee == "sub-never-provisioned"
+        assert summary.assignee_user_id is None
+
     def test_assigning_to_an_unprovisioned_subject_is_refused(
         self, secure_client: TestClient, cast: Cast
     ) -> None:

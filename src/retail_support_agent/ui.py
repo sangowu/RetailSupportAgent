@@ -342,9 +342,7 @@ def holds(account: Account | None, permission: str) -> bool:
     return account is not None and permission in account.permissions
 
 
-def cases_table(
-    tickets: Sequence[Ticket], accounts: Sequence[Account] | None = None
-) -> list[list[str]]:
+def cases_table(tickets: Sequence[Ticket]) -> list[list[str]]:
     """The case list, as rows. Empty is a state worth rendering, not a blank panel.
 
     The session is shown because it is the only way to audit a case that is over. The
@@ -356,20 +354,17 @@ def cases_table(
     Showing it grants nothing: `/session/{id}/audit` checks `audit:read` on its own, and
     an agent sees only the cases assigned to them either way.
 
-    `accounts` is what the assignee column is read through. The page already refuses to
-    make a supervisor pick a case-holder by subject - `assignee_choices` exists for that
-    reason - and then reported the assignment back as the subject anyway, in the note and
-    in this column. The name was in hand both times. A subject nobody can resolve is
-    shown only when the account behind it is not among those this page was given.
+    The assignee is read through `holder`, which takes the service's answer. The page
+    used to resolve the subject itself against the account roster it had been given, and
+    that only ever worked for a supervisor: the roster is gated on `ticket:assign`.
     """
-    named = {account.subject: account.user_id for account in accounts or () if account.subject}
     return [
         [
             str(ticket.id),
             ticket.state,
             ticket.user_id,
             ticket.summary,
-            named.get(ticket.assignee or "", ticket.assignee) or "unassigned",
+            holder(ticket),
             ticket.resolution or "",
             ticket.session_id,
         ]
@@ -453,21 +448,22 @@ def assignee_choices(accounts: Sequence[Account]) -> list[tuple[str, str]]:
     ]
 
 
-def named(visitor: Visitor, subject: str | None) -> str:
-    """Who a subject is, for the page to say back.
+def holder(ticket: Ticket) -> str:
+    """Who a case is with, for the page to say back.
 
     `assignee_choices` already refuses to make a supervisor pick a case-holder by
     subject. Reporting the assignment back as one undoes that at the moment it matters
-    most - the confirmation that an assignment happened, and the row it produced.
+    most - the confirmation that the assignment happened, and the row it produced.
 
-    Falls back to the subject when the account is not among the ones this page was
-    given. An unresolvable identifier is better than an empty cell: it can at least be
-    looked up.
+    The name comes from the service. The page resolved it locally for one release and
+    that was half a fix: it read the account roster, the roster is gated on
+    `ticket:assign`, and an agent does not hold it - so the subject stayed on screen for
+    the role whose whole view is their own assigned cases.
+
+    Falls back to the subject when the service could not resolve it either. An
+    identifier nobody can look up beats an empty cell: it can at least be searched for.
     """
-    for account in visitor.assignable:
-        if account.subject and account.subject == subject:
-            return account.user_id
-    return subject or "unassigned"
+    return ticket.assignee_user_id or ticket.assignee or "unassigned"
 
 
 def build_demo() -> gr.Blocks:
@@ -765,7 +761,7 @@ def build_demo() -> gr.Blocks:
                 visitor,
                 history,
                 lambda token: api.assign(token, case, subject),
-                lambda ticket: f"**Case {ticket.id} is with {named(visitor, ticket.assignee)}.**",
+                lambda ticket: f"**Case {ticket.id} is with {holder(ticket)}.**",
             )
 
         def do_close(
@@ -950,7 +946,7 @@ def build_demo() -> gr.Blocks:
             """
             return (
                 gr.update(visible=visitor.may(CASES)),
-                cases_table(visitor.cases, visitor.assignable),
+                cases_table(visitor.cases),
                 gr.update(visible=visitor.may(ASSIGN)),
                 gr.update(choices=assignee_choices(visitor.assignable)),
                 gr.update(visible=visitor.may(WORK)),
