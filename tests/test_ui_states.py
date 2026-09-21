@@ -103,13 +103,32 @@ class TestEveryFailureIsRendered:
 
 
 class TestTheBoxIsPartOfTheState:
-    @pytest.mark.parametrize("status", ("handed_off", "waiting_for_human", "stopped"))
-    def test_a_state_that_cannot_be_advanced_closes_the_box(self, status: str) -> None:
-        assert not TURN_STATES[status].can_send
+    def test_the_only_state_that_closes_the_box_is_a_finished_session(self) -> None:
+        closed = {status for status, s in TURN_STATES.items() if not s.can_send}
+        assert closed == {"stopped"}
 
     @pytest.mark.parametrize("status", ("answered", "needs_confirmation", "denied"))
     def test_a_state_that_can_be_advanced_leaves_it_open(self, status: str) -> None:
         assert TURN_STATES[status].can_send
+
+    @pytest.mark.parametrize("status", ("handed_off", "waiting_for_human"))
+    def test_waiting_on_a_person_leaves_the_box_open(self, status: str) -> None:
+        """Found in the deployed demo. Closing the box here deadlocked the page: a case
+        is resolved by somebody else, nothing pushes that to this page, and the only
+        state that could have discovered it was the one the closed box prevented. The
+        customer sat in front of a disabled box being told an answer was on its way.
+
+        Sending while a case is open is free - `RetailAgent._waiting_for_human` answers
+        before any model call or tool run - so the message is both how the page asks and
+        how it resumes once the case is closed.
+        """
+        assert TURN_STATES[status].can_send
+
+    @pytest.mark.parametrize("status", ("handed_off", "waiting_for_human"))
+    def test_waiting_on_a_person_does_not_promise_delivery(self, status: str) -> None:
+        """Nothing pushes to this page. "Their answer arrives here" was a promise the
+        page had no mechanism to keep, and it read as an unanswered case forever."""
+        assert "arrives here" not in TURN_STATES[status].advice
 
     def test_every_closed_state_says_what_to_do_instead(self) -> None:
         """Closing the box without saying why reads as a broken page."""

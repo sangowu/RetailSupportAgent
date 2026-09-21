@@ -64,8 +64,16 @@ class Situation:
     detail: str = ""
     # What to do next. Empty when the answer is simply to carry on.
     advice: str = ""
-    # Whether another message can advance this state. Three cannot, and leaving the box
-    # open in those invites a message whose only possible answer is already on screen.
+    # Whether another message can advance this state. Only `stopped` cannot: the session
+    # is over and nothing sent into it can be answered.
+    #
+    # The two waiting states used to close the box too, on the reasoning that the only
+    # possible answer was already on screen. That reasoning was wrong, and closing the
+    # box deadlocked the page: a case is resolved by a person somewhere else, the page
+    # has no way to be told, and the only state that could learn it was the one the box
+    # had been closed to prevent. Sending while a case is open costs nothing - the agent
+    # answers a suspended session before it calls a model or runs a tool - so the message
+    # is how the page asks, and it is the only way it can ask.
     can_send: bool = True
     # Only an expired token, which is the one state that is not about this conversation.
     signed_out: bool = False
@@ -86,15 +94,17 @@ TURN_STATES: dict[str, Situation] = {
         advice="A supervisor has to decide this one. You can carry on with anything else.",
     ),
     "denied": Situation(label="✗ refused"),
+    # Neither of these promises that an answer arrives on its own. Nothing pushes to this
+    # page, and saying otherwise left a resolved case looking like an unanswered one.
     "handed_off": Situation(
         label="→ handed to a person",
-        advice="A person owns this case now. Their answer arrives here.",
-        can_send=False,
+        advice="A person owns this case now. Send another message to check whether they "
+        "have finished with it.",
     ),
     "waiting_for_human": Situation(
         label="→ with a person",
-        advice="Their answer arrives here. Start a new session to ask about something else.",
-        can_send=False,
+        advice="Send again to check whether it has been dealt with, or start a new "
+        "session to ask about something else.",
     ),
     "stopped": Situation(
         label="■ session stopped",
