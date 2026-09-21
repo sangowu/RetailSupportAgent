@@ -461,6 +461,46 @@ class TestOutputCheckInTheAgentFlow:
         assert "#W777" not in result.reply
         assert "bob_smith_1234" not in result.reply
 
+    def test_a_held_write_still_shows_what_it_will_run(self) -> None:
+        """The guard wrote this reply, not the model, and the arguments are the whole
+        point of showing it: somebody is being asked to check exactly these.
+
+        Found in the deployed demo. An agent was asked to escalate
+        `cancel_pending_order(order_id="[withheld: not read in this turn]")` while the
+        supervisor's queue and the database both carried the real order. The one person
+        positioned to notice a wrong order was the one shown a placeholder.
+        """
+        from retail_support_agent.agent import RetailAgent
+        from test_agent_flow import FakeDomain, ScriptedModel, tool_call
+
+        class WriteDomain(FakeDomain):
+            def tool_names(self) -> set[str]:
+                return {"get_order_details", "cancel_pending_order"}
+
+            def order_owner(self, order_id: str) -> str | None:
+                return "alice"
+
+            def order_status(self, order_id: str) -> str | None:
+                return "pending"
+
+        state = SessionState(
+            user_id="alice", scope=AccessScope.for_user("alice", check_output=True)
+        )
+        agent = RetailAgent(
+            ScriptedModel(
+                [
+                    tool_call(
+                        "cancel_pending_order", {"order_id": "#W001", "reason": "no longer needed"}
+                    )
+                ]
+            ),
+            WriteDomain(),  # type: ignore[arg-type]
+            state,
+        )
+        result = agent.send("please cancel it")
+        assert result.status == "needs_confirmation"
+        assert "#W001" in result.reply
+
     def test_the_alteration_is_recorded_for_review(self) -> None:
         """An answer that was changed on the way out is exactly the event a reviewer
         needs to see; silently fixing it would hide the model's behaviour."""
