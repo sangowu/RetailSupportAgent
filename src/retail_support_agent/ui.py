@@ -394,6 +394,22 @@ def audit_table(records: Sequence[AuditRecord]) -> list[list[str]]:
 AUDIT_COLUMNS = ["when", "what happened", "action", "authority", "detail"]
 
 
+def session_to_audit(typed: str, visitor: Visitor) -> str:
+    """Which session the trail should be read for: what was typed, else this one.
+
+    The panel first shipped requiring a session to be named, and a session id is state
+    the page holds and never shows. A supervisor who had just been refused something had
+    no way to learn the id of the conversation they were sitting in, so the permission
+    still had nowhere to be used - the same dead end the panel was built to remove.
+    Found by signing in to the deployed demo, not by a test.
+
+    Blank therefore means this session. Another session is still reachable by naming it,
+    which is what the box is for, and the note the handler writes names whichever was
+    read, so the id becomes something a person can see and copy.
+    """
+    return (typed or "").strip() or visitor.session_id
+
+
 def assignee_choices(accounts: Sequence[Account]) -> list[tuple[str, str]]:
     """Who a case can be given to, as (what a person reads, what the API needs).
 
@@ -468,13 +484,15 @@ def build_demo() -> gr.Blocks:
                     reject = gr.Button("Reject", scale=1)
                 approvals_message = gr.Markdown("")
 
-            # Loaded on demand rather than with every refresh. The trail belongs to one
-            # session and the supervisor has to say which, so there is nothing sensible
-            # to show until they do - and fetching it on every page event would be a
-            # request per keystroke elsewhere on the page.
+            # Loaded on demand rather than with every refresh: fetching it on every page
+            # event would be a request per keystroke elsewhere on the page. Pressing Show
+            # with the box empty reads this session, so the panel is usable by someone who
+            # has never seen a session id.
             with gr.Accordion("Audit trail", open=False, visible=False) as audit_panel:
                 with gr.Row():
-                    audit_session = gr.Textbox(label="Session", placeholder="session id", scale=3)
+                    audit_session = gr.Textbox(
+                        label="Session", placeholder="blank = this session", scale=3
+                    )
                     show_audit = gr.Button("Show", scale=1)
                 audit = gr.Dataframe(
                     headers=AUDIT_COLUMNS, interactive=False, wrap=True, label=None
@@ -786,9 +804,9 @@ def build_demo() -> gr.Blocks:
             session where nothing was refused, empty is the correct answer, and it must
             not look identical to a request that failed.
             """
-            wanted = (session_id or "").strip()
             if not visitor.signed_in:
                 return _signed_out("**Sign in first.**")
+            wanted = session_to_audit(session_id, visitor)
             if not wanted:
                 return _audit_note(visitor, history, [], "**Name a session to look at.**")
             try:
