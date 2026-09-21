@@ -23,8 +23,8 @@ retail data; it does not process real payments or connect to a production order 
 - **Deployment:** containerized local services and a Terraform-managed AWS demonstration
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
 
-M0 through M7 delivery records are available below. The AWS deployment is configured for
-image `m7.3`; it is operated on demand and is not continuously available. CI runs static
+M0 through M8 delivery records are available below. The AWS deployment is configured for
+image `m8.1`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 
@@ -152,8 +152,10 @@ and the [operations guide](docs/OPERATIONS.md) for release and archive procedure
 
 Current validation limits include a complete browser-based acceptance run, concurrent-load
 measurements and rollback across database schema changes. Approval expiry is covered at
-the database and API levels, but not by a complete browser workflow. An audit API exists;
-an audit-viewing page has not been implemented. The recent user-data reconciliation
+the database and API levels, but not by a complete browser workflow. One browser
+acceptance has been performed: refusing a cross-customer read and reading the resulting
+record in the audit page, recorded in the [M8 release](docs/M8_RELEASE.md). It found a
+defect that no test in this repository could have found. The user-data reconciliation
 verified deployment metadata, not the installed script or application behavior at runtime.
 
 ## Documentation
@@ -191,6 +193,8 @@ repair records for the present status.
   [rollback](docs/M6.8_ROLLBACK.md), [archives](docs/M6.9_ARCHIVE.md).
 - **User interface:** [streaming](docs/M7.1_STREAMING.md),
   [interaction states](docs/M7.2_STATES.md), [case management](docs/M7.3_TICKETS.md).
+- **Access control:** [access evaluation](docs/M8_ACCESS_EVAL.md),
+  [M8 release and browser acceptance](docs/M8_RELEASE.md).
 - **Delivery and maintenance:** [M1–M7 delivery report](docs/DELIVERY_REPORT.md),
   [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
 
