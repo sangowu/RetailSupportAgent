@@ -149,9 +149,10 @@ def situation_of_failure(exc: ApiError) -> Situation:
         )
     if isinstance(exc, ConflictError):
         return Situation(
-            label="✗ this session is open somewhere else",
+            label="✗ this session is busy",
             detail=str(exc),
-            advice="Another process is driving this session. Start a new session.",
+            advice="A message on this session is still being answered. Wait for it to "
+            "finish and send again; if nothing comes back, start a new session.",
         )
     if isinstance(exc, UnavailableError):
         return Situation(

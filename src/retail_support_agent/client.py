@@ -48,10 +48,16 @@ class ForbiddenError(ApiError):
 
 
 class ConflictError(ApiError):
-    """409. This session is being driven from somewhere else (M2).
+    """409. This session is already running a turn.
 
-    Its own class since M7.2, because it is the one failure a new session resolves, and a
-    page that cannot tell it from a malformed request cannot say so.
+    Its own class since M7.2, because it is the one failure the caller resolves by doing
+    something different rather than by fixing the request, and a page that cannot tell it
+    from a malformed request cannot say so.
+
+    Two causes, and the service deliberately does not distinguish them: another process
+    holds the session's lease (M2), or another request in this process is inside the
+    turn. The second is the ordinary one - two tabs, or a second click before the first
+    answer arrived - and it clears on its own in seconds.
     """
 
 

@@ -84,7 +84,7 @@ class TestEveryFailureIsRendered:
         [
             (UnauthenticatedError("expired"), "Sign in again"),
             (ForbiddenError("Missing permission: ticket:read"), "permission"),
-            (ConflictError("held elsewhere"), "Start a new session"),
+            (ConflictError("already handling a message"), "Wait for it to finish"),
             (UnavailableError("boom"), "not your account"),
         ],
     )

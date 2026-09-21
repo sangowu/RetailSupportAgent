@@ -22,8 +22,10 @@ assignee works it in a session of their own bound to that ticket.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
@@ -293,7 +295,13 @@ def require(identity: Identity, permission: Permission) -> None:
 
 
 class SessionBusyError(RuntimeError):
-    """Another process holds this session's lease."""
+    """This session is already running a turn.
+
+    Two reasons, deliberately one error: another process holds the lease, or another
+    request in this process is inside the turn. A caller cannot tell the difference and
+    should not act on it - the answer either way is that this session is busy and the
+    message was not accepted.
+    """
 
 
 class TicketAccessError(RuntimeError):
@@ -352,10 +360,64 @@ class SessionRegistry:
         self._write_statuses = _csv_set(settings.scope_write_statuses) or None
         self._check_output = settings.scope_check_output
         self._agents: dict[str, RetailAgent] = {}
+        # One lock per session, held for the whole turn. `claim_session` serializes
+        # sessions across processes and, by design, renews rather than refuses for the
+        # owner that already holds the lease - so inside one process it grants every
+        # concurrent request. A sync route runs in the threadpool, so those requests are
+        # genuinely parallel.
+        self._turns: dict[str, threading.Lock] = {}
+        # Guards the dict above. Two requests for a session neither has seen must not
+        # each create a lock and then both hold one.
+        self._turns_guard = threading.Lock()
 
     @property
     def owner(self) -> str:
         return self._owner
+
+    def begin_turn(self, session_id: str, identity: Identity) -> RetailAgent:
+        """Take this session's turn and return its agent, or refuse.
+
+        `RetailAgent.send` states that calls for one session must be serialized. Nothing
+        was enforcing it within a process: two concurrent requests ran one session's
+        turns in parallel, and the damage was not theoretical. Both returned 200 while
+        one user message was dropped from the record - `_journal` reads the next sequence
+        number and then inserts, so the two turns computed the same one and the loser's
+        row was swallowed as a duplicate - and the step counter advanced once for two
+        turns, which makes concurrency a way around every stop condition.
+
+        Refused rather than queued, and with the same error a second process gets.
+        Queueing would let a caller stack turns against a budget that is per session, and
+        a caller cannot act on the difference between the two reasons a session is busy.
+
+        The lock is taken before `get`, so a refused request does not build an agent or
+        touch the registry on its way to being turned away.
+        """
+        lock = self._turn_lock(session_id)
+        if not lock.acquire(blocking=False):
+            raise SessionBusyError(session_id)
+        try:
+            return self.get(session_id, identity)
+        except BaseException:
+            lock.release()
+            raise
+
+    def end_turn(self, session_id: str) -> None:
+        """Release the turn. Safe to call when this thread does not hold it, because the
+        caller that failed to start a turn must still be able to run its cleanup."""
+        lock = self._turns.get(session_id)
+        if lock is not None and lock.locked():
+            # Suppressed, not ignored: the only way this raises is that the holder
+            # released it between the check and here, and there is nothing to undo.
+            with contextlib.suppress(RuntimeError):
+                lock.release()
+
+    def _turn_lock(self, session_id: str) -> threading.Lock:
+        with self._turns_guard:
+            lock = self._turns.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._turns[session_id] = lock
+            return lock
 
     def get(self, session_id: str, identity: Identity) -> RetailAgent:
         """Return the session's agent, rebuilding it from the database if this process
@@ -526,8 +588,11 @@ def create_app(
     app.state.fallback_identity = demo_identity(user_id)
 
     def session_agent(session_id: str, identity: Identity) -> RetailAgent:
+        """Take the session's turn and return its agent. The caller must call
+        `registry.end_turn` when the turn is over, which for the streaming route is
+        after the last event rather than when this returns."""
         try:
-            return registry.get(session_id, identity)
+            return registry.begin_turn(session_id, identity)
         except TicketAccessError as exc:
             raise HTTPException(
                 status_code=403,
@@ -538,12 +603,13 @@ def create_app(
                 status_code=403, detail=f"Session {session_id} belongs to another account."
             ) from exc
         except SessionBusyError as exc:
-            # 409, not 503: the request is not going to succeed on retry against a
-            # different instance either, and the caller has to stop sending this
-            # session elsewhere. A 5xx would invite a retry loop.
+            # 409, not 503: nothing about this instance is unwell. The session is
+            # already running a turn - here or in another process - and the caller has
+            # to wait for it rather than retry into a different instance. A 5xx would
+            # invite a retry loop.
             raise HTTPException(
                 status_code=409,
-                detail=f"Session {session_id} is being handled by another process.",
+                detail=f"Session {session_id} is already handling a message.",
             ) from exc
 
     app.state.last_activity = time.monotonic()
@@ -670,6 +736,8 @@ def create_app(
             raise HTTPException(
                 status_code=502, detail=f"Model or tool call failed: {exc}"
             ) from exc
+        finally:
+            registry.end_turn(request.session_id)
         return ChatResponse(
             reply=result.reply,
             status=result.status,
@@ -690,6 +758,10 @@ def create_app(
         A disconnected client stops the events, not the turn: it runs to completion and
         its writes are committed and journaled, because a write already executed cannot
         be un-executed by hanging up.
+
+        The turn is taken here and released after the last event, not when this returns.
+        Releasing it here would leave the turn running with nothing holding it, which is
+        the state a second request is refused in order to prevent.
         """
         agent = session_agent(request.session_id, identity)
 
@@ -707,6 +779,10 @@ def create_app(
                 # first event went out. The failure becomes an event of its own, in the
                 # shape the client already parses, carrying what a 502 would have said.
                 yield _sse({"kind": "error", "detail": f"Model or tool call failed: {exc}"})
+            finally:
+                # Runs on a client that hangs up too: the generator is closed, and a turn
+                # nobody released would lock the session out for the life of the process.
+                registry.end_turn(request.session_id)
 
         return StreamingResponse(
             events(),
