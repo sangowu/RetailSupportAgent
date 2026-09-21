@@ -119,6 +119,10 @@ class TurnEvent:
 # quoted back, so the output-attribution check does not apply to it: see `_check_output`.
 GUARD_AUTHORED = frozenset({"needs_confirmation", "needs_approval", "denied"})
 
+# Statuses that end a turn waiting on somebody who is not this session's user. None can
+# arise without a store, so the benchmark cannot reach them.
+BLOCKED_ON_A_PERSON = frozenset({"needs_approval", "waiting_for_human", "handed_off"})
+
 
 def _pending_tool(session: SessionState) -> str | None:
     """Which call the guard is holding, if any."""
@@ -446,8 +450,12 @@ class RetailAgent:
         Events are derived from what the nodes left behind rather than emitted by them,
         for the same reason: the nodes are the measured path and this adds nothing to it.
         """
+        # Whatever a person was doing between turns was theirs, not this session's. The
+        # same bookkeeping as `send`: see `SessionState.elapsed`.
+        self._session.released()
         waiting = self._waiting_for_human()
         if waiting is not None:
+            self._session.blocked_on_a_person()
             self._journal("user", user_message, [])
             self._journal("assistant", waiting.reply, [])
             yield TurnEvent(kind="reply", result=waiting)
@@ -486,6 +494,8 @@ class RetailAgent:
             tool_calls=list(self._turn_tools),
         )
         result = self._check_output(result)
+        if result.status in BLOCKED_ON_A_PERSON:
+            self._session.blocked_on_a_person()
         self._journal("assistant", result.reply, result.tool_calls)
         self._record_access_decisions()
         self._save_progress()
@@ -549,7 +559,7 @@ class RetailAgent:
         # A turn that ends waiting on somebody else stops the clock until the next one.
         # None of these three can arise without a store, so the benchmark, which has
         # none, cannot reach this and its recorded runs stay comparable.
-        if result.status in ("needs_approval", "waiting_for_human", "handed_off"):
+        if result.status in BLOCKED_ON_A_PERSON:
             self._session.blocked_on_a_person()
         self._journal("assistant", result.reply, result.tool_calls)
         self._record_access_decisions()
