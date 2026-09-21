@@ -130,11 +130,50 @@ It is also the direct answer to a limitation this repository had been carrying s
 that no complete browser acceptance had been performed. One narrow browser acceptance
 found a defect on its first attempt.
 
+### A second pass, on the fixed build
+
+The first pass established that the panel was unreachable. A second pass, after `m8.1`
+was released, walked the same account through the page again and checked the fix from
+both sides rather than only the one that had failed.
+
+| Checked | Result |
+|---|---|
+| Identity shown after sign-in | `Acting as ava_moore_2033 · roles: supervisor` - the account and the retail identity are separate, and the page says which is which |
+| Sections offered | Cases, Approvals, Audit trail; **no "Work this case"**, which a supervisor does not hold `ticket:work` for |
+| Close offered | Yes, and correctly: `/tickets/{id}/close` admits the assignee or any holder of `ticket:assign`, and a supervisor holds it |
+| Empty case and approval lists | Rendered as empty tables with their headers, not as blank panels |
+| Cross-customer read | Refused, worded so that a foreign order and a non-existent one cannot be told apart |
+| Audit panel, box left blank | `1 record(s) for d138ff33…`, the row correct in all five fields |
+| Audit panel, box naming another session | `No records for 0000…dead`, zero rows - it does **not** silently fall back to the current session |
+
+The last two are the two sides of the fix. Blank has to mean this session, and a value
+that was typed has to be honoured; a panel that quietly substituted the current session
+for an id that returned nothing would be worse than the dead end it replaced, because it
+would answer a question nobody asked and look like an answer.
+
+The row read from the page on this pass:
+
+```
+2026-09-21T15:27:26.825862+00:00 | access_denied | get_order_details | self |
+Order #W2611340 does not exist or its owner cannot be confirmed.
+```
+
+### What the second pass could not reach
+
+Assignment, working a case, closing it and deciding an escalation all need a case to
+exist, and a case is only created when a customer's conversation is handed off. That
+needs a second account, and the browser used for the pass had a stored credential for
+one account only. The four workflows remain covered at the API and database levels and
+unverified in a browser; the sign-in refusal for the account that could not be used was
+itself correct, giving the same message for a wrong password as for an unknown username.
+
 ## 6. What this release does not establish
 
-- **The rest of the interface.** One path was walked in a browser: sign in, refusal,
-  audit panel. Case management, approval expiry and the streaming states remain covered
-  at the API and database levels only.
+- **The rest of the interface.** Two passes walked one path in a browser: sign in,
+  refusal, audit panel, plus which sections each account is offered. Assignment, working
+  a case, closing it, deciding an escalation, approval expiry and the streaming states
+  remain covered at the API and database levels only. Section 5 says why the second pass
+  stopped where it did.
 - **The benchmark under an enforcing scope.** The tau2 adapter still runs with a
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
