@@ -115,6 +115,11 @@ class TurnEvent:
     result: TurnResult | None = None
 
 
+# Statuses whose reply the guard wrote, not the model. Their text is the proposed call
+# quoted back, so the output-attribution check does not apply to it: see `_check_output`.
+GUARD_AUTHORED = frozenset({"needs_confirmation", "needs_approval", "denied"})
+
+
 def _pending_tool(session: SessionState) -> str | None:
     """Which call the guard is holding, if any."""
     return session.pending.name if session.pending is not None else None
@@ -679,6 +684,21 @@ class RetailAgent:
         """
         scope = self._session.scope
         if not scope.check_output or not result.reply:
+            return result
+        if result.status in GUARD_AUTHORED:
+            # Not the model's words. These replies are the guard quoting back the call it
+            # is holding or refusing, and the arguments are the whole point of showing
+            # them: a person is being asked to check, confirm or escalate exactly this.
+            #
+            # Withholding them made an escalation unreviewable by the person raising it.
+            # In the deployed demo an agent was asked to escalate
+            # `cancel_pending_order(order_id="[withheld: not read in this turn]")` while
+            # the supervisor's queue and the database both held the real order. If the
+            # model had named the wrong order, the one person positioned to notice was
+            # the one shown a placeholder.
+            #
+            # Nothing can leak here that was not already proposed by the model, because
+            # the text is built from the proposed call's own arguments.
             return result
         reply, withheld = scope.withhold(result.reply, frozenset(self._session.disclosed_ids))
         if not withheld:
