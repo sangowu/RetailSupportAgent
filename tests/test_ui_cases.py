@@ -117,6 +117,47 @@ class TestWhatTheTablesShow:
         )
         assert len(rows[0]) == len(CASE_COLUMNS)
 
+    def test_an_assignee_is_named_rather_than_shown_as_a_subject(self) -> None:
+        """Found in the deployed demo. The dropdown offers "ivan_santos_6635 · agent",
+        and the row it produced read `3275a474-60b1-70e8-41c0-d228e5d2bb10`. The page had
+        the name in hand and showed the opaque id, which is the thing `assignee_choices`
+        exists to avoid."""
+        rows = cases_table(
+            [
+                Ticket(
+                    id=4,
+                    session_id="s1",
+                    user_id="ava",
+                    state="assigned",
+                    summary="x",
+                    assignee="sub-mia",
+                )
+            ],
+            [
+                Account(
+                    user_id="ivan_santos_6635", roles=("agent",), permissions=(), subject="sub-mia"
+                )
+            ],
+        )
+        assert rows[0][4] == "ivan_santos_6635"
+
+    def test_a_subject_nobody_can_resolve_is_still_shown(self) -> None:
+        """An identifier that cannot be looked up beats an empty cell."""
+        rows = cases_table(
+            [
+                Ticket(
+                    id=4,
+                    session_id="s1",
+                    user_id="ava",
+                    state="assigned",
+                    summary="x",
+                    assignee="sub-unknown",
+                )
+            ],
+            [],
+        )
+        assert rows[0][4] == "sub-unknown"
+
     def test_an_unassigned_case_says_so_rather_than_showing_nothing(self) -> None:
         rows = cases_table(
             [Ticket(id=4, session_id="s1", user_id="ava", state="open", summary="x")]
