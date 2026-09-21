@@ -16,6 +16,7 @@ from retail_support_agent.auth import ROLE_PERMISSIONS, Permission
 from retail_support_agent.client import Account, Approval, Ticket
 from retail_support_agent.ui import (
     ASSIGN,
+    CASE_COLUMNS,
     CASES,
     DECIDE,
     WORK,
@@ -98,8 +99,23 @@ class TestWhatTheTablesShow:
             ]
         )
         assert rows == [
-            ["4", "open", "ava_moore_2033", "refund to a different card", "sub-mia", ""]
+            ["4", "open", "ava_moore_2033", "refund to a different card", "sub-mia", "", "s1"]
         ]
+
+    def test_a_case_row_names_the_session_it_belongs_to(self) -> None:
+        """Without it the audit panel can only reach the session the viewer is in and any
+        with an approval still pending. A case that was closed last week - the one a
+        review actually asks about - had no route at all."""
+        rows = cases_table(
+            [Ticket(id=4, session_id="abc123", user_id="ava", state="closed", summary="x")]
+        )
+        assert rows[0][-1] == "abc123"
+
+    def test_the_case_columns_match_what_a_row_produces(self) -> None:
+        rows = cases_table(
+            [Ticket(id=4, session_id="s1", user_id="ava", state="open", summary="x")]
+        )
+        assert len(rows[0]) == len(CASE_COLUMNS)
 
     def test_an_unassigned_case_says_so_rather_than_showing_nothing(self) -> None:
         rows = cases_table(

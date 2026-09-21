@@ -333,7 +333,17 @@ def holds(account: Account | None, permission: str) -> bool:
 
 
 def cases_table(tickets: Sequence[Ticket]) -> list[list[str]]:
-    """The case list, as rows. Empty is a state worth rendering, not a blank panel."""
+    """The case list, as rows. Empty is a state worth rendering, not a blank panel.
+
+    The session is shown because it is the only way to audit a case that is over. The
+    audit panel reads a named session, and without this column the ids a supervisor can
+    reach are the one they are sitting in and any with an approval still pending - so a
+    case that was resolved last week, which is exactly the one a review asks about, had
+    no route. The service already sends the id; the page was simply not rendering it.
+
+    Showing it grants nothing: `/session/{id}/audit` checks `audit:read` on its own, and
+    an agent sees only the cases assigned to them either way.
+    """
     return [
         [
             str(ticket.id),
@@ -342,12 +352,13 @@ def cases_table(tickets: Sequence[Ticket]) -> list[list[str]]:
             ticket.summary,
             ticket.assignee or "unassigned",
             ticket.resolution or "",
+            ticket.session_id,
         ]
         for ticket in tickets
     ]
 
 
-CASE_COLUMNS = ["case", "state", "customer", "summary", "assignee", "resolution"]
+CASE_COLUMNS = ["case", "state", "customer", "summary", "assignee", "resolution", "session"]
 
 
 def approvals_table(approvals: Sequence[Approval]) -> list[list[str]]:
