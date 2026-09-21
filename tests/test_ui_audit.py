@@ -16,7 +16,15 @@ import pytest
 
 from retail_support_agent.auth import ROLE_PERMISSIONS, Permission
 from retail_support_agent.client import Account, AuditRecord
-from retail_support_agent.ui import AUDIT, AUDIT_COLUMNS, audit_table, build_demo, holds
+from retail_support_agent.ui import (
+    AUDIT,
+    AUDIT_COLUMNS,
+    Visitor,
+    audit_table,
+    build_demo,
+    holds,
+    session_to_audit,
+)
 
 
 def account(*roles: str) -> Account:
@@ -104,6 +112,25 @@ class TestWhatARowSays:
     def test_the_columns_match_what_a_row_produces(self) -> None:
         rows = audit_table([record("access_denied", tool="x")])
         assert len(rows[0]) == len(AUDIT_COLUMNS)
+
+
+class TestWhichSessionTheTrailIsReadFor:
+    """Found in the deployed demo: the panel demanded a session id, and a session id is
+    something the page keeps and never shows. A supervisor who had just been refused
+    something could not look at the refusal they had caused."""
+
+    def test_a_blank_box_means_this_session(self) -> None:
+        visitor = Visitor(session_id="abc123", account=account("supervisor"))
+        assert session_to_audit("", visitor) == "abc123"
+
+    def test_whitespace_is_still_blank(self) -> None:
+        visitor = Visitor(session_id="abc123", account=account("supervisor"))
+        assert session_to_audit("   ", visitor) == "abc123"
+
+    def test_a_named_session_wins(self) -> None:
+        """The box is still how a supervisor reaches a conversation that is not theirs."""
+        visitor = Visitor(session_id="abc123", account=account("supervisor"))
+        assert session_to_audit(" other-session ", visitor) == "other-session"
 
 
 class TestThePanelIsWiredLikeEveryOther:
