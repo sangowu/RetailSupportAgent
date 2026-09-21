@@ -125,7 +125,6 @@ class SessionState:
     # assigned ticket (M4). Such a write needs a human decision as well as the customer's
     # confirmation; a customer acting on their own orders does not.
     acting_for_other: bool = False
-    started_at: float = field(default_factory=time.monotonic)
     steps: int = 0
     tool_calls: int = 0
     # Fingerprints the user has confirmed. One confirmation covers one argument set.
@@ -147,40 +146,49 @@ class SessionState:
     # be assembled from what an earlier turn read under permissions since revoked.
     disclosed_ids: set[str] = field(default_factory=set)
     pending: ProposedCall | None = None
-    # Time this session spent blocked on a person who is not its user: a supervisor
-    # deciding an escalation, or a human agent holding the case. `held_since` is the
-    # moment the current block began, None when nothing is blocking.
-    held_seconds: float = 0.0
-    held_since: float | None = None
+    # Seconds this session has spent inside a turn. Accumulated when a turn ends, so
+    # what is between turns - a person reading, typing, deciding, or not being at their
+    # desk at all - is not in it. `turn_started_at` is the moment the running turn
+    # began, None when no turn is running.
+    worked_seconds: float = 0.0
+    turn_started_at: float | None = None
 
-    def blocked_on_a_person(self) -> None:
-        """Start charging the wait to a person rather than to the session."""
-        if self.held_since is None:
-            self.held_since = time.monotonic()
+    def turn_begins(self) -> None:
+        """Start the clock for one turn. Idempotent, so a caller that begins a turn it
+        has already begun does not restart the measurement."""
+        if self.turn_started_at is None:
+            self.turn_started_at = time.monotonic()
 
-    def released(self) -> None:
-        """Fold a finished wait into the total. Doing nothing when none is open makes
-        this safe to call at the top of every turn."""
-        if self.held_since is not None:
-            self.held_seconds += time.monotonic() - self.held_since
-            self.held_since = None
+    def turn_ends(self) -> None:
+        """Fold the running turn into the total. Doing nothing when none is running
+        makes this safe to call on every exit from a turn, including the early ones."""
+        if self.turn_started_at is not None:
+            self.worked_seconds += time.monotonic() - self.turn_started_at
+            self.turn_started_at = None
 
     def elapsed(self) -> float:
         """How long this session has been working, which is not how long it has existed.
 
-        `SessionTiming` already states the rule for reporting: a session must not look
-        slower because a person took longer to answer. The stop rule did not follow it,
-        and an agent working a case died mid-escalation - read the order, propose the
-        write, confirm the arguments, escalate, wait for a supervisor - because a human
-        decision was being charged to a budget meant to bound a runaway model.
+        The budget exists to stop a model that will not terminate, and that is a property
+        of machine work. It was measured as wall-clock time since the session row was
+        created, which made it a property of the calendar instead, and the difference was
+        not academic: an agent's case session is addressed by a stable id so that
+        returning to a case continues it, and `Store.progress` rebases the clock onto the
+        row's age. Together those meant a case was unworkable 180 seconds after it was
+        first opened - permanently, with no way to obtain a fresh session for it, because
+        the id is derived from the ticket and the agent.
 
-        Only waits on somebody other than this session's own user are excluded. Ordinary
-        think-time between turns is still charged, which is the same defect one step out;
-        changing that would alter what the benchmark measures, so it is a decision of its
-        own rather than a detail of this one.
+        Counting only time inside a turn fixes that at the root, and subsumes the earlier
+        narrower rule that excluded waits on a supervisor: a turn that ends waiting for a
+        person has ended, so the wait is not in a turn and is not counted. It also means
+        a person reading a case, or leaving their desk, costs the session nothing - which
+        `SessionTiming` has said is the rule for reporting since M2.
+
+        No recorded benchmark run has ever hit this limit, so nothing that has been
+        measured changes.
         """
-        open_wait = 0.0 if self.held_since is None else time.monotonic() - self.held_since
-        return time.monotonic() - self.started_at - self.held_seconds - open_wait
+        running = 0.0 if self.turn_started_at is None else time.monotonic() - self.turn_started_at
+        return self.worked_seconds + running
 
     def stop_reason(self) -> str | None:
         """Why the session must stop, or None if it may continue."""
