@@ -263,3 +263,51 @@ class TestAnAnswerNamesTheCase:
                 if line.startswith("data:")
             ]
         assert events[-1]["ticket_id"] is None
+
+
+class TestBothRoutesKeepTheSameClock:
+    """The session's own bookkeeping, not just its answer.
+
+    `send` and `stream` are two hand-written copies of one turn, held together by the
+    comparisons above - which compare the reply and the database. A supervisor's
+    deliberation stopped being charged to the session in `send` and went on being charged
+    in `stream`, and every one of those comparisons still passed, because the clock is
+    neither the reply nor a row. The page streams, so the fix reached production dead.
+    """
+
+    @staticmethod
+    def escalating(route: str) -> SessionState:
+        class WriteDomain(FakeDomain):
+            def tool_names(self) -> set[str]:
+                return {"cancel_pending_order"}
+
+            def order_owner(self, order_id: str) -> str | None:
+                return "alice"
+
+            def order_status(self, order_id: str) -> str | None:
+                return "pending"
+
+        state = SessionState(user_id="alice", limits=SessionLimits(), acting_for_other=True)
+        agent = RetailAgent(
+            ScriptedModel([tool_call("cancel_pending_order", {"order_id": "#W001"})]),
+            WriteDomain(),  # type: ignore[arg-type]
+            state,
+        )
+        if route == "send":
+            assert agent.send("cancel it").status == "needs_approval"
+        else:
+            events = list(agent.stream("cancel it"))
+            assert events[-1].result is not None
+            assert events[-1].result.status == "needs_approval"
+        return state
+
+    @pytest.mark.parametrize("route", ("send", "stream"))
+    def test_a_turn_left_with_a_supervisor_stops_the_clock(self, route: str) -> None:
+        assert self.escalating(route).held_since is not None
+
+    @pytest.mark.parametrize("route", ("send", "stream"))
+    def test_the_wait_is_excluded_from_elapsed(self, route: str) -> None:
+        state = self.escalating(route)
+        state.held_seconds = 10_000.0
+        state.released()
+        assert state.elapsed() < 0
