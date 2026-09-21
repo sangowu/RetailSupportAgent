@@ -152,10 +152,12 @@ and the [operations guide](docs/OPERATIONS.md) for release and archive procedure
 
 Current validation limits include a complete browser-based acceptance run, concurrent-load
 measurements and rollback across database schema changes. Approval expiry is covered at
-the database and API levels, but not by a complete browser workflow. One browser
-acceptance has been performed: refusing a cross-customer read and reading the resulting
-record in the audit page, recorded in the [M8 release](docs/M8_RELEASE.md). It found a
-defect that no test in this repository could have found. The user-data reconciliation
+the database and API levels, but not by a complete browser workflow. Browser acceptance
+covers one path, recorded in the [M8 release](docs/M8_RELEASE.md): sign-in, the sections
+each account is offered, refusing a cross-customer read, and reading the resulting record
+in the audit page. It found a defect that no test in this repository could have found.
+Assignment, working and closing a case, and deciding an escalation are not covered by it.
+The user-data reconciliation
 verified deployment metadata, not the installed script or application behavior at runtime.
 
 ## Documentation
