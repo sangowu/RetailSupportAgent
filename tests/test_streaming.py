@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, ClassVar
 
 import pytest
@@ -287,9 +288,21 @@ class TestBothRoutesKeepTheSameClock:
             def order_status(self, order_id: str) -> str | None:
                 return "pending"
 
+        class SlowModel(ScriptedModel):
+            """Scripted, but not instantaneous.
+
+            A scripted turn finishes inside one tick of the platform clock, so a correct
+            clock and a clock that never started both read 0.0. The pause is what makes
+            "the turn was charged" a claim the test can tell apart from its negation.
+            """
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                time.sleep(0.05)
+                return super().__call__(*args, **kwargs)
+
         state = SessionState(user_id="alice", limits=SessionLimits(), acting_for_other=True)
         agent = RetailAgent(
-            ScriptedModel([tool_call("cancel_pending_order", {"order_id": "#W001"})]),
+            SlowModel([tool_call("cancel_pending_order", {"order_id": "#W001"})]),
             WriteDomain(),  # type: ignore[arg-type]
             state,
         )
@@ -302,12 +315,19 @@ class TestBothRoutesKeepTheSameClock:
         return state
 
     @pytest.mark.parametrize("route", ("send", "stream"))
-    def test_a_turn_left_with_a_supervisor_stops_the_clock(self, route: str) -> None:
-        assert self.escalating(route).held_since is not None
+    def test_a_finished_turn_leaves_no_clock_running(self, route: str) -> None:
+        """Including one that ended waiting on a supervisor. A turn that returns without
+        closing its own measurement charges the session for the wait that follows."""
+        assert self.escalating(route).turn_started_at is None
 
     @pytest.mark.parametrize("route", ("send", "stream"))
-    def test_the_wait_is_excluded_from_elapsed(self, route: str) -> None:
+    def test_the_turn_it_did_run_is_charged(self, route: str) -> None:
+        """The other half: stopping the clock must not mean never starting it."""
+        assert self.escalating(route).elapsed() >= 0.01
+
+    @pytest.mark.parametrize("route", ("send", "stream"))
+    def test_waiting_after_the_turn_costs_the_session_nothing(self, route: str) -> None:
         state = self.escalating(route)
-        state.held_seconds = 10_000.0
-        state.released()
-        assert state.elapsed() < 0
+        spent = state.elapsed()
+        time.sleep(0.05)
+        assert state.elapsed() == spent

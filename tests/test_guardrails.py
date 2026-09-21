@@ -191,43 +191,78 @@ class TestRefusedActionsAreBounded:
         assert state.stop_reason() is not None
 
 
-class TestAPersonsTimeIsNotChargedToTheSession:
-    """Found by working a case end to end against the deployed demo.
+class TestTheClockCountsWorkRatherThanCalendarTime:
+    """Found by working a case end to end against the deployed demo, twice.
 
-    An agent read the order, proposed the write, confirmed the arguments and escalated;
-    a supervisor decided; and by then the session was dead of a 180s limit meant to bound
-    a runaway model. `SessionTiming` already says a session must not look slower because
-    a person took longer to answer. The stop rule was not following its own rule.
+    The first time, an agent read the order, proposed the write, confirmed the arguments
+    and escalated, and by then the session was dead of a 180s limit meant to bound a
+    runaway model. That was narrowed to waits on a supervisor. The second time, a case
+    session was dead on its very first message - because the limit was read as the age of
+    the session row, the row is reached again by an id derived from the ticket and the
+    agent, and the case had been opened hours earlier. No wait was involved at all.
+
+    The budget bounds machine work, so it counts machine work: time inside a turn, and
+    nothing between turns.
     """
 
-    def test_an_open_wait_does_not_age_the_session(self) -> None:
-        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.001))
-        state.blocked_on_a_person()
-        time.sleep(0.01)
-        assert state.stop_reason() is None
-
-    def test_the_wait_is_still_excluded_once_it_ends(self) -> None:
-        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.05))
-        state.blocked_on_a_person()
-        time.sleep(0.08)
-        state.released()
-        assert state.stop_reason() is None
-
-    def test_time_outside_a_wait_is_charged_as_before(self) -> None:
-        """The limit still bounds what it was meant to bound."""
+    def test_time_between_turns_is_not_charged(self) -> None:
         state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.01))
+        time.sleep(0.05)
+        assert state.stop_reason() is None
+
+    def test_a_session_that_has_merely_existed_for_a_long_time_still_works(self) -> None:
+        """The production defect, stated directly: an old session is not a spent one."""
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=180.0))
+        state.worked_seconds = 0.0
+        time.sleep(0.02)
+        state.turn_begins()
+        assert state.stop_reason() is None
+
+    def test_time_inside_a_turn_is_charged_while_it_runs(self) -> None:
+        """The limit still bounds what it was meant to bound, without waiting for the
+        turn to end - a turn that never returns is the case it exists for."""
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.01))
+        state.turn_begins()
         time.sleep(0.02)
         assert state.stop_reason() is not None
 
-    def test_releasing_without_a_wait_does_nothing(self) -> None:
-        """Called at the top of every turn, so the no-wait case has to be free."""
-        state = SessionState(user_id="alice", limits=SessionLimits())
-        state.released()
-        assert state.held_seconds == 0.0
+    def test_a_finished_turn_keeps_its_cost(self) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.02))
+        state.turn_begins()
+        time.sleep(0.03)
+        state.turn_ends()
+        time.sleep(0.01)
+        assert state.stop_reason() is not None
 
-    def test_a_second_block_does_not_restart_the_first(self) -> None:
+    def test_turns_accumulate(self) -> None:
+        """One turn under the limit twice is two turns over it.
+
+        The margin is wide because `time.sleep` is a floor on some platforms and an
+        approximation on others; what is being checked is that the totals add up, not
+        that the sleep was exact.
+        """
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.08))
+        state.turn_begins()
+        time.sleep(0.05)
+        state.turn_ends()
+        first = state.elapsed()
+        assert state.stop_reason() is None
+
+        state.turn_begins()
+        time.sleep(0.05)
+        state.turn_ends()
+        assert state.elapsed() > first
+        assert state.stop_reason() is not None
+
+    def test_ending_a_turn_that_never_began_does_nothing(self) -> None:
+        """Called from `finally` on every exit, so the no-turn case has to be free."""
         state = SessionState(user_id="alice", limits=SessionLimits())
-        state.blocked_on_a_person()
-        first = state.held_since
-        state.blocked_on_a_person()
-        assert state.held_since == first
+        state.turn_ends()
+        assert state.worked_seconds == 0.0
+
+    def test_beginning_a_turn_twice_does_not_restart_the_measurement(self) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits())
+        state.turn_begins()
+        first = state.turn_started_at
+        state.turn_begins()
+        assert state.turn_started_at == first

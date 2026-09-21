@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -86,6 +87,11 @@ class SessionRow(Base):
     ticket_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     steps: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # Seconds this session has spent inside a turn. Persisted for the same reason as the
+    # counters: a restart that reset it would make restarting a way around the time
+    # limit. It is not derivable from `created_at` - that is how long the session has
+    # existed, which is what this replaces.
+    worked_seconds: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0"))
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

@@ -16,7 +16,6 @@ DB component of the benchmark reward.
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Literal, TypedDict
@@ -118,10 +117,6 @@ class TurnEvent:
 # Statuses whose reply the guard wrote, not the model. Their text is the proposed call
 # quoted back, so the output-attribution check does not apply to it: see `_check_output`.
 GUARD_AUTHORED = frozenset({"needs_confirmation", "needs_approval", "denied"})
-
-# Statuses that end a turn waiting on somebody who is not this session's user. None can
-# arise without a store, so the benchmark cannot reach them.
-BLOCKED_ON_A_PERSON = frozenset({"needs_approval", "waiting_for_human", "handed_off"})
 
 
 def _pending_tool(session: SessionState) -> str | None:
@@ -450,56 +445,57 @@ class RetailAgent:
         Events are derived from what the nodes left behind rather than emitted by them,
         for the same reason: the nodes are the measured path and this adds nothing to it.
         """
-        # Whatever a person was doing between turns was theirs, not this session's. The
-        # same bookkeeping as `send`: see `SessionState.elapsed`.
-        self._session.released()
-        waiting = self._waiting_for_human()
-        if waiting is not None:
-            self._session.blocked_on_a_person()
+        # One turn is what the session's budget is spent on. Begun here and ended in
+        # `finally`, so every exit from this route - including the short one below
+        # and an exception out of the graph - stops the clock exactly once.
+        self._session.turn_begins()
+        try:
+            waiting = self._waiting_for_human()
+            if waiting is not None:
+                self._journal("user", user_message, [])
+                self._journal("assistant", waiting.reply, [])
+                yield TurnEvent(kind="reply", result=waiting)
+                return
+
+            self._maybe_consume_confirmation(user_message)
+            self._messages.append({"role": "user", "content": user_message})
             self._journal("user", user_message, [])
-            self._journal("assistant", waiting.reply, [])
-            yield TurnEvent(kind="reply", result=waiting)
-            return
+            self._last = None
+            self._turn_tools = []
+            # The turn may say back what it reads from here on, and what the user just typed.
+            # Cleared rather than accumulated: see AccessScope.withhold.
+            self._session.disclosed_ids = set(identifiers_in(user_message))
 
-        self._maybe_consume_confirmation(user_message)
-        self._messages.append({"role": "user", "content": user_message})
-        self._journal("user", user_message, [])
-        self._last = None
-        self._turn_tools = []
-        # The turn may say back what it reads from here on, and what the user just typed.
-        # Cleared rather than accumulated: see AccessScope.withhold.
-        self._session.disclosed_ids = set(identifiers_in(user_message))
+            # Before the first model call, not after it. The point of this route is that
+            # something appears immediately, and the first model call is the longest silence
+            # in the turn.
+            yield TurnEvent(kind="thinking")
 
-        # Before the first model call, not after it. The point of this route is that
-        # something appears immediately, and the first model call is the longest silence
-        # in the turn.
-        yield TurnEvent(kind="thinking")
+            ran = 0
+            for chunk in self._graph.stream({"messages": []}):
+                node = next(iter(chunk), "")
+                if node != "act":
+                    continue
+                yield from self._events_after_act(ran)
+                ran = len(self._turn_tools)
+                # The model is about to be asked to explain what the tools returned. Only
+                # when the turn continues: a held write ends it, and announcing a call that
+                # will not happen would be a lie about the state.
+                if chunk[node].get("status") == "tool_executed":
+                    yield TurnEvent(kind="thinking")
 
-        ran = 0
-        for chunk in self._graph.stream({"messages": []}):
-            node = next(iter(chunk), "")
-            if node != "act":
-                continue
-            yield from self._events_after_act(ran)
-            ran = len(self._turn_tools)
-            # The model is about to be asked to explain what the tools returned. Only
-            # when the turn continues: a held write ends it, and announcing a call that
-            # will not happen would be a lie about the state.
-            if chunk[node].get("status") == "tool_executed":
-                yield TurnEvent(kind="thinking")
-
-        result = self._last or TurnResult(
-            reply="(the model returned no answer)",
-            status="answered",
-            tool_calls=list(self._turn_tools),
-        )
-        result = self._check_output(result)
-        if result.status in BLOCKED_ON_A_PERSON:
-            self._session.blocked_on_a_person()
-        self._journal("assistant", result.reply, result.tool_calls)
-        self._record_access_decisions()
-        self._save_progress()
-        yield TurnEvent(kind="reply", result=result)
+            result = self._last or TurnResult(
+                reply="(the model returned no answer)",
+                status="answered",
+                tool_calls=list(self._turn_tools),
+            )
+            result = self._check_output(result)
+            self._journal("assistant", result.reply, result.tool_calls)
+            self._record_access_decisions()
+            self._save_progress()
+            yield TurnEvent(kind="reply", result=result)
+        finally:
+            self._session.turn_ends()
 
     def _events_after_act(self, ran: int) -> Iterator[TurnEvent]:
         """What the act node just did, read from what it left behind.
@@ -530,41 +526,40 @@ class RetailAgent:
 
     def send(self, user_message: str) -> TurnResult:
         """Handle one user message. Calls for one session must be serialized."""
-        # Whatever a person was doing between turns was theirs, not this session's.
-        self._session.released()
-        waiting = self._waiting_for_human()
-        if waiting is not None:
-            self._session.blocked_on_a_person()
-            # The message is still journaled: what the customer said while waiting is
-            # part of the case, and the human handling it needs to see it.
-            self._journal("user", user_message, [])
-            self._journal("assistant", waiting.reply, [])
-            return waiting
+        # One turn is what the session's budget is spent on. Begun here and ended in
+        # `finally`, so every exit from this route - including the short one below
+        # and an exception out of the graph - stops the clock exactly once.
+        self._session.turn_begins()
+        try:
+            waiting = self._waiting_for_human()
+            if waiting is not None:
+                # The message is still journaled: what the customer said while waiting is
+                # part of the case, and the human handling it needs to see it.
+                self._journal("user", user_message, [])
+                self._journal("assistant", waiting.reply, [])
+                return waiting
 
-        self._maybe_consume_confirmation(user_message)
-        self._messages.append({"role": "user", "content": user_message})
-        self._journal("user", user_message, [])
-        self._last = None
-        self._turn_tools = []
-        # The turn may say back what it reads from here on, and what the user just typed.
-        # Cleared rather than accumulated: see AccessScope.withhold.
-        self._session.disclosed_ids = set(identifiers_in(user_message))
-        self._graph.invoke({"messages": []})
-        result = self._last or TurnResult(
-            reply="(the model returned no answer)",
-            status="answered",
-            tool_calls=list(self._turn_tools),
-        )
-        result = self._check_output(result)
-        # A turn that ends waiting on somebody else stops the clock until the next one.
-        # None of these three can arise without a store, so the benchmark, which has
-        # none, cannot reach this and its recorded runs stay comparable.
-        if result.status in BLOCKED_ON_A_PERSON:
-            self._session.blocked_on_a_person()
-        self._journal("assistant", result.reply, result.tool_calls)
-        self._record_access_decisions()
-        self._save_progress()
-        return result
+            self._maybe_consume_confirmation(user_message)
+            self._messages.append({"role": "user", "content": user_message})
+            self._journal("user", user_message, [])
+            self._last = None
+            self._turn_tools = []
+            # The turn may say back what it reads from here on, and what the user just typed.
+            # Cleared rather than accumulated: see AccessScope.withhold.
+            self._session.disclosed_ids = set(identifiers_in(user_message))
+            self._graph.invoke({"messages": []})
+            result = self._last or TurnResult(
+                reply="(the model returned no answer)",
+                status="answered",
+                tool_calls=list(self._turn_tools),
+            )
+            result = self._check_output(result)
+            self._journal("assistant", result.reply, result.tool_calls)
+            self._record_access_decisions()
+            self._save_progress()
+            return result
+        finally:
+            self._session.turn_ends()
 
     # ---- recovery (M2) --------------------------------------------------
 
@@ -617,10 +612,10 @@ class RetailAgent:
         if progress is not None:
             self._session.steps = progress.steps
             self._session.tool_calls = progress.tool_calls
-            # The deadline is measured from when the session was created, not from when
-            # this process started. Rebasing the monotonic origin keeps elapsed() honest
-            # without giving SessionState a second notion of time.
-            self._session.started_at = time.monotonic() - progress.age_seconds
+            # The time budget resumes where it was spent, not from when the session row
+            # was created: the row's age is how long the case has been on somebody's
+            # desk, which the budget is not about.
+            self._session.worked_seconds = progress.worked_seconds
 
         return RecoveryReport(
             recovered=bool(stored or operations),
@@ -650,10 +645,19 @@ class RetailAgent:
         self._store.append_message(self._session_id, seq, role, content, tool_calls)
 
     def _save_progress(self) -> None:
-        """Persist the stop-condition counters so a restart resumes them."""
+        """Persist the stop conditions so a restart resumes them.
+
+        `elapsed()` rather than `worked_seconds`, because this runs inside the turn it is
+        recording: the accumulator does not include the running turn, and elapsed does.
+        """
         if self._store is None or self._session_id is None:
             return
-        self._store.save_progress(self._session_id, self._session.steps, self._session.tool_calls)
+        self._store.save_progress(
+            self._session_id,
+            self._session.steps,
+            self._session.tool_calls,
+            self._session.elapsed(),
+        )
 
     def _record_confirmation_request(self, proposed: ProposedCall) -> None:
         if self._store is None or self._session_id is None:

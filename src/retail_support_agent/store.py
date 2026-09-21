@@ -58,11 +58,11 @@ def idempotency_key(session_id: str, call: ProposedCall, confirmation_id: int | 
 
 @dataclass(frozen=True)
 class SessionProgress:
-    """Stop-condition counters plus the session's age, both read from the database."""
+    """Everything the stop conditions need to resume, read from the database."""
 
     steps: int
     tool_calls: int
-    age_seconds: float
+    worked_seconds: float
 
 
 # How long a human decision stays valid. The architecture document fixes the default at
@@ -239,32 +239,37 @@ class Store:
             return row.user_id if row else None
 
     def progress(self, session_id: str) -> SessionProgress | None:
-        """The stop-condition counters and how long the session has been open.
+        """The stop-condition counters and the time already spent working.
 
-        `age_seconds` is computed by the database, not by the application: after a
-        restart the process clock says nothing about when the session started, and two
-        processes' clocks can differ.
+        The worked time is stored rather than derived from `created_at`. Deriving it was
+        the defect: an agent's case session is addressed by an id derived from the ticket
+        and the agent, so returning to a case reaches the same row, and reading its age
+        as the elapsed time made every case unworkable three minutes after it was first
+        opened.
         """
         with self._sessions() as db:
             stmt = select(
                 SessionRow.steps,
                 SessionRow.tool_calls,
-                func.extract("epoch", func.now() - SessionRow.created_at),
+                SessionRow.worked_seconds,
             ).where(SessionRow.id == session_id)
             row = db.execute(stmt).one_or_none()
             if row is None:
                 return None
             return SessionProgress(int(row[0]), int(row[1]), float(row[2]))
 
-    def save_progress(self, session_id: str, steps: int, tool_calls: int) -> None:
-        """Store the counters after a turn. Missing rows are ignored: without a session
-        there is nothing to limit."""
+    def save_progress(
+        self, session_id: str, steps: int, tool_calls: int, worked_seconds: float = 0.0
+    ) -> None:
+        """Store the counters and the worked time after a turn. Missing rows are ignored:
+        without a session there is nothing to limit."""
         with self._sessions.begin() as db:
             row = db.get(SessionRow, session_id)
             if row is None:
                 return
             row.steps = steps
             row.tool_calls = tool_calls
+            row.worked_seconds = worked_seconds
 
     # ---- claims ---------------------------------------------------------
     def claim_session(self, session_id: str, owner: str, ttl_seconds: float) -> bool:

@@ -350,16 +350,31 @@ class TestStopConditionsResume:
 
         assert agent._session.stop_reason() is not None
 
-    def test_the_deadline_counts_from_session_creation(self, store: Store) -> None:
-        """The time limit is wall-clock from when the session started, not from when
-        this process happened to start."""
+    def test_the_time_already_spent_working_resumes(self, store: Store) -> None:
+        """Otherwise a restart hands the session a fresh time budget, which is the same
+        hole `test_a_restart_cannot_reset_a_reached_limit` closes for the counters."""
+        session_id = new_session(store)
+        store.save_progress(session_id, steps=0, tool_calls=0, worked_seconds=42.0)
+
+        agent = build_agent(store, session_id, StatefulDomain())
+        agent.recover()
+
+        assert agent._session.elapsed() == pytest.approx(42.0)
+
+    def test_an_old_session_that_never_worked_still_has_its_budget(self, store: Store) -> None:
+        """The production defect. The limit used to be read as the age of the session
+        row, and an agent's case session is reached again by an id derived from the
+        ticket and the agent - so a case opened hours ago was dead on its next message,
+        with no way to obtain a fresh session for it.
+        """
         session_id = new_session(store)
         time.sleep(0.05)
 
         agent = build_agent(store, session_id, StatefulDomain())
         agent.recover()
 
-        assert agent._session.elapsed() >= 0.05
+        assert agent._session.elapsed() == 0.0
+        assert agent._session.stop_reason() is None
 
 
 class TestOneOwnerPerSession:
