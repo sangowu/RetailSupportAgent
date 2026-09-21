@@ -147,9 +147,40 @@ class SessionState:
     # be assembled from what an earlier turn read under permissions since revoked.
     disclosed_ids: set[str] = field(default_factory=set)
     pending: ProposedCall | None = None
+    # Time this session spent blocked on a person who is not its user: a supervisor
+    # deciding an escalation, or a human agent holding the case. `held_since` is the
+    # moment the current block began, None when nothing is blocking.
+    held_seconds: float = 0.0
+    held_since: float | None = None
+
+    def blocked_on_a_person(self) -> None:
+        """Start charging the wait to a person rather than to the session."""
+        if self.held_since is None:
+            self.held_since = time.monotonic()
+
+    def released(self) -> None:
+        """Fold a finished wait into the total. Doing nothing when none is open makes
+        this safe to call at the top of every turn."""
+        if self.held_since is not None:
+            self.held_seconds += time.monotonic() - self.held_since
+            self.held_since = None
 
     def elapsed(self) -> float:
-        return time.monotonic() - self.started_at
+        """How long this session has been working, which is not how long it has existed.
+
+        `SessionTiming` already states the rule for reporting: a session must not look
+        slower because a person took longer to answer. The stop rule did not follow it,
+        and an agent working a case died mid-escalation - read the order, propose the
+        write, confirm the arguments, escalate, wait for a supervisor - because a human
+        decision was being charged to a budget meant to bound a runaway model.
+
+        Only waits on somebody other than this session's own user are excluded. Ordinary
+        think-time between turns is still charged, which is the same defect one step out;
+        changing that would alter what the benchmark measures, so it is a decision of its
+        own rather than a detail of this one.
+        """
+        open_wait = 0.0 if self.held_since is None else time.monotonic() - self.held_since
+        return time.monotonic() - self.started_at - self.held_seconds - open_wait
 
     def stop_reason(self) -> str | None:
         """Why the session must stop, or None if it may continue."""

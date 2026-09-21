@@ -515,8 +515,11 @@ class RetailAgent:
 
     def send(self, user_message: str) -> TurnResult:
         """Handle one user message. Calls for one session must be serialized."""
+        # Whatever a person was doing between turns was theirs, not this session's.
+        self._session.released()
         waiting = self._waiting_for_human()
         if waiting is not None:
+            self._session.blocked_on_a_person()
             # The message is still journaled: what the customer said while waiting is
             # part of the case, and the human handling it needs to see it.
             self._journal("user", user_message, [])
@@ -538,6 +541,11 @@ class RetailAgent:
             tool_calls=list(self._turn_tools),
         )
         result = self._check_output(result)
+        # A turn that ends waiting on somebody else stops the clock until the next one.
+        # None of these three can arise without a store, so the benchmark, which has
+        # none, cannot reach this and its recorded runs stay comparable.
+        if result.status in ("needs_approval", "waiting_for_human", "handed_off"):
+            self._session.blocked_on_a_person()
         self._journal("assistant", result.reply, result.tool_calls)
         self._record_access_decisions()
         self._save_progress()
