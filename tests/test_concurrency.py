@@ -49,6 +49,17 @@ TEST_URL = os.getenv("RSA_TEST_DATABASE_URL")
 TURN_SECONDS = 0.4
 
 
+@pytest.fixture(autouse=True)
+def _a_key_that_is_never_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`Settings()` requires a model key, and `conftest` clears the real one.
+
+    Every test here replaces the model outright, so the value is never sent anywhere.
+    Without it these passed on a machine with a populated `.env` and failed in CI, which
+    is the wrong way round for a credential.
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-key-not-real-0000000000")
+
+
 @pytest.fixture
 def store() -> Iterator[Store]:
     if not TEST_URL:
