@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from retail_support_agent.guardrails import (
@@ -187,3 +189,45 @@ class TestRefusedActionsAreBounded:
             )
             assert verdict.decision is Decision.DENIED_PERMISSION
         assert state.stop_reason() is not None
+
+
+class TestAPersonsTimeIsNotChargedToTheSession:
+    """Found by working a case end to end against the deployed demo.
+
+    An agent read the order, proposed the write, confirmed the arguments and escalated;
+    a supervisor decided; and by then the session was dead of a 180s limit meant to bound
+    a runaway model. `SessionTiming` already says a session must not look slower because
+    a person took longer to answer. The stop rule was not following its own rule.
+    """
+
+    def test_an_open_wait_does_not_age_the_session(self) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.001))
+        state.blocked_on_a_person()
+        time.sleep(0.01)
+        assert state.stop_reason() is None
+
+    def test_the_wait_is_still_excluded_once_it_ends(self) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.05))
+        state.blocked_on_a_person()
+        time.sleep(0.08)
+        state.released()
+        assert state.stop_reason() is None
+
+    def test_time_outside_a_wait_is_charged_as_before(self) -> None:
+        """The limit still bounds what it was meant to bound."""
+        state = SessionState(user_id="alice", limits=SessionLimits(timeout_seconds=0.01))
+        time.sleep(0.02)
+        assert state.stop_reason() is not None
+
+    def test_releasing_without_a_wait_does_nothing(self) -> None:
+        """Called at the top of every turn, so the no-wait case has to be free."""
+        state = SessionState(user_id="alice", limits=SessionLimits())
+        state.released()
+        assert state.held_seconds == 0.0
+
+    def test_a_second_block_does_not_restart_the_first(self) -> None:
+        state = SessionState(user_id="alice", limits=SessionLimits())
+        state.blocked_on_a_person()
+        first = state.held_since
+        state.blocked_on_a_person()
+        assert state.held_since == first
