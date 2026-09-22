@@ -22,6 +22,7 @@ worth doing at all.
 | `m8.2` | `97a68d8` (#52, #53, #54, #55, #56) | `sha256:5edefcde9a7c8300591aaac9010d53998ee9de165160840ec5e2cf1b2f74e44e` | 2026-09-21T16:56:26Z |
 | `m8.3` | `9915644` (#57, #58) | `sha256:66a87465797f0ccdd41bfc0f3259191a497647c64ac8a3ea4ffbee54821c6f57` | 2026-09-21T21:27:43Z |
 | `m8.4` | `e1915aa` (#59) | `sha256:7303763d87d8fe24224e7f0fa47fac2cb48357cdeeb080349c4695c5f2847999` | 2026-09-21T22:55:20Z |
+| `m8.5` | `e6eef14` (#61) | `sha256:e905c31134c16a8d46ce4a9526a6ea997fc72966bb6c4a187288fa9bb9c014e7` | 2026-09-21T23:43:00Z |
 
 The repository's ECR tags are immutable, so each digest is the only image that tag has
 ever named. `m7.3` and `m6.8.1` are retained for rollback.
@@ -269,6 +270,93 @@ closed through the page rather than overridden with `--force` - which also walke
 remaining unverified workflow, correctly: `Case 3 is rejected. The customer's session
 runs again.`
 
+## 5c. The one defect a browser could not have found
+
+Every defect in section 5a was found by a person using the interface. This one needed
+concurrent requests constructed on purpose, and it was the more serious of them.
+
+`RetailAgent.send` has always documented that calls for one session must be serialized.
+`Store.claim_session` enforces that across processes and renews rather than refuses for
+the owner that already holds the lease - which is what lets a process resume its own
+session, and grants every concurrent request inside it. `/chat` is a sync route, so
+FastAPI runs it in the threadpool and those requests are genuinely parallel.
+
+Two concurrent messages to one session, measured before anything was changed:
+
+```
+peak concurrent model calls: 2
+result: ('first message',  200, 'ok')
+result: ('second message', 200, 'ok')
+journaled: [('user', 'first message'), ('assistant', 'ok')]
+progress: steps=1
+```
+
+| Observed | What it means |
+|---|---|
+| Both callers got `200` | Both were told their message had been handled |
+| One user message missing from `messages` | `_journal` reads the next sequence number and then inserts. Two turns computed the same one and the loser's row was swallowed as a duplicate - a swallow written for a *resent* turn, eating a genuinely different message |
+| `steps=1` for two turns | Every stop condition undercounts, so concurrency was a way around all four limits - the hole `test_a_restart_cannot_reset_a_reached_limit` closes for restarts |
+
+The silent message loss is the part worth stating plainly: the system told a person their
+message had been dealt with and kept no record of it.
+
+#61 holds a per-session lock for the whole turn, taken before the agent is built so a
+refused request touches nothing on its way out. Refused rather than queued, with the same
+409 a second process gets: a caller cannot act on the difference between the two reasons
+a session is busy, and queueing would let one stack turns against a budget that is per
+session. The streaming route releases after its last event rather than when the route
+returns, including when the client hangs up. The lock is per session, so two sessions
+still run at the same time.
+
+The page's wording followed the cause. A 409 used to mean another process and the advice
+was to start a new session; the ordinary cause now is a second click before the first
+answer arrived, which clears in seconds.
+
+### Why `m8.5` was not walked in a browser
+
+The condition is not reachable from an ordinary page session. Gradio's `gr.State` is per
+page-load, so two tabs hold two different sessions and cannot collide. What can collide
+is an agent's case session, whose id is derived from the ticket and the agent precisely so
+that returning to a case continues it - and reproducing that needs a case created,
+assigned and opened in two tabs.
+
+Skipping the browser step here is a different judgement from the one section 5a records as
+wrong. Those four workflows had never been exercised by anything, and "the code was not
+touched" was being used as evidence that they worked. This condition was exercised
+directly, before and after, with the measurement above. What a browser pass would add is
+whether the page can produce the condition, and the answer is largely settled by how
+Gradio holds session state.
+
+### A test that was permissive on the machine holding the secret
+
+The first CI run of #61 failed where the local run had passed. `Settings()` requires a
+model key, `conftest` clears the real one, and `Settings()` reads `.env` - which exists on
+a development machine and not in CI. So the tests passed wherever a real credential was
+present and failed where none was, which is the wrong way round.
+
+Fixed as every other module does it, with a fake key set in the module, and verified by
+running the whole suite with `.env` moved aside rather than by pushing again to see.
+
+## 5d. `m8.5`
+
+No migration: run against a database the `m8.4` image had built, `m8.5`'s `migrate`
+reaches head without applying anything. Rollback from `m8.5` to `m8.4` is therefore the
+plain parameter change, with no schema step.
+
+| Check | Result |
+|---|---|
+| `ruff`, `ruff format --check`, `mypy` | clean, 93 source files |
+| `pytest` with `RSA_TEST_DATABASE_URL` | 1001 passed |
+| `scripts/run_access_eval.py` | 22/22 blocked, `access-v2` |
+| `migrate` from the image, on an `m8.4` database | head, nothing applied |
+| `api` from the image | `/health` answers; `SessionRegistry.begin_turn` and `end_turn` present in the artifact |
+| Deployed | `/health` reports `...:m8.5`, digest matching the local build |
+
+The instance took about six minutes to answer after the restart - the image pull, the
+migration check and the stack coming up. `demo.py status` reported `configured: m8.5` and
+`running: not reported` throughout, which is the pair of fields behaving as designed while
+a restart is in flight.
+
 ## 6. What this release does not establish
 
 - **Approval expiry and the streaming states.** A later pass walked assignment, working
@@ -280,7 +368,9 @@ runs again.`
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
   describe a variant rather than this application's token-derived identity control.
-- **Concurrency and load.** Unchanged and unmeasured.
+- **Load.** Throughput and behaviour under many sessions at once are still unmeasured.
+  Concurrency itself is no longer on this list as a correctness question: section 5c
+  records the defect it was hiding and the tests that now hold the rule.
 - **Rollback across a schema change on the deployed database.** `m8.4` engages it, and
   the sequence was validated locally against a database the previous image had built
   (section 5b). It has not been exercised on the deployed instance, and doing so would
@@ -288,11 +378,11 @@ runs again.`
 
 ## 7. Rollback
 
-Every M8 image through `m8.3` is still published, and so is `m7.3`. Rolling back to any of
-them is the documented parameter change and a restart:
+Every M8 image is still published, and so is `m7.3`. Rolling back from `m8.5` to `m8.4`
+is the documented parameter change and a restart, with no schema step between them:
 
 ```
-terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.3"
+terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.4"
 uv run python scripts/demo.py restart
 ```
 
@@ -308,6 +398,7 @@ docker run --rm -e RSA_DATABASE_URL="<the deployed database>" \
 Section 5b records that sequence being run in both directions against a database the
 previous image had built.
 
-That returns the deployment to a version with no access scope, no refusal audit trail and
-no audit page. It is a rollback of the application, not of a security control that exists
-independently of it.
+Going all the way back to `m7.3` returns the deployment to a version with no access scope,
+no refusal audit trail and no audit page - and, now, none of the eight fixes in section 5a
+or the one in 5c. It is a rollback of the application, not of a security control that
+exists independently of it.
