@@ -24,7 +24,7 @@ retail data; it does not process real payments or connect to a production order 
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
 
 M0 through M8 delivery records are available below. The AWS deployment is configured for
-image `m8.4`; it is operated on demand and is not continuously available. CI runs static
+image `m8.5`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 
@@ -156,12 +156,19 @@ assigning it, working it, escalating a write, deciding it and closing the case. 
 recorded in the [M8 release](docs/M8_RELEASE.md), and it found eight defects that no test
 in this repository could have found - two of them in earlier fixes for the same defects.
 
+A ninth was found by constructing concurrent requests rather than by using the interface:
+one session could run two turns at once inside a process, both callers were answered, one
+of their messages was dropped from the record, and the stop-condition counters advanced
+once for two turns. One session now runs one turn at a time, and a second message is
+refused with the same 409 a second process gets.
+
 Current validation limits include approval expiry and the intermediate streaming states,
-which are covered at the database and API levels but not by a browser workflow;
-concurrent-load measurements; and rollback across a schema change on the deployed
-instance, which was validated locally against a database the previous image had built but
-has not been exercised in the deployed environment. The user-data reconciliation verified
-deployment metadata, not the installed script or application behavior at runtime.
+which are covered at the database and API levels but not by a browser workflow; load, in
+the sense of throughput and many sessions at once; and rollback across a schema change on
+the deployed instance, which was validated locally against a database the previous image
+had built but has not been exercised in the deployed environment. The user-data
+reconciliation verified deployment metadata, not the installed script or application
+behavior at runtime.
 
 ## Documentation
 
