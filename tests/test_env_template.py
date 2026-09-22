@@ -77,6 +77,10 @@ def test_template_carries_no_secret_values() -> None:
         # Whether the output check runs. A boolean, and the template shows the default
         # so that turning it off is a visible edit rather than an absent line.
         "true",
+        # How many sessions a process keeps in memory. A count, not a secret, and
+        # prefilled because a deployment sizing its instance needs to see the number it
+        # is sizing against.
+        "32",
     }
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
         if not re.match(r"^[A-Z][A-Z0-9_]*=", line):
