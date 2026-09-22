@@ -28,6 +28,7 @@ import json
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterator, Mapping
 from typing import Annotated, Any, Literal
 
@@ -359,7 +360,17 @@ class SessionRegistry:
         self._hidden_fields = _csv_set(settings.scope_redact_fields)
         self._write_statuses = _csv_set(settings.scope_write_statuses) or None
         self._check_output = settings.scope_check_output
-        self._agents: dict[str, RetailAgent] = {}
+        # A bounded cache, in least-recently-used order, not a session table. Each entry
+        # holds its own copy of the retail domain - about 12 MB - and nothing evicted
+        # them, so every page load that sent a message cost that much for the life of the
+        # process. On a 2 GB instance a visitor could exhaust it by reloading, holding no
+        # permission and breaking no rule.
+        #
+        # Evicting is safe because it is not ending anything: the session's state is in
+        # the database, and `recover()` rebuilds it on the next message. That path is M2,
+        # and it is exercised by every restart.
+        self._capacity = max(1, settings.session_cache_size)
+        self._agents: OrderedDict[str, RetailAgent] = OrderedDict()
         # One lock per session, held for the whole turn. `claim_session` serializes
         # sessions across processes and, by design, renews rather than refuses for the
         # owner that already holds the lease - so inside one process it grants every
@@ -479,7 +490,9 @@ class SessionRegistry:
             )
             agent.recover()
             self._agents[session_id] = agent
+            self._evict_past_capacity()
 
+        self._agents.move_to_end(session_id)
         agent = self._agents[session_id]
         # Refresh the context on every turn: a cached agent would otherwise keep the
         # permissions it was built with, and a role revoked, an assignment released or an
@@ -523,10 +536,46 @@ class SessionRegistry:
         if exists and subject != identity.subject:
             raise SessionOwnershipError(session_id)
 
-    def reset(self, session_id: str) -> None:
+    def _evict_past_capacity(self) -> None:
+        """Drop least-recently-used sessions until the cache fits.
+
+        A session being driven right now is never evicted: its turn lock is held, and
+        dropping the agent under a running turn would leave that turn writing into an
+        object the next message cannot reach. If every entry is busy the cache is left
+        over capacity rather than corrupted - being briefly too large is a smaller
+        problem than dropping a session mid-turn.
+
+        The lease is released with the agent. Keeping it would leave this process
+        claiming a session it no longer holds in memory, which is exactly the state the
+        lease exists to describe.
+        """
+        while len(self._agents) > self._capacity:
+            evictable = next(
+                (
+                    session_id
+                    for session_id in self._agents
+                    if not self._is_running_a_turn(session_id)
+                ),
+                None,
+            )
+            if evictable is None:
+                return
+            self._forget(evictable)
+
+    def _is_running_a_turn(self, session_id: str) -> bool:
+        lock = self._turns.get(session_id)
+        return lock is not None and lock.locked()
+
+    def _forget(self, session_id: str) -> None:
+        """Drop one session from memory. The database keeps everything that matters."""
         self._agents.pop(session_id, None)
+        with self._turns_guard:
+            self._turns.pop(session_id, None)
         if self._store is not None:
             self._store.release_session(session_id, self._owner)
+
+    def reset(self, session_id: str) -> None:
+        self._forget(session_id)
 
     def reset_all(self) -> int:
         """Drop every session and return how many were dropped.
@@ -539,10 +588,8 @@ class SessionRegistry:
         none". Both are success, but they are different events for an operator.
         """
         count = len(self._agents)
-        if self._store is not None:
-            for session_id in self._agents:
-                self._store.release_session(session_id, self._owner)
-        self._agents.clear()
+        for session_id in list(self._agents):
+            self._forget(session_id)
         return count
 
     def active_sessions(self) -> int:

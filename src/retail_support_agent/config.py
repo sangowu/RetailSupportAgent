@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     # window, and one handling refunds may want a much shorter one.
     approval_ttl_seconds: float = Field(default=1800.0, validation_alias="RSA_APPROVAL_TTL_SECONDS")
 
+    # How many sessions this process keeps in memory. Each one holds its own copy of the
+    # retail database - measured at about 12 MB - and nothing was evicting them, so a
+    # visitor reloading the page enough times could exhaust a 2 GB instance without
+    # holding any permission. Sessions past the ceiling are dropped from memory, not
+    # ended: M2 rebuilds one from the database on its next message.
+    #
+    # The default suits the demo instance. A deployment with more memory can raise it;
+    # what it must not be is unbounded, which is what it was.
+    session_cache_size: int = Field(default=32, ge=1, validation_alias="RSA_SESSION_CACHE_SIZE")
+
     # The column slice: fields hidden from the model in every tool result. Comma
     # separated, empty to disable. The default hides the customer's email, which no tool
     # consumes as input. `payment_methods` is available but deliberately not default:
