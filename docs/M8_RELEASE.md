@@ -23,6 +23,7 @@ worth doing at all.
 | `m8.3` | `9915644` (#57, #58) | `sha256:66a87465797f0ccdd41bfc0f3259191a497647c64ac8a3ea4ffbee54821c6f57` | 2026-09-21T21:27:43Z |
 | `m8.4` | `e1915aa` (#59) | `sha256:7303763d87d8fe24224e7f0fa47fac2cb48357cdeeb080349c4695c5f2847999` | 2026-09-21T22:55:20Z |
 | `m8.5` | `e6eef14` (#61) | `sha256:e905c31134c16a8d46ce4a9526a6ea997fc72966bb6c4a187288fa9bb9c014e7` | 2026-09-21T23:43:00Z |
+| `m8.6` | `83e0d61` (#63) | `sha256:ab8c22111acaf9a71217bf0eaa737b1dfe65adfdcfd6389849165ec8c3cb9c06` | 2026-09-22T21:12:40Z |
 
 The repository's ECR tags are immutable, so each digest is the only image that tag has
 ever named. `m7.3` and `m6.8.1` are retained for rollback.
@@ -357,6 +358,67 @@ migration check and the stack coming up. `demo.py status` reported `configured: 
 `running: not reported` throughout, which is the pair of fields behaving as designed while
 a restart is in flight.
 
+## 5e. `m8.6`, and a defect found by measuring rather than by using
+
+The ninth defect was found by walking the interface and the tenth by constructing
+concurrent requests. This one was found by asking a question no interaction would have
+raised: what does one session cost, and what gives that memory back?
+
+Nothing did. Every session held its own copy of the retail domain in a dictionary that
+only ever grew, and the demo runs on a t3.small - 2 GB, shared with PostgreSQL, Caddy,
+the API and the UI. Measured on this machine, over the process's own baseline:
+
+| sessions | unbounded | capacity 8 |
+|---|---|---|
+| 20 | 514 MB | 428 MB |
+| 40 | 749 MB | 427 MB |
+| 60 | 983 MB | 466 MB |
+| 80 | 1218 MB | 489 MB |
+
+About 11.7 MB per session after the first. The reach is what makes it more than a
+housekeeping note: the page mints a fresh session id on sign-in and on `New session`, so
+any signed-in visitor could exhaust the instance by reloading the page - holding no
+permission, breaking no rule, and doing nothing an ordinary user would recognise as
+abuse. Both arms of that table were measured. Projecting the second from the first would
+have been the same mistake section 5a records twice.
+
+The fix is a bounded LRU cache, `RSA_SESSION_CACHE_SIZE`, default 32. Eviction ends
+nothing: a session's state is in the database and `recover()` rebuilds it on the next
+message, which is the M2 path every restart already exercises. A session in the middle of
+a turn is skipped rather than evicted, because dropping an agent under a running turn
+would release the lease that says this process is driving it and leave the turn writing
+into an object the next message cannot reach; being briefly over capacity is the smaller
+problem. The turn lock is removed with the agent, since a lock per caller-supplied
+session id, never cleaned up, is the same unbounded structure in miniature.
+
+Two attempts to state the mid-turn rule end to end both passed against a mutation that
+evicted running turns - the first because the held turn finished before the pressure
+requests arrived, the second because holding it longer than `CLAIM_TTL_SECONDS` let the
+lease expire on its own, so nothing was evicted at all. Holding a turn open past its lease
+is not a situation the design has, and a test that must construct one is testing the
+harness. The rule is asserted against the registry instead: no threads, no HTTP, no clock.
+The mutation now fails exactly one test.
+
+| Check | Result |
+|---|---|
+| `ruff`, `ruff format --check`, `mypy` | clean, 94 source files |
+| `pytest` with `RSA_TEST_DATABASE_URL` | 1013 passed |
+| `pytest` with `.env` moved aside | 1013 passed, reproducing CI's environment |
+| `scripts/run_access_eval.py` | 22/22 blocked, `access-v2` |
+| `migrate` from the image, on an `m8.5` database | head, nothing applied |
+| `api` from the image | `/health` answers; default ceiling `32` and `_evict_past_capacity` present in the artifact |
+| Deployed | `/health` reports `...:m8.6`, digest matching the local build |
+
+The second row exists because of section 5c: the suite was permissive on the machine
+holding the secret, and running it the way CI will run it is cheaper than pushing to find
+out. No deployment sets `RSA_SESSION_CACHE_SIZE`, so the ceiling in effect is the default.
+
+What is verified in the deployed environment is that the artifact carrying the ceiling is
+the one answering. Exercising the ceiling there would need a signed-in token, and the
+evidence for the behaviour itself is the artifact check and the registry tests above.
+`active_sessions` on `/health` is the standing observation: under ordinary use it must
+never exceed 32.
+
 ## 6. What this release does not establish
 
 - **Approval expiry and the streaming states.** A later pass walked assignment, working
@@ -368,9 +430,11 @@ a restart is in flight.
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
   describe a variant rather than this application's token-derived identity control.
-- **Load.** Throughput and behaviour under many sessions at once are still unmeasured.
-  Concurrency itself is no longer on this list as a correctness question: section 5c
-  records the defect it was hiding and the tests that now hold the rule.
+- **Load.** Throughput under many sessions at once is still unmeasured. Two questions
+  that were hiding inside "load" have left this list: concurrency as a correctness
+  question (section 5c) and per-session memory growth (section 5e), each with the defect
+  it was hiding and the tests that now hold the rule. What remains is genuinely
+  performance - latency and throughput under concurrent traffic, never measured.
 - **Rollback across a schema change on the deployed database.** `m8.4` engages it, and
   the sequence was validated locally against a database the previous image had built
   (section 5b). It has not been exercised on the deployed instance, and doing so would
@@ -378,11 +442,11 @@ a restart is in flight.
 
 ## 7. Rollback
 
-Every M8 image is still published, and so is `m7.3`. Rolling back from `m8.5` to `m8.4`
+Every M8 image is still published, and so is `m7.3`. Rolling back from `m8.6` to `m8.5`
 is the documented parameter change and a restart, with no schema step between them:
 
 ```
-terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.4"
+terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.5"
 uv run python scripts/demo.py restart
 ```
 
