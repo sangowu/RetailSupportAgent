@@ -533,12 +533,53 @@ environment file, and refuses names the layer derives itself. The test is writte
 `Settings` rather than a list of names, so the next setting added is either passed through
 or deliberately excluded, and cannot become a third thing that exists and cannot be set.
 
+## 5g. The streaming states, watched
+
+The last item section 6 carried as browser-unverified. Nothing here was wrong, which is
+worth saying plainly: the walk found no defect. What it produced is the observation
+itself, and one fact about the design that only watching could have established.
+
+Sampled from inside the page every 150 ms, against a local stack with authentication off,
+one turn that cancelled an order:
+
+| at | status line | the assistant's bubble |
+|---|---|---|
+| 1.6 s | `working…` | `working…` |
+| 1.7 s | `working…` | `asking the model…` |
+| 5.4 s | `working…` | `asking the model…` / `ran cancel_pending_order` |
+| 6.4 s | `working…` | … / `asking the model…` |
+| 10.4 s | `answered · tools called: cancel_pending_order` | the answer |
+
+The steps accumulate rather than replace one another, so at ten seconds the reader can
+see what the turn did rather than only what it is doing now. A refusal that does not end
+the turn appears the same way and the turn carries on:
+
+```
+asking the model…
+✗ refused · Order #W8770097 does not exist or its owner cannot be confirmed.
+asking the model…
+```
+
+### Two of the five step labels cannot be seen
+
+`STEP_LABELS` has five entries. Three of them - `thinking`, `tool`, `refused` - are the
+ones above. The other two, `held` and `approval`, are yielded by a turn that is ending:
+the graph has stopped, `reply` follows in the same instant, and the page replaces the
+progress bubble with the answer. There is no moment at which a reader could see them.
+
+This is not a defect and the labels are not dead: the events reach any consumer of
+`/chat/stream`, and the page states the same thing where it belongs, in the terminal
+status - `⚠ waiting for your confirmation`, which this walk saw at 7.0 s of an earlier
+turn, and `⚠ waiting for a supervisor`, which section 5f's walk saw. It is recorded
+because "the page renders five progress states" and "a person can see three of them" are
+different claims, and only one of them is true.
+
 ## 6. What this release does not establish
 
-- **The streaming states.** Assignment, working a case, escalation and closure were
-  walked in a browser in section 5a, and approval expiry in section 5f, which is where the
-  four defects above came from. What is left on this list is the intermediate streaming
-  states, still covered at the API level only.
+- **Nothing about the interface is left here.** Assignment, working a case, escalation
+  and closure were walked in section 5a, approval expiry in 5f and the streaming states
+  in 5g. Every user-visible state this project has has now been watched by a person at
+  least once, which was not true of any of them before M8.2.
 - **The benchmark under an enforcing scope.** The tau2 adapter still runs with a
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
