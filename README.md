@@ -24,7 +24,7 @@ retail data; it does not process real payments or connect to a production order 
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
 
 M0 through M8 delivery records are available below. The AWS deployment is configured for
-image `m8.6`; it is operated on demand and is not continuously available. CI runs static
+image `m8.7`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 
