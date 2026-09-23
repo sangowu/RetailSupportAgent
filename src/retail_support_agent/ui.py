@@ -41,6 +41,7 @@ from retail_support_agent.client import (
     Event,
     ForbiddenError,
     Reply,
+    SessionBusyError,
     Ticket,
     UnauthenticatedError,
     UnavailableError,
@@ -147,12 +148,23 @@ def situation_of_failure(exc: ApiError) -> Situation:
             advice="This account may not do that. Ask something else, or sign in as an "
             "account that holds the permission named above.",
         )
-    if isinstance(exc, ConflictError):
+    # Before the general conflict, because it is one: the only 409 that clears by
+    # waiting is a turn already running on this session.
+    if isinstance(exc, SessionBusyError):
         return Situation(
             label="✗ this session is busy",
             detail=str(exc),
             advice="A message on this session is still being answered. Wait for it to "
             "finish and send again; if nothing comes back, start a new session.",
+        )
+    if isinstance(exc, ConflictError):
+        return Situation(
+            label="✗ too late for that",
+            detail=str(exc),
+            advice="Nothing ran, and trying again will not change it: the case or the "
+            "request is not in the state this page was showing. Refresh to see where it "
+            "actually stands. An escalation that ran out of time has to be raised again "
+            "from the case it belongs to.",
         )
     if isinstance(exc, UnavailableError):
         return Situation(
@@ -378,10 +390,17 @@ CASE_COLUMNS = ["case", "state", "customer", "summary", "assignee", "resolution"
 
 def approvals_table(approvals: Sequence[Approval]) -> list[list[str]]:
     """One row per escalation. The arguments are shown whole: they are what is being
-    decided, and a summary would be the page deciding which parts matter."""
+    decided, and a summary would be the page deciding which parts matter.
+
+    `state` is a column rather than a filter. A request that ran out of time used to
+    leave this table silently, so the one place it had ever been visible showed no trace
+    of it: a supervisor could not tell a request they had missed from one that was never
+    raised.
+    """
     return [
         [
             str(approval.id),
+            approval.state,
             approval.tool_name,
             ", ".join(f"{k}={v!r}" for k, v in sorted(approval.arguments.items())),
             approval.session_id,
@@ -391,7 +410,7 @@ def approvals_table(approvals: Sequence[Approval]) -> list[list[str]]:
     ]
 
 
-APPROVAL_COLUMNS = ["request", "action", "arguments", "session", "expires"]
+APPROVAL_COLUMNS = ["request", "state", "action", "arguments", "session", "expires"]
 
 
 def audit_table(records: Sequence[AuditRecord]) -> list[list[str]]:
@@ -526,6 +545,11 @@ def build_demo() -> gr.Blocks:
                     approval_id = gr.Number(label="Request", precision=0, minimum=0, scale=1)
                     approve = gr.Button("Approve", variant="primary", scale=1)
                     reject = gr.Button("Reject", scale=1)
+                    # Its own control, because nothing pushes to this page. The queue was
+                    # read at sign-in and by the case panel's Refresh, which names cases:
+                    # a supervisor waiting for an escalation had to press a button in
+                    # another panel, for another thing, to find out one had arrived.
+                    approvals_refresh = gr.Button("Refresh", scale=1)
                 approvals_message = gr.Markdown("")
 
             # Loaded on demand rather than with every refresh: fetching it on every page
@@ -811,6 +835,42 @@ def build_demo() -> gr.Blocks:
                 "your own. What you do here is recorded against your account.",
             )
 
+        def do_refresh_approvals(
+            visitor: Visitor, history: list[dict[str, Any]]
+        ) -> tuple[Any, ...]:
+            """Re-read the queue and say what is in it.
+
+            The count is stated because an empty table says two things at once - nothing
+            is waiting, and the fetch failed - and a supervisor cannot tell which by
+            looking at it.
+            """
+            if not visitor.signed_in:
+                return _signed_out("**Sign in first.**")
+            visitor, failure = with_cases(visitor)
+            if failure is not None and failure.signed_out:
+                return _signed_out(render(failure))
+            if failure is not None:
+                return _stay(
+                    visitor,
+                    history,
+                    "",
+                    Situation(label="answered"),
+                    approvals_note=render(failure),
+                )
+            waiting = sum(1 for approval in visitor.approvals if approval.decidable)
+            lapsed = len(visitor.approvals) - waiting
+            note = (
+                "**Nothing is waiting for a decision.**"
+                if waiting == 0
+                else f"**{waiting} waiting for a decision.**"
+            )
+            if lapsed:
+                note += (
+                    f" {lapsed} ran out of time with no decision and cannot be decided now; "
+                    "the agent has to raise the action again."
+                )
+            return _stay(visitor, history, "", Situation(label="answered"), approvals_note=note)
+
         def do_decide(
             visitor: Visitor,
             history: list[dict[str, Any]],
@@ -1064,6 +1124,7 @@ def build_demo() -> gr.Blocks:
         approve.click(
             lambda v, h, n: do_decide(v, h, n, True), [visitor_state, chatbot, approval_id], outputs
         )
+        approvals_refresh.click(do_refresh_approvals, [visitor_state, chatbot], outputs)
         reject.click(
             lambda v, h, n: do_decide(v, h, n, False),
             [visitor_state, chatbot, approval_id],

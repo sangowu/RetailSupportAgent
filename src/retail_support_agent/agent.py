@@ -180,6 +180,9 @@ class RetailAgent:
         self._subject: str | None = None
         self._ticket_id: int | None = None
         self._approval_ttl = approval_ttl_seconds
+        # Requests already said to have run out of time, so the session is told once
+        # rather than at the top of every turn for the next hour.
+        self._announced_timeouts: set[int] = set()
         if self._store is not None and self._session_id is not None:
             self._store.ensure_session(self._session_id, session.user_id)
         self._guard = WriteGuard(domain.tool_names(), domain.order_owner, domain.order_status)
@@ -233,6 +236,87 @@ class RetailAgent:
         if self._session.acting_for_other and self._store is not None and self._session_id:
             self._session.approved_fingerprints = self._store.approved_fingerprints(
                 self._session_id
+            )
+            self._note_timed_out_requests()
+            self._note_approved_but_not_run()
+
+    def _note_timed_out_requests(self) -> None:
+        """Tell the session about a request whose window closed with no decision.
+
+        Nothing happens when an approval expires: the row stays pending and the deadline
+        simply passes. Until this, the session went on as though the request were still
+        waiting - asked for an update, it answered that the cancellation was pending a
+        supervisor's approval, about a request no supervisor could see or decide - and
+        the work stopped there for good, with neither side told.
+
+        Said once per request, and in the conversation rather than as a state flag,
+        because the next thing to do is a judgement: raise it again, or tell the customer
+        it did not happen. Recovery re-derives it from the same rows, so a rebuilt
+        session is not silent about it either.
+        """
+        if self._store is None or self._session_id is None:
+            return
+        for row in self._store.timed_out_approvals(self._session_id):
+            request_id = int(row.id)
+            if request_id in self._announced_timeouts:
+                continue
+            self._announced_timeouts.add(request_id)
+            arguments = ", ".join(f"{k}={v!r}" for k, v in sorted(dict(row.arguments).items()))
+            self._messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"The request for approval to run {row.tool_name} ({arguments}) ran "
+                        "out of time and nobody decided it. Nothing is waiting on it now, "
+                        "and it cannot be approved any more. If the action is still needed, "
+                        "propose it again, which raises a new request; otherwise say plainly "
+                        "that it did not happen."
+                    ),
+                }
+            )
+
+    def _note_approved_but_not_run(self) -> None:
+        """Tell the session about a decision that was granted and never acted on.
+
+        Approving does not run anything. It records that one argument set may run, and
+        the action still has to be proposed again - so between the decision and the next
+        tool call there is a gap in which the work is authorized and not done.
+
+        Walked in a browser, that gap produced the worst answer this project has
+        recorded: told the request was approved, the session reported the order
+        cancelled and a refund on its way. Nothing had run. `operations` was empty, the
+        audit trail held no `write_executed`, and the customer would have been told their
+        order was cancelled when it was not.
+
+        Unlike a request that ran out of time, this is a standing condition rather than
+        an event: it holds until the action runs or the decision expires, so it is said
+        on every turn it is still true.
+        """
+        if self._store is None or self._session_id is None:
+            return
+        approved = self._store.approved_requests(self._session_id)
+        if not approved:
+            return
+        done = {
+            ProposedCall(op.tool_name, dict(op.arguments)).fingerprint
+            for op in self._store.operations(self._session_id)
+            if op.status == "succeeded"
+        }
+        for row in approved:
+            if row.fingerprint in done:
+                continue
+            arguments = ", ".join(f"{k}={v!r}" for k, v in sorted(dict(row.arguments).items()))
+            self._messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"A supervisor approved running {row.tool_name} ({arguments}), and it "
+                        "has not run yet. Approval authorizes the action; it does not perform "
+                        "it. If it is still what the customer asked for, call the tool now "
+                        "with exactly those arguments. Do not say it is done until the tool "
+                        "has returned a result."
+                    ),
+                }
             )
 
     # ---- graph wiring ---------------------------------------------------

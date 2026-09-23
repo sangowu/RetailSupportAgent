@@ -17,6 +17,7 @@ import pytest
 from retail_support_agent.auth import ROLE_PERMISSIONS, Permission
 from retail_support_agent.client import Account, Approval, Ticket
 from retail_support_agent.ui import (
+    APPROVAL_COLUMNS,
     ASSIGN,
     CASE_COLUMNS,
     CASES,
@@ -176,7 +177,11 @@ class TestWhatTheTablesShow:
 
     def test_an_approval_shows_every_argument(self) -> None:
         """The arguments are what is being decided. A summary would be the page choosing
-        which parts of a write a supervisor gets to see."""
+        which parts of a write a supervisor gets to see.
+
+        Read by column name, not by position: a column added in the middle would
+        otherwise move every assertion under it without failing one.
+        """
         rows = approvals_table(
             [
                 Approval(
@@ -188,9 +193,52 @@ class TestWhatTheTablesShow:
                 )
             ]
         )
-        assert rows[0][1] == "modify_pending_order_payment"
-        assert "#W001" in rows[0][2]
-        assert "gift_card_9" in rows[0][2]
+        action = APPROVAL_COLUMNS.index("action")
+        arguments = APPROVAL_COLUMNS.index("arguments")
+        assert rows[0][action] == "modify_pending_order_payment"
+        assert "#W001" in rows[0][arguments]
+        assert "gift_card_9" in rows[0][arguments]
+
+    def test_a_request_that_ran_out_of_time_says_so_instead_of_vanishing(self) -> None:
+        """It used to leave the table with nothing said, so the one screen it had ever
+        appeared on kept no trace of it: a supervisor could not tell a request they had
+        missed from one that was never raised."""
+        rows = approvals_table(
+            [
+                Approval(
+                    id=2,
+                    session_id="t4-abc",
+                    tool_name="cancel_pending_order",
+                    arguments={"order_id": "#W001"},
+                    expires_at="2026-09-10T12:00:00",
+                    state="timed out",
+                ),
+                Approval(
+                    id=3,
+                    session_id="t4-abc",
+                    tool_name="cancel_pending_order",
+                    arguments={"order_id": "#W002"},
+                    expires_at="2026-09-10T13:00:00",
+                ),
+            ]
+        )
+        state = APPROVAL_COLUMNS.index("state")
+        assert [row[state] for row in rows] == ["timed out", "waiting"]
+
+    def test_every_column_the_table_names_is_filled(self) -> None:
+        """A header with no value under it is a column the page forgot to render."""
+        rows = approvals_table(
+            [
+                Approval(
+                    id=2,
+                    session_id="t4-abc",
+                    tool_name="cancel_pending_order",
+                    arguments={"order_id": "#W001"},
+                    expires_at="2026-09-10T12:00:00",
+                )
+            ]
+        )
+        assert len(rows[0]) == len(APPROVAL_COLUMNS)
 
 
 class TestPickingSomebodyToAssignTo:

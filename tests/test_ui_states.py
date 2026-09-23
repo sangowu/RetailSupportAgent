@@ -22,6 +22,7 @@ from retail_support_agent.client import (
     ConflictError,
     ForbiddenError,
     Reply,
+    SessionBusyError,
     UnauthenticatedError,
     UnavailableError,
 )
@@ -84,7 +85,11 @@ class TestEveryFailureIsRendered:
         [
             (UnauthenticatedError("expired"), "Sign in again"),
             (ForbiddenError("Missing permission: ticket:read"), "permission"),
-            (ConflictError("already handling a message"), "Wait for it to finish"),
+            (SessionBusyError("already handling a message"), "Wait for it to finish"),
+            (
+                ConflictError("That request expired and must be raised again."),
+                "trying again will not change it",
+            ),
             (UnavailableError("boom"), "not your account"),
         ],
     )
@@ -100,6 +105,39 @@ class TestEveryFailureIsRendered:
             if situation_of_failure(cls("x")).signed_out
         }
         assert signing_out == {"UnauthenticatedError"}
+
+
+class TestTheTwoConflictsDoNotShareAnAnswer:
+    """A supervisor who approved an escalation after its window ran out was told the
+    session was busy and to send again once it finished. Nothing was busy, nothing was
+    coming, and sending again would never have worked.
+
+    The status and the service's sentence are the same shape for both, so the page cannot
+    tell them apart by looking: the client decides, and these pin what each becomes.
+    """
+
+    def test_an_expired_request_is_not_described_as_busy(self) -> None:
+        situation = situation_of_failure(
+            ConflictError("That request expired and must be raised again.")
+        )
+        assert "busy" not in situation.label
+        assert "busy" not in situation.advice
+        assert "expired" in situation.detail
+
+    def test_no_permanent_conflict_tells_the_reader_to_wait(self) -> None:
+        advice = situation_of_failure(ConflictError("That ticket is already closed.")).advice
+        assert "Wait" not in advice
+
+    def test_a_busy_session_still_says_to_wait(self) -> None:
+        """The advice was right for the one conflict it was written for, and stays."""
+        assert "Wait for it to finish" in situation_of_failure(SessionBusyError("busy")).advice
+
+    def test_being_a_subclass_does_not_make_them_the_same_state(self) -> None:
+        """`SessionBusyError` is a `ConflictError`, so a check in the wrong order renders
+        both as one. Order is the whole fix, and nothing else in the file pins it."""
+        busy = situation_of_failure(SessionBusyError("busy"))
+        gone = situation_of_failure(ConflictError("expired"))
+        assert busy.label != gone.label
 
 
 class TestTheBoxIsPartOfTheState:
