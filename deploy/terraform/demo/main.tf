@@ -149,6 +149,11 @@ locals {
     auth_issuer        = data.terraform_remote_state.base.outputs.cognito_issuer
     auth_audience      = data.terraform_remote_state.base.outputs.cognito_client_id
 
+    // Settings the deployment chooses, as lines for the environment file. Empty by
+    // default, which leaves every one of them at the application's own default rather
+    // than restating it here where the two could drift.
+    settings = join("\n", [for name, value in var.settings : "${name}=${value}"])
+
     // compose.yaml and the Caddyfile are absent: they are extracted from the image at
     // boot, so that rolling back moves the stack definition with the code.
     rsa_start        = filebase64("${path.module}/../../instance/rsa-start.sh")

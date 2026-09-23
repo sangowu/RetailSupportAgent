@@ -13,7 +13,7 @@ import base64
 import gzip
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import yaml
@@ -53,6 +53,36 @@ def instance_compose() -> dict[str, Any]:
     return load(INSTANCE / "compose.yaml")
 
 
+def names_given(compose: dict[str, Any], service: str) -> set[str]:
+    """The environment variable names one service is given.
+
+    Compose accepts two shapes and this project uses both: a mapping where the value is
+    written here, and a list, whose bare entries are passed through from the environment
+    only when it sets them. Reading names out of either keeps "both files give the same
+    variables" a statement about the variables rather than about the YAML.
+    """
+    given = compose["services"][service]["environment"]
+    if isinstance(given, dict):
+        return set(given)
+    return {str(entry).split("=", 1)[0] for entry in given}
+
+
+def value_given(compose: dict[str, Any], service: str, name: str) -> str | None:
+    """What one service is given for `name`, or None when it is passed through.
+
+    A bare list entry has no value here by design: compose takes it from the environment
+    and leaves it out when nothing sets it.
+    """
+    given = compose["services"][service]["environment"]
+    if isinstance(given, dict):
+        return None if given.get(name) is None else str(given[name])
+    for entry in given:
+        head, sep, tail = str(entry).partition("=")
+        if head == name:
+            return tail if sep else None
+    raise KeyError(name)
+
+
 class TestTheTwoComposeFiles:
     """Development builds the image; the instance pulls it. Everything else must match.
 
@@ -78,9 +108,7 @@ class TestTheTwoComposeFiles:
         self, service: str, local_compose: dict[str, Any], instance_compose: dict[str, Any]
     ) -> None:
         """The names, not the values: the database host is the same, the key is not."""
-        assert set(local_compose["services"][service]["environment"]) == set(
-            instance_compose["services"][service]["environment"]
-        )
+        assert names_given(local_compose, service) == names_given(instance_compose, service)
 
     @pytest.mark.parametrize("service", ("db", "api", "ui"))
     def test_each_long_running_service_has_a_health_check(
@@ -109,7 +137,8 @@ class TestTheTwoComposeFiles:
         it in the repository, and a placeholder that looks like a key is worse than none.
         """
         for service in ("migrate", "seed", "api", "ui"):
-            value = instance_compose["services"][service]["environment"]["DASHSCOPE_API_KEY"]
+            value = value_given(instance_compose, service, "DASHSCOPE_API_KEY")
+            assert value is not None
             assert value.startswith("${") and value.endswith("}")
 
     def test_the_instance_file_requires_an_image_rather_than_defaulting(
@@ -207,6 +236,85 @@ class TestTheCloudInitTemplate:
         assert "Requires=" not in unit
 
 
+class TestASettingCanBeSetWhereTheServiceRuns:
+    """ "Configurable" has to mean configurable where it runs.
+
+    Every one of these reads an environment variable, and the compose files name every
+    variable the container is given - so a setting missing from them could be set on a
+    developer's machine and nowhere else. `RSA_APPROVAL_TTL_SECONDS` was documented in
+    `config.py` as required to be configurable, and on the instance it was not: the
+    architecture document's wording and the deployment disagreed, and the deployment won.
+
+    The test is written against `Settings` rather than a list of names, so a setting added
+    later is either passed through or deliberately excluded, and cannot quietly become a
+    third thing.
+    """
+
+    # Read by the evaluation loop and the benchmark harness, which run from a checkout
+    # and never inside this stack.
+    EVALUATION_ONLY: ClassVar[set[str]] = {
+        "RSA_JUDGE_BASE_URL",
+        "RSA_JUDGE_API_KEY",
+        "RSA_JUDGE_MODEL",
+        "RSA_AGENT_BASE_URL",
+        "RSA_AGENT_API_KEY",
+        "RSA_USER_BASE_URL",
+        "RSA_USER_API_KEY",
+        "RSA_USER_MODEL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_HOST",
+    }
+
+    @staticmethod
+    def aliases() -> set[str]:
+        from retail_support_agent.config import Settings
+
+        found = set()
+        for field in Settings.model_fields.values():
+            alias = field.validation_alias
+            if isinstance(alias, str):
+                found.add(alias)
+        return found
+
+    @pytest.mark.parametrize("which", ("local", "instance"))
+    def test_every_setting_the_service_reads_can_be_given_to_it(
+        self, which: str, local_compose: dict[str, Any], instance_compose: dict[str, Any]
+    ) -> None:
+        compose = local_compose if which == "local" else instance_compose
+        given = names_given(compose, "api")
+        missing = self.aliases() - given - self.EVALUATION_ONLY
+        assert missing == set(), f"the API cannot be given: {sorted(missing)}"
+
+    def test_the_pass_through_entries_carry_no_value(self, local_compose: dict[str, Any]) -> None:
+        """A value here would be a second copy of the application's default, and the two
+        would drift. Bare, compose omits the variable entirely when nothing sets it."""
+        entries = local_compose["services"]["api"]["environment"]
+        bare = {entry for entry in entries if "=" not in str(entry)}
+        assert "RSA_APPROVAL_TTL_SECONDS" in bare
+        assert "RSA_SESSION_CACHE_SIZE" in bare
+
+    def test_the_layer_refuses_to_have_its_own_values_overridden(self) -> None:
+        """The demo layer derives the database URL, the image and the pool. A setting
+        passed in that named one of those would disagree with what the layer wrote, and
+        which won would depend on the order compose read them in."""
+        variables = (REPO / "deploy" / "terraform" / "demo" / "variables.tf").read_text(
+            encoding="utf-8"
+        )
+        block = variables[variables.index('variable "settings"') :]
+        for derived in ("RSA_IMAGE", "RSA_AUTH_ISSUER", "RSA_DATABASE_URL", "RSA_IDENTITIES"):
+            assert derived in block
+
+    def test_the_settings_reach_the_file_the_units_read(self) -> None:
+        """systemd gives `rsa-start` this file's contents, and compose resolves a bare
+        entry from there. A value written anywhere else would never reach the container."""
+        template = TEMPLATE.read_text(encoding="utf-8")
+        start = template.index("cat > /etc/rsa-demo.env")
+        first_line_end = template.index(chr(10), start)
+        block = template[start : template.index("ENVFILE", first_line_end)]
+        assert "${settings}" in block
+
+
 class TestTheShellScripts:
     @pytest.mark.parametrize(
         "name",
@@ -278,7 +386,7 @@ class TestAVersionBringsItsOwnStack:
     ) -> None:
         """A rollback that cannot be checked from the running thing is a rollback nobody
         can confirm happened."""
-        assert "RSA_IMAGE" in instance_compose["services"]["api"]["environment"]
+        assert "RSA_IMAGE" in names_given(instance_compose, "api")
 
     def test_the_running_image_is_written_where_compose_reads_it_for_down_too(self) -> None:
         """ExecStop runs without ExecStart's environment, and `docker compose down` still

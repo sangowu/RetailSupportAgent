@@ -86,3 +86,43 @@ variable "acme_email" {
   EOT
   type        = string
 }
+
+variable "settings" {
+  description = <<-EOT
+    Application settings for the running service, written into the instance's environment
+    file and passed through to the API container.
+
+    This exists because "configurable" has to mean configurable where the service runs.
+    The approval window, the session cache ceiling and the access scope all read an
+    environment variable and none of them could be set on the instance: the compose file
+    names every variable the container is given, and they were not in it. An operator's
+    only option was to edit a file baked into the image.
+
+    Names only, values as strings, e.g. `{ RSA_APPROVAL_TTL_SECONDS = "3600" }`. Leave it
+    empty to run every setting at the application's own default, which is what the demo
+    does.
+  EOT
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.settings) : startswith(name, "RSA_")])
+    error_message = "Only RSA_ settings belong here. Anything else is a variable this file does not own."
+  }
+
+  validation {
+    // The layer derives these from the base state and the image tag. Accepting an
+    // override here would let a value set in two places disagree, and the one that won
+    // would depend on the order compose read them in.
+    condition = length(setintersection(keys(var.settings), [
+      "RSA_DATABASE_URL",
+      "RSA_IMAGE",
+      "RSA_AUTH_ISSUER",
+      "RSA_AUTH_AUDIENCE",
+      "RSA_IDENTITIES",
+      "RSA_REGION",
+      "RSA_REGISTRY",
+    ])) == 0
+    error_message = "That setting is derived by this layer. Change it where it is derived, not here."
+  }
+}

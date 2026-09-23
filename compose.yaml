@@ -67,14 +67,32 @@ services:
     container_name: rsa-api
     command: ["api"]
     environment:
-      RSA_DATABASE_URL: postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
+      - RSA_DATABASE_URL=postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:?set DASHSCOPE_API_KEY in the environment}
       # Unset here, so the local stack keeps the fixed-identity behaviour and the whole
       # existing suite still passes. Setting both turns authentication on for every route.
-      RSA_AUTH_ISSUER: ${RSA_AUTH_ISSUER:-}
-      RSA_AUTH_AUDIENCE: ${RSA_AUTH_AUDIENCE:-}
+      - RSA_AUTH_ISSUER=${RSA_AUTH_ISSUER:-}
+      - RSA_AUTH_AUDIENCE=${RSA_AUTH_AUDIENCE:-}
       # Reported by /health, so which version is answering is readable rather than assumed.
-      RSA_IMAGE: ${RSA_IMAGE:-retail-support-agent:local}
+      - RSA_IMAGE=${RSA_IMAGE:-retail-support-agent:local}
+      # Settings a deployment may need to change, passed through only when the
+      # environment sets one. A bare name resolves from the shell or from the project
+      # `.env`; unset, compose leaves it out of the container entirely, so the
+      # application's own default stays the single source of truth and this file never
+      # holds a second copy of it to drift from.
+      #
+      # They are listed because nothing else would carry them: this file names every
+      # variable the service is given, so a setting absent here is one the deployment
+      # cannot set at all. `RSA_APPROVAL_TTL_SECONDS` was documented as configurable
+      # and reachable nowhere but a developer's own machine.
+      - RSA_APPROVAL_TTL_SECONDS
+      - RSA_SESSION_CACHE_SIZE
+      - RSA_SCOPE_REDACT_FIELDS
+      - RSA_SCOPE_WRITE_STATUSES
+      - RSA_SCOPE_CHECK_OUTPUT
+      - RSA_AUTH_JWKS_URL
+      - RSA_AUTH_TOKEN_USE
+      - RSA_OPENAI_BASE_URL
     ports:
       - "${RSA_BIND:-127.0.0.1}:8000:8000"
     depends_on:
