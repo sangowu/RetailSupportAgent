@@ -174,6 +174,10 @@ class PendingApproval(BaseModel):
     arguments: dict[str, Any]
     requested_by: str
     expires_at: str
+    # "waiting" for one that can still be decided, "timed out" for one whose window
+    # closed with nobody deciding it. The second is listed but not decidable: the record
+    # of what happened to it is the point, and deciding it answers 409.
+    state: str = "waiting"
 
 
 class SessionTimingResponse(BaseModel):
@@ -990,12 +994,18 @@ def create_app(
 
     @app.get("/approvals", response_model=list[PendingApproval])
     def list_approvals(identity: CurrentIdentity) -> list[PendingApproval]:
-        """Escalations waiting for a decision. Expired ones are not listed: deciding one
-        would produce an approval that authorizes nothing."""
+        """Escalations waiting for a decision, and recent ones that ran out of time.
+
+        An expired request is still not decidable - deciding one would produce an
+        approval that authorizes nothing - but it is listed. Leaving it out meant a
+        request could be raised, wait, lapse and vanish without ever appearing to the
+        person it was raised for, which is what a browser walk of the expiry found.
+        """
         require(identity, Permission.ESCALATION_DECIDE)
         store = need_store()
-        return [
-            PendingApproval(
+
+        def described(row: Any, state: str) -> PendingApproval:
+            return PendingApproval(
                 id=int(row.id),
                 session_id=row.session_id,
                 ticket_id=row.ticket_id,
@@ -1003,9 +1013,12 @@ def create_app(
                 arguments=dict(row.arguments),
                 requested_by=row.requested_by,
                 expires_at=row.expires_at.isoformat(),
+                state=state,
             )
-            for row in store.pending_approvals()
-        ]
+
+        waiting = [described(row, "waiting") for row in store.pending_approvals()]
+        # After the decidable ones: what can still be acted on comes first.
+        return waiting + [described(row, "timed out") for row in store.timed_out_approvals()]
 
     @app.post("/approvals/{approval_id}/decision")
     def decide_approval(

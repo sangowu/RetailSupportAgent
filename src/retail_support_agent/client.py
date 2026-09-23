@@ -48,11 +48,26 @@ class ForbiddenError(ApiError):
 
 
 class ConflictError(ApiError):
-    """409. This session is already running a turn.
+    """409. The request was refused because the thing it names has moved on.
 
-    Its own class since M7.2, because it is the one failure the caller resolves by doing
+    Its own class since M7.2, because it is the failure the caller resolves by doing
     something different rather than by fixing the request, and a page that cannot tell it
     from a malformed request cannot say so.
+
+    Six conditions answer 409, and they do not share an answer: a case that is no longer
+    open, one already closed, an escalation that ran out of time, one already decided -
+    and, separately, a session already running a turn, which is `SessionBusyError` below.
+    The first four are permanent for that request. Waiting does not help, and a page that
+    tells the reader to wait is telling them to do nothing, for ever.
+    """
+
+
+class SessionBusyError(ConflictError):
+    """409 from a chat route: this session is already running a turn.
+
+    The one conflict that does clear on its own, which is why it is told apart here
+    rather than in the page: the class is what the client decided the failure means, and
+    two places deciding that is one too many.
 
     Two causes, and the service deliberately does not distinguish them: another process
     holds the session's lease (M2), or another request in this process is inside the
@@ -116,7 +131,7 @@ class Ticket:
 
 @dataclass(frozen=True)
 class Approval:
-    """One escalated write waiting for a decision."""
+    """One escalated write: waiting for a decision, or past the window with none made."""
 
     id: int
     session_id: str
@@ -125,6 +140,13 @@ class Approval:
     requested_by: str = ""
     ticket_id: int | None = None
     expires_at: str = ""
+    # "waiting" or "timed out". Defaulted for a service that predates the field, where
+    # every row listed was one that could still be decided.
+    state: str = "waiting"
+
+    @property
+    def decidable(self) -> bool:
+        return self.state == "waiting"
 
 
 @dataclass(frozen=True)
@@ -194,6 +216,7 @@ class Api:
             "/chat",
             token=token,
             payload={"session_id": session_id, "message": message},
+            conflict=SessionBusyError,
         )
         return Reply(
             reply=str(body.get("reply", "")),
@@ -227,7 +250,7 @@ class Api:
         except urllib.error.HTTPError as exc:
             # `from None`: the chained exception holds the request, whose headers hold
             # the bearer token.
-            raise _refusal(exc) from None
+            raise _refusal(exc, SessionBusyError) from None
         except Exception:
             raise UnavailableError("The service is not answering.") from None
         return _events(response)
@@ -336,11 +359,16 @@ class Api:
         *,
         token: str | None,
         payload: Mapping[str, Any] | None = None,
+        conflict: type[ConflictError] = ConflictError,
     ) -> Mapping[str, Any]:
-        body = self._raw(self._request(method, path, token=token, payload=payload))
+        body = self._raw(
+            self._request(method, path, token=token, payload=payload), conflict=conflict
+        )
         return body if isinstance(body, dict) else {}
 
-    def _raw(self, request: urllib.request.Request) -> Any:
+    def _raw(
+        self, request: urllib.request.Request, conflict: type[ConflictError] = ConflictError
+    ) -> Any:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
@@ -348,7 +376,7 @@ class Api:
         except urllib.error.HTTPError as exc:
             # `from None`: the chained exception holds `request`, and `request.headers`
             # holds the bearer token. A traceback that reached a log would carry it.
-            raise _refusal(exc) from None
+            raise _refusal(exc, conflict) from None
         except ApiError:
             raise
         except Exception:
@@ -399,6 +427,7 @@ def _approval(body: Mapping[str, Any]) -> Approval:
         requested_by=str(body.get("requested_by", "")),
         ticket_id=body.get("ticket_id"),
         expires_at=str(body.get("expires_at", "")),
+        state=str(body.get("state", "waiting")),
     )
 
 
@@ -452,8 +481,15 @@ def _event(raw: str) -> Event:
     )
 
 
-def _refusal(exc: urllib.error.HTTPError) -> ApiError:
-    """Map a status to the exception whose answer is different."""
+def _refusal(
+    exc: urllib.error.HTTPError, conflict: type[ConflictError] = ConflictError
+) -> ApiError:
+    """Map a status to the exception whose answer is different.
+
+    `conflict` is what a 409 means on the route being called. It is a parameter because
+    the route is the only thing that knows: the status is the same either way, and the
+    service's sentence is written for a person, not for a client to match on.
+    """
     try:
         detail = str(json.loads(exc.read().decode("utf-8")).get("detail", ""))
     except Exception:
@@ -464,7 +500,7 @@ def _refusal(exc: urllib.error.HTTPError) -> ApiError:
     if exc.code == 403:
         return ForbiddenError(detail or "This account may not do that.")
     if exc.code == 409:
-        return ConflictError(detail or "That session is being used by another process.")
+        return conflict(detail or "That session is being used by another process.")
     if exc.code == 422:
         return ApiError(detail or "The service rejected that request.")
     return UnavailableError(detail or f"The service failed ({exc.code}).")

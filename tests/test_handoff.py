@@ -117,9 +117,13 @@ class ScriptedModel:
     def __init__(self, *responses: Any) -> None:
         self.responses = list(responses)
         self.calls = 0
+        # What each call was given. A test about what the session knows has to read the
+        # context, not the reply: the reply is whatever this class was told to say.
+        self.seen: list[list[dict[str, Any]]] = []
 
     def __call__(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
         self.calls += 1
+        self.seen.append([dict(message) for message in messages])
         if not self.responses:
             return _message(content="(nothing further)")
         return self.responses.pop(0)
@@ -505,6 +509,222 @@ class TestApprovalExpiry:
         row = store.approval(approval_id)
         assert row is not None
         assert (row.expires_at - row.created_at).total_seconds() == pytest.approx(0.5, abs=0.05)
+
+
+class TestARequestThatRanOutOfTimeIsNotSilent:
+    """Nothing happens when an approval's window closes.
+
+    The row stays `pending` and the deadline passes, so "it ran out of time" is derived
+    rather than stored - and, until this, derived nowhere anybody could see. Walked in a
+    browser, the whole path went quiet: the request left the supervisor's queue with
+    nothing said, and the agent's session, asked for an update, answered that the
+    cancellation was pending a supervisor's approval. It was not pending. Nobody could
+    see it, nobody could decide it, and the work stopped there for good.
+    """
+
+    def test_it_is_reported_as_having_run_out_of_time(self, store: Store) -> None:
+        session_id = new_session(store)
+        store.open_approval(session_id, CANCEL, requested_by="agent-1", ttl_seconds=-1.0)
+        timed_out = store.timed_out_approvals(session_id)
+        assert [row.tool_name for row in timed_out] == ["cancel_pending_order"]
+
+    def test_one_still_inside_its_window_is_not(self, store: Store) -> None:
+        session_id = new_session(store)
+        store.open_approval(session_id, CANCEL, requested_by="agent-1", ttl_seconds=600.0)
+        assert store.timed_out_approvals(session_id) == []
+
+    def test_a_decided_request_never_ran_out_of_time(self, store: Store) -> None:
+        """Rejected then left to sit is not the same event, and reporting it as one would
+        tell an agent to raise again something a supervisor deliberately refused."""
+        session_id = new_session(store)
+        approval_id = store.open_approval(session_id, CANCEL, requested_by="agent-1")
+        store.decide_approval(approval_id, approve=False, decided_by="boss")
+        assert store.timed_out_approvals(session_id) == []
+
+    def test_it_is_scoped_to_the_session_that_asked(self, store: Store) -> None:
+        mine = new_session(store)
+        theirs = new_session(store)
+        store.open_approval(theirs, CANCEL, requested_by="agent-2", ttl_seconds=-1.0)
+        assert store.timed_out_approvals(mine) == []
+
+    def test_an_old_one_stops_being_news(self, store: Store) -> None:
+        """The window answers "what happened to the request I was waiting on", not "every
+        escalation that ever lapsed"."""
+        session_id = new_session(store)
+        store.open_approval(session_id, CANCEL, requested_by="agent-1", ttl_seconds=-7200.0)
+        assert store.timed_out_approvals(session_id) == []
+        assert len(store.timed_out_approvals(session_id, within_seconds=86400.0)) == 1
+
+    @pytest.mark.parametrize("route", ("send", "stream"))
+    def test_the_session_is_told_on_its_next_turn(self, store: Store, route: str) -> None:
+        """Both routes, because `send` and `stream` are written out separately and a rule
+        proved on one of them is not proved on the other - which is how #54 shipped a fix
+        that the page's own route never ran.
+
+        The context is asserted rather than the wording of a reply: what the model then
+        says is the model's, but it cannot say anything true about this unless it is told.
+        """
+        who = new_subject("agent")
+        store.provision_identity(who, CUSTOMER, ["agent"])
+        session_id = new_session(store, who)
+        ticket = store.open_ticket(session_id, CUSTOMER, "needs a person", who)
+        store.open_approval(
+            session_id, CANCEL, requested_by=who, ticket_id=ticket.id, ttl_seconds=-1.0
+        )
+
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="ok"))
+        agent = build_agent(store, session_id, domain, model)
+        agent.apply_context(
+            Identity(who, CUSTOMER, frozenset({"agent"})).permissions,
+            who,
+            ticket_id=ticket.id,
+        )
+
+        if route == "send":
+            agent.send("any update on that cancellation?")
+        else:
+            list(agent.stream("any update on that cancellation?"))
+
+        said = " ".join(str(m.get("content", "")) for m in model.seen[-1])
+        assert "ran out of time" in said
+        assert "cancel_pending_order" in said
+
+    def test_it_is_said_once_rather_than_every_turn(self, store: Store) -> None:
+        """Repeating it each turn would make the same dead request look like a new event
+        for the next hour."""
+        who = new_subject("agent")
+        store.provision_identity(who, CUSTOMER, ["agent"])
+        session_id = new_session(store, who)
+        ticket = store.open_ticket(session_id, CUSTOMER, "needs a person", who)
+        store.open_approval(
+            session_id, CANCEL, requested_by=who, ticket_id=ticket.id, ttl_seconds=-1.0
+        )
+
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="one"), _message(content="two"))
+        agent = build_agent(store, session_id, domain, model)
+        granted = Identity(who, CUSTOMER, frozenset({"agent"})).permissions
+        agent.apply_context(granted, who, ticket_id=ticket.id)
+        agent.send("first")
+        agent.apply_context(granted, who, ticket_id=ticket.id)
+        agent.send("second")
+
+        notes = [m for m in model.seen[-1] if "ran out of time" in str(m.get("content", ""))]
+        assert len(notes) == 1
+
+    def test_a_customer_session_is_not_told_anything(self, store: Store) -> None:
+        """A session nobody is acting on behalf of raises no approvals, so it has none to
+        have lost."""
+        session_id = new_session(store)
+        store.open_approval(session_id, CANCEL, requested_by="agent-1", ttl_seconds=-1.0)
+
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="ok"))
+        agent = build_agent(store, session_id, domain, model)
+        agent.apply_context(Identity("s", CUSTOMER, frozenset({"customer"})).permissions, "s")
+        agent.send("hello")
+
+        said = " ".join(str(m.get("content", "")) for m in model.seen[-1])
+        assert "ran out of time" not in said
+
+
+class TestAnApprovedActionThatNeverRan:
+    """Approving records that one argument set may run. It does not run it.
+
+    Between the decision and the next tool call the work is authorized and not done, and
+    nothing was telling the session which side of that gap it was on. Walked in a
+    browser, the session answered that the order was cancelled and the refund on its way:
+    `operations` was empty, the audit trail held no `write_executed`, and the customer
+    would have been told a write had happened that had not.
+    """
+
+    @staticmethod
+    def approved_case(store: Store) -> tuple[str, int, str]:
+        who = new_subject("agent")
+        boss = new_subject("boss")
+        store.provision_identity(who, CUSTOMER, ["agent"])
+        store.provision_identity(boss, CUSTOMER, ["supervisor"])
+        session_id = new_session(store, who)
+        ticket = store.open_ticket(session_id, CUSTOMER, "needs a person", who)
+        approval_id = store.open_approval(session_id, CANCEL, requested_by=who, ticket_id=ticket.id)
+        assert store.decide_approval(approval_id, approve=True, decided_by=boss) == "approved"
+        return session_id, ticket.id, who
+
+    def test_the_store_reports_the_decision_and_what_it_covers(self, store: Store) -> None:
+        session_id, _, _ = self.approved_case(store)
+        approved = store.approved_requests(session_id)
+        assert [(row.tool_name, row.state) for row in approved] == [
+            ("cancel_pending_order", "approved")
+        ]
+
+    def test_an_expired_decision_is_not_reported_as_live(self, store: Store) -> None:
+        """Its authorization has lapsed, and telling a session to act on it would be
+        telling it to run something no longer approved."""
+        who = new_subject("agent")
+        boss = new_subject("boss")
+        store.provision_identity(who, CUSTOMER, ["agent"])
+        store.provision_identity(boss, CUSTOMER, ["supervisor"])
+        session_id = new_session(store, who)
+        approval_id = store.open_approval(session_id, CANCEL, requested_by=who, ttl_seconds=-1.0)
+        store.decide_approval(approval_id, approve=True, decided_by=boss)
+        assert store.approved_requests(session_id) == []
+
+    @pytest.mark.parametrize("route", ("send", "stream"))
+    def test_the_session_is_told_it_still_has_to_run_it(self, store: Store, route: str) -> None:
+        session_id, ticket_id, who = self.approved_case(store)
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="ok"))
+        agent = build_agent(store, session_id, domain, model)
+        agent.apply_context(
+            Identity(who, CUSTOMER, frozenset({"agent"})).permissions, who, ticket_id=ticket_id
+        )
+
+        if route == "send":
+            agent.send("did that go through?")
+        else:
+            list(agent.stream("did that go through?"))
+
+        said = " ".join(str(m.get("content", "")) for m in model.seen[-1])
+        assert "has not run yet" in said
+        assert "cancel_pending_order" in said
+
+    def test_it_stops_once_the_action_has_run(self, store: Store) -> None:
+        """A standing condition, not an event: it holds until the action runs, and then
+        it must stop, or every later turn is told to run something already done."""
+        session_id, ticket_id, who = self.approved_case(store)
+        store.execute_once(session_id, CANCEL, None, lambda: "{}")
+
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="ok"))
+        agent = build_agent(store, session_id, domain, model)
+        agent.apply_context(
+            Identity(who, CUSTOMER, frozenset({"agent"})).permissions, who, ticket_id=ticket_id
+        )
+        agent.send("did that go through?")
+
+        said = " ".join(str(m.get("content", "")) for m in model.seen[-1])
+        assert "has not run yet" not in said
+
+    def test_it_is_said_again_while_it_is_still_true(self, store: Store) -> None:
+        """Unlike a request that ran out of time, this one is not over after it is
+        mentioned: the work is authorized and undone until somebody does it."""
+        session_id, ticket_id, who = self.approved_case(store)
+        domain = HandoffDomain()
+        model = ScriptedModel(_message(content="one"), _message(content="two"))
+        agent = build_agent(store, session_id, domain, model)
+        granted = Identity(who, CUSTOMER, frozenset({"agent"})).permissions
+        agent.apply_context(granted, who, ticket_id=ticket_id)
+        agent.send("first")
+        agent.apply_context(granted, who, ticket_id=ticket_id)
+        agent.send("second")
+
+        turns = [
+            turn
+            for turn in model.seen
+            if any("has not run yet" in str(m.get("content", "")) for m in turn)
+        ]
+        assert len(turns) == 2
 
 
 # ---- 5. nobody decides their own ----------------------------------------

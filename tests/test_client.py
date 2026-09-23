@@ -18,7 +18,9 @@ from retail_support_agent import client as module
 from retail_support_agent.client import (
     Api,
     ApiError,
+    ConflictError,
     ForbiddenError,
+    SessionBusyError,
     UnauthenticatedError,
     UnavailableError,
 )
@@ -135,6 +137,62 @@ class TestWhatEachRefusalBecomes:
         with pytest.raises(UnauthenticatedError) as caught:
             Api(BASE).me(None)
         assert str(caught.value)
+
+
+class TestTheTwoKindsOfConflict:
+    """Six conditions answer 409 and they do not share an answer.
+
+    Five are permanent for the request that hit them - a case no longer open, one
+    already closed, an escalation out of time, one already decided - and one, a turn
+    already running on the session, clears by itself. Rendered as one state, the page
+    told a supervisor whose escalation had expired to wait for it to finish and send
+    again, which describes neither what happened nor anything that would help.
+
+    Which one a 409 is cannot be read off the status or matched on the service's
+    sentence, which is written for a person. The route knows, so the route says.
+    """
+
+    def test_a_busy_session_is_the_conflict_that_clears_by_waiting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        failing(monkeypatch, 409, "Session s1 is already handling a message.")
+        with pytest.raises(SessionBusyError):
+            Api(BASE).chat("a.token.value", "s1", "hello")
+
+    def test_the_streaming_route_says_the_same_thing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The route the page actually uses. `chat` and `chat_stream` are written out
+        separately, so a rule proved on one of them is not proved on the other."""
+        failing(monkeypatch, 409, "Session s1 is already handling a message.")
+        with pytest.raises(SessionBusyError):
+            list(Api(BASE).chat_stream("a.token.value", "s1", "hello"))
+
+    def test_an_expired_escalation_is_not_a_busy_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The defect this class exists for: found by walking a supervisor's page after
+        the approval window ran out."""
+        failing(monkeypatch, 409, "That request expired and must be raised again.")
+        with pytest.raises(ConflictError) as caught:
+            Api(BASE).decide("a.token.value", 1, True)
+        assert not isinstance(caught.value, SessionBusyError)
+
+    @pytest.mark.parametrize(
+        ("call", "detail"),
+        [
+            (lambda api: api.assign("t", 1, "subject"), "That ticket is not open."),
+            (lambda api: api.close("t", 1, "resolved", "done"), "That ticket is already closed."),
+            (lambda api: api.work("t", 1), "That ticket is closed."),
+            (lambda api: api.decide("t", 1, False), "That request was already decided."),
+        ],
+    )
+    def test_no_case_route_reports_a_busy_session(
+        self, monkeypatch: pytest.MonkeyPatch, call: Any, detail: str
+    ) -> None:
+        failing(monkeypatch, 409, detail)
+        with pytest.raises(ConflictError) as caught:
+            call(Api(BASE))
+        assert not isinstance(caught.value, SessionBusyError)
+        assert detail in str(caught.value)
 
 
 class TestReadingTheAnswers:

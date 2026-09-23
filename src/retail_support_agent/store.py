@@ -70,6 +70,14 @@ class SessionProgress:
 # is not sitting in a table waiting to be used tomorrow. Callers may pass their own.
 APPROVAL_TTL_SECONDS = 30 * 60.0
 
+# How long a request that ran out of time is still worth showing. Nothing marks an
+# expired request: the row stays `pending` and the deadline simply passes, so "it ran
+# out of time" is derived, not stored. That made it invisible - it left the supervisor's
+# queue with nothing said and no record of having been there, and the agent's session
+# went on describing it as waiting. This window is how long it stays on screen as what
+# happened to it.
+TIMED_OUT_VISIBLE_SECONDS = 60 * 60.0
+
 
 @dataclass(frozen=True)
 class TicketSummary:
@@ -767,6 +775,45 @@ class Store:
             )
             if session_id is not None:
                 stmt = stmt.where(ApprovalRow.session_id == session_id)
+            return list(db.scalars(stmt.order_by(ApprovalRow.id)))
+
+    def timed_out_approvals(
+        self, session_id: str | None = None, within_seconds: float = TIMED_OUT_VISIBLE_SECONDS
+    ) -> list[ApprovalRow]:
+        """Requests nobody decided before their window closed.
+
+        Still `pending` in the record, because expiry is the absence of a decision and
+        nothing runs when the deadline passes. The comparison is the database's, like
+        every other one about this deadline, so two readers cannot disagree about whether
+        a request is still live.
+
+        `within_seconds` bounds it to the recent ones: this answers "what happened to the
+        request I was waiting on", not "every escalation that ever lapsed".
+        """
+        with self._sessions() as db:
+            since = func.now() - func.make_interval(0, 0, 0, 0, 0, 0, within_seconds)
+            stmt = select(ApprovalRow).where(
+                ApprovalRow.state == "pending",
+                ApprovalRow.expires_at <= func.now(),
+                ApprovalRow.expires_at > since,
+            )
+            if session_id is not None:
+                stmt = stmt.where(ApprovalRow.session_id == session_id)
+            return list(db.scalars(stmt.order_by(ApprovalRow.id)))
+
+    def approved_requests(self, session_id: str) -> list[ApprovalRow]:
+        """Decisions a supervisor granted that are still valid.
+
+        The rows, not just their fingerprints, because a session that has to act on one
+        needs to say which action was approved. Expiry is the database's, in the same
+        query, as everywhere else this deadline is read.
+        """
+        with self._sessions() as db:
+            stmt = select(ApprovalRow).where(
+                ApprovalRow.session_id == session_id,
+                ApprovalRow.state == "approved",
+                ApprovalRow.expires_at > func.now(),
+            )
             return list(db.scalars(stmt.order_by(ApprovalRow.id)))
 
     def approved_fingerprints(self, session_id: str) -> set[str]:
