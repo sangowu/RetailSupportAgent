@@ -24,6 +24,7 @@ worth doing at all.
 | `m8.4` | `e1915aa` (#59) | `sha256:7303763d87d8fe24224e7f0fa47fac2cb48357cdeeb080349c4695c5f2847999` | 2026-09-21T22:55:20Z |
 | `m8.5` | `e6eef14` (#61) | `sha256:e905c31134c16a8d46ce4a9526a6ea997fc72966bb6c4a187288fa9bb9c014e7` | 2026-09-21T23:43:00Z |
 | `m8.6` | `83e0d61` (#63) | `sha256:ab8c22111acaf9a71217bf0eaa737b1dfe65adfdcfd6389849165ec8c3cb9c06` | 2026-09-22T21:12:40Z |
+| `m8.7` | `3c95ce6` (#65, #66) | `sha256:fddcf7efe42d6486109a96f27fc3c1cb7e0e7099538e40ad5e0ff0eb6908564f` | 2026-09-23T18:27:30Z |
 
 The repository's ECR tags are immutable, so each digest is the only image that tag has
 ever named. `m7.3` and `m6.8.1` are retained for rollback.
@@ -419,13 +420,125 @@ evidence for the behaviour itself is the artifact check and the registry tests a
 `active_sessions` on `/health` is the standing observation: under ordinary use it must
 never exceed 32.
 
+## 5f. `m8.7`, and the last state nobody had watched
+
+Section 6 had carried approval expiry since the first M8 release: a decision that runs out
+of time before it is used, verified at the API and the database and never once seen by a
+person. Walking it found four defects on that one path, and none of them were in the
+expiry logic, which was correct throughout. They were in what the path told the two people
+standing in it.
+
+**A supervisor deciding a request whose window had closed was told the session was busy.**
+The service's answer - "That request expired and must be raised again." - arrived under
+the label "this session is busy" and the advice to wait for it to finish and send again,
+or start a new session. `ConflictError` was written in M7.2, when 409 meant one thing; M4
+added five more conditions to it and every one inherited M7.2's wording. Five of the six
+are permanent for the request that hit them, so the advice was to wait for something that
+was never coming. The client now decides which conflict it is, because the route is the
+only thing that knows: the status is identical either way, and the detail is prose written
+for a person rather than a key to match on.
+
+**The approvals panel had no control that read the queue.** Nothing pushes to this page.
+An escalation raised while a supervisor sat looking at the panel never appeared, and the
+one button that refetched the queue was in the case panel, labelled `Refresh`, for cases.
+It has its own now, and it states what it found: an empty table otherwise says both
+"nothing is waiting" and "the fetch failed", and a supervisor cannot tell which.
+
+**Expiry was silent on both sides.** Nothing runs when the window closes - the row stays
+`pending` and the deadline passes - so "it ran out of time" is derived, and was derived
+nowhere anybody could see. The request left the supervisor's queue with no trace of having
+been there. The agent's session, asked for an update, answered that the cancellation was
+pending a supervisor's approval, about a request no supervisor could see or decide. The
+work stopped there permanently and neither side was told. Requests that lapsed in the last
+hour are now listed as having timed out, and the session is told once, in the
+conversation, because the next move is a judgement rather than a rule.
+
+**An approved action that never ran was reported as done.** The worst of the four, and it
+appeared only because the walk continued past the fix for the third. Approving records
+that one argument set may run; the action still has to be proposed again. Told the request
+was approved, the session answered that the order was cancelled and the refund on its way
+to the customer. `operations` was empty. The audit trail held no `write_executed`. Nothing
+had happened, and the page said it had. While a decision is granted and its action has not
+run, the session is now told on every turn - a standing condition, not an event - and told
+not to say it is done until the tool has returned.
+
+### What the fix for the fourth one needed
+
+The first three are assertions: the rendering, the query, the column. The fourth is not.
+What had to be true was that the session, told the action was still outstanding, would
+*call the tool* rather than narrate it, and no test in this repository can establish that,
+because the test supplies the model's answer. So it was walked with a real model: the
+request was raised, approved, and the next turn called the tool, reached the confirmation
+gate - which is the separate condition it should reach - and the write landed in
+`operations` with a `write_executed` beside it.
+
+Two turns of that walk are worth recording as the method's own limit. Asked for an update
+on a session whose history already held the same exchange twice, the model reproduced the
+guard's own wording as prose, without proposing anything, so no request was raised and the
+page read `answered`. That was not a defect in the release; it was the walk running out of
+a clean session. The verification that counted was done on a fresh case.
+
+| Check | Result |
+|---|---|
+| `ruff`, `ruff format --check`, `mypy` | clean, 94 source files |
+| `pytest` with `RSA_TEST_DATABASE_URL` | 1047 passed |
+| `terraform validate`, `terraform fmt -check` | clean, demo layer |
+| `migrate` from the image, on an `m8.6` database | head, nothing applied |
+| `api` from the image | `/health` answers; all four fixes present in the artifact |
+| Settings reach the container | `RSA_APPROVAL_TTL_SECONDS=3600` read as 3600, unset read as 1800 |
+| Deployed | `/health` reports `...:m8.7`, digest matching the local build |
+
+Each of the two agent-side rules was mutation-checked - removing the call fails exactly
+the three tests written for it - and both are asserted on `send` and `stream` separately,
+because they are written out separately and section 5a records a fix that shipped inert
+for exactly that reason.
+
+### This release replaced the instance, and the release model says it should not
+
+M6.8's whole claim is that a release is a parameter change and a restart, never an
+instance replacement, and every release from `m8` to `m8.6` produced exactly that plan.
+This one did not. Making the settings reachable meant adding a line to the instance's
+cloud-init template, the demo layer sets `user_data_replace_on_change = true`, and the
+plan was therefore a replacement: `i-0e4b76e870a950271` was terminated and
+`i-01754da5148f898ac` created in its place, with a new root volume.
+
+The rule this recovers is not about that variable. It is that the release model holds for
+changes to the *image*, which the instance reads at every start, and not for changes to
+what the instance is built from. A release that touches `cloud-init.sh.tftpl`, the
+instance profile or the volume is a rebuild, and the plan says so - `1 to add, 1 to
+destroy` rather than `1 to change` - which is the moment to stop and decide, not to
+confirm out of habit. The instructions given for this release named the wrong expected
+plan, and a replacement went through on a confirmation meant for a parameter change.
+
+Nothing was lost here, and the reason is worth stating rather than being glad about. The
+instance had been stopped since 01:13 UTC, and `rsa-stop` archives the database on the way
+down, so the archive taken at that stop was the deployed state in full; the day's work had
+been done against a local stack. Had the instance been running with a case open, the
+terminate would have taken the volume with it: a stopped instance archives when it stops,
+and a terminated one runs nothing. `uv run python scripts/demo.py restore latest` puts the
+archived state back.
+
+### A setting that was configurable nowhere it ran
+
+Found on the way: `config.py` records that the architecture document requires the approval
+window to be configurable, and on the instance it was not. The compose files name every
+variable the API container is given, and it was not among them - nor was the session cache
+ceiling, nor any of the three access-scope settings. The only way to change one was to
+edit a file baked into the image.
+
+They are passed through now as bare compose entries, present when the environment sets one
+and absent when it does not, so the application's default stays the single source of truth.
+The demo layer takes a `settings` map that reaches the container through the instance's
+environment file, and refuses names the layer derives itself. The test is written against
+`Settings` rather than a list of names, so the next setting added is either passed through
+or deliberately excluded, and cannot become a third thing that exists and cannot be set.
+
 ## 6. What this release does not establish
 
-- **Approval expiry and the streaming states.** A later pass walked assignment, working
-  a case, escalation and closure in a browser (section 5a), so those are no longer
-  browser-unverified. Approval expiry - a decision that runs out of time before it is
-  used - and the intermediate streaming states are still covered at the API and database
-  levels only.
+- **The streaming states.** Assignment, working a case, escalation and closure were
+  walked in a browser in section 5a, and approval expiry in section 5f, which is where the
+  four defects above came from. What is left on this list is the intermediate streaming
+  states, still covered at the API level only.
 - **The benchmark under an enforcing scope.** The tau2 adapter still runs with a
   permissive scope so that `baseline-v2` and `baseline-v3` stay comparable, and a test
   asserts it. What an enforcing scope would score is unmeasured, and the number would
@@ -442,13 +555,19 @@ never exceed 32.
 
 ## 7. Rollback
 
-Every M8 image is still published, and so is `m7.3`. Rolling back from `m8.6` to `m8.5`
+Every M8 image is still published, and so is `m7.3`. Rolling back from `m8.7` to `m8.6`
 is the documented parameter change and a restart, with no schema step between them:
 
 ```
-terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.5"
+terraform -chdir=deploy/terraform/demo apply -var="image_tag=m8.6"
 uv run python scripts/demo.py restart
 ```
+
+**Rolling back `m8.7` does not undo the rebuild.** The image is a parameter, and moving
+it back to `m8.6` is the usual restart; the instance created by this release stays, and so
+does its volume. Returning the machine itself to what it was would be another replacement,
+with another empty volume and a restore from the archive - which is the cost of the
+release model not holding for a user-data change, recorded in section 5f.
 
 **One step comes first when rolling back past `m8.4`**, the only M8 image that added a
 migration. The schema has to be moved before the older code sees it:
@@ -463,6 +582,6 @@ Section 5b records that sequence being run in both directions against a database
 previous image had built.
 
 Going all the way back to `m7.3` returns the deployment to a version with no access scope,
-no refusal audit trail and no audit page - and, now, none of the eight fixes in section 5a
-or the one in 5c. It is a rollback of the application, not of a security control that
+no refusal audit trail and no audit page - and, now, none of the eight fixes in section 5a,
+the one in 5c, the ceiling in 5e or the four in 5f. It is a rollback of the application, not of a security control that
 exists independently of it.

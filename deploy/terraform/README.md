@@ -196,6 +196,13 @@ updated when the instance receives a different public IP.
 
 ## Release and rollback
 
+A release changes the image and nothing else, and its plan is `0 to add, 1 to change, 0 to
+destroy`: the tag lives in a parameter the instance reads at every start. A plan that
+proposes `1 to add, 1 to destroy` is a rebuild, not a release - user data, the instance
+profile or the volume changed - and it terminates the instance and its database volume.
+Stop there. A running instance archives only when it is stopped, so bring it down first,
+confirm the archive, and restore after the rebuild with `demo.py restore latest`.
+
 Update `image_tag` in the demo variable file, retaining the other deployed values. Review
 the full plan before applying, then restart the application stack:
 
