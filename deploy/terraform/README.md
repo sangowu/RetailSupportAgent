@@ -159,6 +159,22 @@ to application access. An empty list disables external HTTPS access. Port 80 rem
 available for ACME validation and HTTPS redirection. The contact email is supplied to
 ACME for certificate administration.
 
+Application settings are set through the optional `settings` map, which is written into
+the instance's environment file and passed to the API container:
+
+```hcl
+settings = {
+  RSA_APPROVAL_TTL_SECONDS = "3600"
+  RSA_SESSION_CACHE_SIZE   = "64"
+}
+```
+
+Omitted, every setting runs at the application's default, which is what this demo does.
+The layer refuses names it derives itself - the image, the database URL, the user pool -
+because a value set in two places disagrees and which one wins depends on the order they
+were read in. The available names are the `RSA_` aliases in `src/retail_support_agent/
+config.py`, excluding those the evaluation loop reads.
+
 ```bash
 terraform -chdir=deploy/terraform/demo plan
 terraform -chdir=deploy/terraform/demo apply
