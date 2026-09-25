@@ -1,11 +1,14 @@
-# Delivery report: M1 to M7
+# Delivery report: M1 to M8
 
 **RetailSupportAgent** - a retail support agent (order lookup, order cancellation, return
 request) built to prove business correctness, reliability and cost through reproducible
 evaluation.
 
-Report date: 2026-09-10. Scope: M1 to M7. M0 has its own report and is not restated here;
-where a number comes from M0 it is marked.
+Report date: 2026-09-10, carried through M8 on 2026-09-25. Scope: M1 to M8. M0 has its
+own report and is not restated here; where a number comes from M0 it is marked. M8 has two
+documents of its own, [the access measurement](M8_ACCESS_EVAL.md) and
+[the release record](M8_RELEASE.md); this report states what they establish and does not
+restate them.
 
 ---
 
@@ -23,7 +26,9 @@ where a number comes from M0 it is marked.
 | Human handoff | a case is escalated, assigned, worked in the agent's own session, held for approval, decided, closed |
 | Deployment | one instance behind one name over TLS, stopped when idle: 1.38 USD a month stopped, about 16 running |
 | Version changes | one parameter and a restart, measured across a real behavioural change |
-| Engineering | 858 tests (275 at the end of M0) and ruff clean; **mypy has failed since M6.3 and CI with it**, see section 7 |
+| Access control | **22/22 blocked** on the `access-v2` adversarial set: cross-user reads and writes, enumeration, fabrication, prompt injection |
+| Releases | eight images, `m8` to `m8.7`, each published and verified against the running deployment; **fifteen defects**, thirteen of them found by a person using it |
+| Engineering | **1047 tests** (275 at the end of M0), ruff and mypy clean, and CI has run the suite on every merge since the repair in section 7 |
 
 **The claim this project makes is not that the agent works, but that each thing it does can
 be shown to work and priced.** So every number below names the run or the report it comes
@@ -54,6 +59,8 @@ from, and section 6 says what is not covered.
 | [M7.1](M7.1_STREAMING.md) | the turn is visible while it runs | first event at 0.17 s where the panel was blank for 8.80 s |
 | [M7.2](M7.2_STATES.md) | every state says what it is and what to do | seven statuses and four failures, each rendered from the type rather than from a list |
 | [M7.3](M7.3_TICKETS.md) | the case work is reachable | a case taken end to end through three roles, and the account that could do it did not exist before |
+| [M8](M8_ACCESS_EVAL.md) | the access controls, measured rather than asserted | 22/22 blocked, and writing the set found a refusal the audit trail never recorded - each of the three had a passing unit test |
+| [M8 releases](M8_RELEASE.md) | the controls put where a person can reach them | eight releases, and fifteen defects that only using the thing could find |
 
 M6.4 has no number of its own. It converted a working environment into one that can be
 recreated, and its result is that every step after it is an `apply` rather than a console.
@@ -171,6 +178,9 @@ Each of these was found by building something else, which is the argument for bu
 | M7.3 | no account in the demo could work a case: the two customers cannot, and a supervisor deliberately holds no `ticket:work` |
 | The M7 release | an instance script corrected after the instance was launched changes the user data, so an untargeted apply plans to replace the machine |
 | This report | CI on `main` has failed at the mypy step since M6.3, which skips the test job, so no merge since then has run the suite in CI |
+| [M8](M8_ACCESS_EVAL.md) | ownership refusals on the write path recorded nothing, so a block against another customer's order was correct and invisible - and all three had passing unit tests |
+| [M8.6](M8_RELEASE.md) | every session kept its own copy of the retail domain in a dictionary that only grew, on a 2 GB instance shared with the database |
+| [M8.7](M8_RELEASE.md) | an approved action that was never proposed again was reported to the customer as cancelled and refunded; `operations` was empty |
 
 Two of them, the health check and the archive through Systems Manager, would have failed
 silently in the half nobody watches while the half being demonstrated kept working.
@@ -180,11 +190,6 @@ silently in the half nobody watches while the half being demonstrated kept worki
 - **A rollback between versions that do not share a schema.** No migration has been added
   since M4, so the round trip in 3.3 carries no downgrade question. That is the case where
   a rollback can genuinely fail, and it is not measured.
-- **The audit trail has no screen.** `audit:read` and its route have existed since M3 and
-  M4 and are reachable only with a command line. No demo account holds the `auditor` role,
-  which is the same gap M7.3 closed for case work.
-- **Nothing is measured in a browser.** The page is tested through its handlers and, in
-  3.3, as it is served. What a person sees is not part of any measurement here.
 - **Nothing is measured under load.** Every number is one conversation at a time. There is
   no figure for concurrent users, and the single instance was not chosen with one in mind.
 - **The topology is a demo topology.** PostgreSQL runs on the application instance, in one
@@ -195,13 +200,33 @@ silently in the half nobody watches while the half being demonstrated kept worki
 - **An agent cannot find unassigned work.** `GET /tickets` narrows to the caller's own
   assignments for anyone without `ticket:assign`, so an agent's list is empty until a
   supervisor pushes a case. M4's design, surfaced by M7.3, unchanged.
-- **The approval expiry was never exercised end to end.** A request that expires between
-  being raised and being decided answers 409, and every run decided within seconds.
-- **The user data drift from the M7 release is still there.** The next untargeted demo
-  apply replaces the instance and discards its database. `OPERATIONS.md` carries the check
-  that catches it.
-- **CI has not run the test suite since M6.3.** Section 7. Every report's test count was
-  produced locally, and the suite does pass; what has not happened is CI confirming it.
+
+### What M8 closed on this list
+
+Four items above were removed rather than answered in place, because M8 settled them and a
+report that still listed them would be wrong:
+
+- **The audit trail has a screen**, and the browser acceptance used it: an `audit:read`
+  panel reading a named session, which is how the release record shows a write landing with
+  a `write_executed` beside it.
+- **The page is measured in a browser.** Assignment, working a case, escalation, closure,
+  approval expiry and the streaming states were each walked by a person. Thirteen of M8's
+  fifteen defects came from those walks - the other two needed concurrent requests built on
+  purpose and a memory measurement - and every user-visible state has now been watched at
+  least once.
+- **Approval expiry was exercised end to end**, and it was the worst of the four walks. The
+  expiry logic was correct throughout; what was wrong was everything the path *said* -
+  including a session reporting an order cancelled and a refund on its way when nothing had
+  run.
+- **CI runs the suite again.** The 49 mypy errors were repaired, and 1047 tests now pass on
+  every merge rather than only on the machine they were run on.
+
+The instance drift from the M7 release is also gone from the list, but it was not closed the
+way the others were: the `m8.7` release changed the instance's user data, so the apply
+replaced the machine and its volume. Nothing was lost - the instance had been stopped, and a
+stop archives - and the release record carries it. The rule it recovers was already written
+in section 5 of this report, at the M7 release, which is the part worth keeping: the rule
+existed and was not consulted.
 
 ## 7. Corrections this report makes to the record
 
@@ -229,13 +254,12 @@ failure to fix, which is how they survived seven milestones. Nothing was hidden:
 are red in the open and every report says the suite passed, which it did, on the machine
 it was run on. What was missing is that nobody asked what CI thought.
 
-This is not corrected in this change, because it is a code change and this one is
-documentation. It is the first thing to do next.
-
-**Follow-up, 2026-09-10:** the [CI test typing repair](CI_TYPE_FIX.md) fixes the 49 errors
-locally and verifies all 858 tests against isolated PostgreSQL. That follow-up has not
-yet established a new main CI result in this report; its PR checks record remote
-verification before merge. The failure above describes the original `a31ebb2` revision.
+**Settled.** The [CI test typing repair](CI_TYPE_FIX.md) fixed the 49 errors, and every
+merge since has run the three jobs - the evaluation gate, static checks with the suite, and
+the upstream pin and domain replay - green before landing. The count is 1047. The paragraphs
+above describe the original `a31ebb2` revision and are kept, because what is worth
+remembering is not the errors but the seven milestones they survived as a baseline to return
+to.
 
 ## 8. Reproduction
 
@@ -251,8 +275,9 @@ uv sync --group bench
 uv run python scripts/fetch_tau2.py                          # the pinned commit, SHA256 verified
 uv run ruff check . && uv run mypy && uv run pytest
 uv run python scripts/freeze_baseline.py --verify            # the baselines are unaltered
+uv run python scripts/run_access_eval.py                     # 22/22 blocked, no model, free
 
-# the database-gated tests need PostgreSQL; without it 124 of the 858 skip
+# the database-gated tests need PostgreSQL; without it part of the 1047 skip
 docker compose up -d db
 uv run alembic upgrade head                                  # RSA_DATABASE_URL must be set
 
