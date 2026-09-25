@@ -207,7 +207,7 @@ repair records for the present status.
   [interaction states](docs/M7.2_STATES.md), [case management](docs/M7.3_TICKETS.md).
 - **Access control:** [access evaluation](docs/M8_ACCESS_EVAL.md),
   [M8 release and browser acceptance](docs/M8_RELEASE.md).
-- **Delivery and maintenance:** [M1–M7 delivery report](docs/DELIVERY_REPORT.md),
+- **Delivery and maintenance:** [M1–M8 delivery report](docs/DELIVERY_REPORT.md),
   [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
 
 Contributors should read [AGENTS.md](AGENTS.md). The
