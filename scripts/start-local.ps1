@@ -171,6 +171,14 @@ Start-Service -Name "api" -Port $ApiPort -Url $apiUrl -HealthUrl "$apiUrl/health
 
 if (-not $SkipUi) {
     $uiUrl = "http://127.0.0.1:$UiPort"
+    # The UI takes its port and the API it calls from the environment, not from arguments
+    # (see main() and api() in src/retail_support_agent/ui.py), so -UiPort and -ApiPort
+    # have to be written here for the child process to inherit them. Without this the UI
+    # binds its own default 7860 and calls 127.0.0.1:8000, while this script waits on the
+    # port it was asked for: a non-default -UiPort timed out with an empty log, and a
+    # non-default -ApiPort left the UI talking to nothing.
+    $env:RSA_UI_PORT = "$UiPort"
+    $env:RSA_API_URL = $apiUrl
     Start-Service -Name "ui" -Port $UiPort -Url $uiUrl -HealthUrl $uiUrl `
         -ArgumentList @("-m", "retail_support_agent.ui")
 }

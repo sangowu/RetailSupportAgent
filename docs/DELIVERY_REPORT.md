@@ -28,7 +28,7 @@ restate them.
 | Version changes | one parameter and a restart, measured across a real behavioural change |
 | Access control | **22/22 blocked** on the `access-v2` adversarial set: cross-user reads and writes, enumeration, fabrication, prompt injection |
 | Releases | eight images, `m8` to `m8.7`, each published and verified against the running deployment; **fifteen defects**, thirteen of them found by a person using it |
-| Engineering | **1047 tests** (275 at the end of M0), ruff and mypy clean, and CI has run the suite on every merge since the repair in section 7 |
+| Engineering | **1051 tests** (275 at the end of M0), ruff and mypy clean, and CI has run the suite on every merge since the repair in section 7 |
 
 **The claim this project makes is not that the agent works, but that each thing it does can
 be shown to work and priced.** So every number below names the run or the report it comes
@@ -181,6 +181,7 @@ Each of these was found by building something else, which is the argument for bu
 | [M8](M8_ACCESS_EVAL.md) | ownership refusals on the write path recorded nothing, so a block against another customer's order was correct and invisible - and all three had passing unit tests |
 | [M8.6](M8_RELEASE.md) | every session kept its own copy of the retail domain in a dictionary that only grew, on a 2 GB instance shared with the database |
 | [M8.7](M8_RELEASE.md) | an approved action that was never proposed again was reported to the customer as cancelled and refunded; `operations` was empty |
+| A start on non-default ports | `start-local.ps1` takes `-ApiPort` and `-UiPort`, but the UI reads its port and the API address from the environment and nothing set them: the UI bound its own default 7860 while the script waited out the full budget on the port it had been given, then rolled the working API back with it. Both log files were empty, because the process never failed |
 
 Two of them, the health check and the archive through Systems Manager, would have failed
 silently in the half nobody watches while the half being demonstrated kept working.
@@ -218,8 +219,8 @@ report that still listed them would be wrong:
   expiry logic was correct throughout; what was wrong was everything the path *said* -
   including a session reporting an order cancelled and a refund on its way when nothing had
   run.
-- **CI runs the suite again.** The 49 mypy errors were repaired, and 1047 tests now pass on
-  every merge rather than only on the machine they were run on.
+- **CI runs the suite again.** The 49 mypy errors were repaired, and the suite runs on every
+  merge rather than only on the machine it was run on; it was 1047 tests at that repair.
 
 The instance drift from the M7 release is also gone from the list, but it was not closed the
 way the others were: the `m8.7` release changed the instance's user data, so the apply
@@ -256,10 +257,10 @@ it was run on. What was missing is that nobody asked what CI thought.
 
 **Settled.** The [CI test typing repair](CI_TYPE_FIX.md) fixed the 49 errors, and every
 merge since has run the three jobs - the evaluation gate, static checks with the suite, and
-the upstream pin and domain replay - green before landing. The count is 1047. The paragraphs
-above describe the original `a31ebb2` revision and are kept, because what is worth
-remembering is not the errors but the seven milestones they survived as a baseline to return
-to.
+the upstream pin and domain replay - green before landing. The count was 1047 there and is
+1051 now. The paragraphs above describe the original `a31ebb2` revision and are kept,
+because what is worth remembering is not the errors but the seven milestones they survived
+as a baseline to return to.
 
 ## 8. Reproduction
 
@@ -277,7 +278,7 @@ uv run ruff check . && uv run mypy && uv run pytest
 uv run python scripts/freeze_baseline.py --verify            # the baselines are unaltered
 uv run python scripts/run_access_eval.py                     # 22/22 blocked, no model, free
 
-# the database-gated tests need PostgreSQL; without it part of the 1047 skip
+# the database-gated tests need PostgreSQL; without it part of the 1051 skip
 docker compose up -d db
 uv run alembic upgrade head                                  # RSA_DATABASE_URL must be set
 
