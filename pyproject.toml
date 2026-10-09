@@ -25,6 +25,9 @@ dependencies = [
     # place for hand-written code; the algorithm allowlist and required claims are
     # passed explicitly rather than left to defaults.
     "pyjwt[crypto]>=2.10",
+    # The MCP server (M9). v2 is required: `MCPServer` and `Resolve`-based elicitation
+    # do not exist in v1, whose `FastMCP` class was removed.
+    "mcp>=2",
 ]
 
 [dependency-groups]
