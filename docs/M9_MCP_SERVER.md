@@ -106,17 +106,20 @@ from mcp.server.mcpserver import Elicit, Resolve
 from mcp.server.auth.middleware.auth_context import get_access_token
 # 待核对：ElicitationResult / AcceptedElicitation 的导入路径
 
+
 class Confirm(BaseModel):
     ok: bool  # elicitation 只支持扁平的基础类型字段
 
+
 async def ask_cancel(order_id: str, reason: str) -> Confirm | Elicit[Confirm]:
-    session = load_session(get_access_token())      # 身份只来自 token
+    session = load_session(get_access_token())  # 身份只来自 token
     call = ProposedCall("cancel_pending_order", {"order_id": order_id, "reason": reason})
     verdict = guard.review(call, session.state)
     if verdict.decision is not Decision.NEEDS_CONFIRMATION:
-        return Confirm(ok=False)                    # 被拒或已确认：不弹表单
-    store.open_confirmation(session.id, call)       # 重复进入时要幂等
-    return Elicit(call.describe(), Confirm)         # 问题文本包含全部参数
+        return Confirm(ok=False)  # 被拒或已确认：不弹表单
+    store.open_confirmation(session.id, call)  # 重复进入时要幂等
+    return Elicit(call.describe(), Confirm)  # 问题文本包含全部参数
+
 
 @mcp.tool()
 async def cancel_pending_order(
@@ -132,11 +135,15 @@ async def cancel_pending_order(
             session.state.confirm(call)
         case _:
             pass
-    verdict = guard.review(call, session.state)     # 未确认的这里会被挡下
+    verdict = guard.review(call, session.state)  # 未确认的这里会被挡下
     if not verdict.allowed:
         return {"status": verdict.decision, "reason": verdict.reason}
-    outcome = store.execute_once(session.id, call, session.confirmation_id,
-                                 lambda: session.domain.execute(call.name, call.arguments).content)
+    outcome = store.execute_once(
+        session.id,
+        call,
+        session.confirmation_id,
+        lambda: session.domain.execute(call.name, call.arguments).content,
+    )
     return {"status": "executed", "result": outcome.result, "replayed": outcome.replayed}
 ```
 
