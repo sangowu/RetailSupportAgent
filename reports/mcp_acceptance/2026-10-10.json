@@ -2,11 +2,11 @@
   "report": "mcp_acceptance",
   "plan": "docs/M9_MCP_SERVER.md",
   "date": "2026-10-10",
-  "started_at": "2026-10-10T00:23:54+00:00",
-  "duration_seconds": 100.1,
+  "started_at": "2026-10-10T23:32:24+00:00",
+  "duration_seconds": 85.0,
   "billed_model_calls": 0,
   "provenance": {
-    "commit": "2b0408fd4c9eee5a015249a61533461b9ab6c7da",
+    "commit": "c552821f7669fedb8a0d88089863d61486d7f620",
     "working_tree_clean": true,
     "mcp_sdk": "2.3.0",
     "python": "3.12.12",
@@ -98,7 +98,8 @@
           "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
           "db_hash_changed": false,
           "write_executed_audit_rows": 0,
-          "operations": 0
+          "operations": 0,
+          "pending_confirmations_after": 0
         },
         "cancel": {
           "status": "declined",
@@ -107,7 +108,8 @@
           "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
           "db_hash_changed": false,
           "write_executed_audit_rows": 0,
-          "operations": 0
+          "operations": 0,
+          "pending_confirmations_after": 0
         },
         "passed": true
       },
@@ -119,7 +121,8 @@
           "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
           "db_hash_changed": false,
           "write_executed_audit_rows": 0,
-          "operations": 0
+          "operations": 0,
+          "pending_confirmations_after": 0
         },
         "cancel": {
           "status": "declined",
@@ -128,7 +131,8 @@
           "db_hash_after": "b25c9cb211f5efcaee5dd646054a73c4a9f43f4f5acc32c10713cd9f9ac20e9c",
           "db_hash_changed": false,
           "write_executed_audit_rows": 0,
-          "operations": 0
+          "operations": 0,
+          "pending_confirmations_after": 0
         },
         "passed": true
       }
@@ -142,6 +146,7 @@
         "db_hash_changed": true,
         "write_executed_audit_rows": 1,
         "operations": 1,
+        "pending_confirmations_after": 0,
         "passed": true
       },
       "legacy": {
@@ -152,6 +157,7 @@
         "db_hash_changed": true,
         "write_executed_audit_rows": 1,
         "operations": 1,
+        "pending_confirmations_after": 0,
         "passed": true
       }
     },

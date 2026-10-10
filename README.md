@@ -115,12 +115,15 @@ runs on the demo instance at `https://<demo domain>/mcp`, behind the same proxy.
 | Tool | Kind | Checked before it runs |
 |---|---|---|
 | `get_user_details`, `get_order_details` | read | role, then the caller's own data slice; `email` hidden |
-| `get_product_details`, `list_all_product_types` | read | catalog, open to every account |
-| `cancel_pending_order`, `return_delivered_order_items` | write | role, ownership, status slice, the user's answer in a form, once per confirmation |
+| `get_product_details`, `get_item_details`, `list_all_product_types` | read | catalog, open to every account |
+| `cancel_pending_order`, `return_delivered_order_items`, `exchange_delivered_order_items`, `modify_pending_order_items`, `modify_pending_order_address`, `modify_pending_order_payment` | write | role, ownership, status slice, the user's answer in a form, once per confirmation |
 | `transfer_to_human_agents` | handoff | opens a ticket; the session then runs no tool until a person closes it |
 
-Names and parameters are upstream τ²-bench's. The two account lookups are not offered,
-and exchanges and address, payment or item changes are left for a later version.
+Names and parameters are upstream τ²-bench's. The two account lookups and
+`modify_user_address` are not offered. The four order changes came in M11; upstream's own
+rules still apply when they run (an order's items can be changed once, a delivered order
+returned or exchanged once, a gift card must cover what it pays), and a call upstream
+refuses is answered `executed` with upstream's `Tool call failed: ...` as its result.
 
 ### Start
 
@@ -153,7 +156,9 @@ address, `https://<demo domain>/mcp`, and a token for one of the demo pool's acc
 the instance must be running (`demo.py start`), and MCP calls count as use, so it stays
 up while they continue. Claude Code (checked with 2.1.296) shows the confirmation form
 after its own tool-permission prompt: the tool, every argument, a required `ok` box,
-Accept and Decline. A client without form elicitation gets
+Accept and Decline. For the four order changes the form starts with a summary built by
+the server - products, the options that change, prices and the difference, or the old and
+new address or payment method - above the same argument list. A client without form elicitation gets
 `elicitation_unsupported` from every write and nothing runs.
 
 ### Trust boundary
@@ -286,7 +291,8 @@ repair records for the present status.
   [M8 release and browser acceptance](docs/M8_RELEASE.md).
 - **MCP server:** [plan](docs/M9_MCP_SERVER.md), [change record](docs/M9_CHANGE_RECORD.md);
   on the demo instance: [plan](docs/M10_MCP_DEPLOY.md),
-  [change record](docs/M10_CHANGE_RECORD.md).
+  [change record](docs/M10_CHANGE_RECORD.md); the order changes:
+  [plan](docs/M11_MCP_WRITES.md), [change record](docs/M11_CHANGE_RECORD.md).
 - **Delivery and maintenance:** [M1–M8 delivery report](docs/DELIVERY_REPORT.md),
   [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
 
