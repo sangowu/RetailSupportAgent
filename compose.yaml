@@ -93,6 +93,7 @@ services:
       - RSA_AUTH_JWKS_URL
       - RSA_AUTH_TOKEN_USE
       - RSA_OPENAI_BASE_URL
+      - RSA_MCP_IDLE_URL
     ports:
       - "${RSA_BIND:-127.0.0.1}:8000:8000"
     depends_on:

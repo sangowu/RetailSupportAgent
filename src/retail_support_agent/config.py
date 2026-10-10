@@ -133,6 +133,11 @@ class Settings(BaseSettings):
     # way to turn it off without losing the row and column slices too.
     scope_check_output: bool = Field(default=True, validation_alias="RSA_SCOPE_CHECK_OUTPUT")
 
+    # The MCP server's idle route, when one runs beside this service (M10). /idle then
+    # counts its traffic too, because the watcher asks this service only: someone using
+    # the demo through an MCP client is using it. Unset, /idle answers as before.
+    mcp_idle_url: str | None = Field(default=None, validation_alias="RSA_MCP_IDLE_URL")
+
     dashscope_api_key: SecretStr = Field(validation_alias="DASHSCOPE_API_KEY")
     base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
