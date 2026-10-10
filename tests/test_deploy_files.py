@@ -534,11 +534,42 @@ class TestWhatTheInternetCanReach:
     in allowed_cidrs before this; now it is not routable from outside at all.
     """
 
-    def test_only_caddy_publishes_ports(self, instance_compose: dict[str, Any]) -> None:
-        publishing = {
-            name for name, service in instance_compose["services"].items() if service.get("ports")
+    def test_only_caddy_publishes_ports_beyond_the_machine(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        """Anything else may publish only on the loopback address. A mapping without an
+        address binds every interface, so it counts as public here."""
+        public = {
+            name
+            for name, service in instance_compose["services"].items()
+            for port in service.get("ports", [])
+            if not str(port).startswith("127.0.0.1:")
         }
-        assert publishing == {"caddy"}
+        assert public == {"caddy"}
+
+    def test_only_the_watchers_route_is_on_the_loopback_address(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        """The idle watcher runs on the host and asks 127.0.0.1:8000/idle. Since M6.6 the
+        API published nothing, so the watcher got no answer and the instance stopped only
+        at the uptime cap. Exactly that one port comes back, and nothing more."""
+        loopback = {
+            (name, str(port))
+            for name, service in instance_compose["services"].items()
+            for port in service.get("ports", [])
+            if str(port).startswith("127.0.0.1:")
+        }
+        assert loopback == {("api", "127.0.0.1:8000:8000")}
+
+    def test_the_watcher_asks_where_the_api_is_published(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        """Read, not imported: what matters is the default the unit runs with, since the
+        instance's /etc/rsa-idle.env sets no URL."""
+        watcher = (INSTANCE / "idle_shutdown.py").read_text(encoding="utf-8")
+        assert 'DEFAULT_URL = "http://127.0.0.1:8000/idle"' in watcher
+        assert "RSA_IDLE_URL" not in (INSTANCE / "cloud-init.sh.tftpl").read_text(encoding="utf-8")
+        assert "127.0.0.1:8000:8000" in instance_compose["services"]["api"]["ports"]
 
     def test_caddy_publishes_exactly_eighty_and_four_four_three(
         self, instance_compose: dict[str, Any]

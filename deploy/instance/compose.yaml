@@ -13,8 +13,9 @@
 # the instance always describes the version that is running. Editing the copy in /opt/rsa
 # has no lasting effect: the next start overwrites it.
 #
-# Only Caddy publishes ports. The API and the UI are reachable on the compose network and
-# nowhere else, so the write routes cannot be called from outside at all.
+# Only Caddy publishes ports to the network. The API and the UI are reachable on the
+# compose network, and the API also on the host's loopback address for the idle watcher,
+# so the write routes cannot be called from outside the machine at all.
 services:
   db:
     image: postgres:17-alpine
@@ -88,6 +89,13 @@ services:
       - RSA_AUTH_JWKS_URL
       - RSA_AUTH_TOKEN_USE
       - RSA_OPENAI_BASE_URL
+    # On the loopback address only, for the idle watcher. It runs on the host, not on the
+    # compose network, and asks http://127.0.0.1:8000/idle. M6.6 removed this port when
+    # Caddy took over the public side, and from then on the watcher got no answer, which
+    # it rightly reads as "not idle": the instance stopped only at the uptime cap. Bound
+    # to 127.0.0.1, it is reachable from this machine and from nowhere else.
+    ports:
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     depends_on:
       db: {condition: service_healthy}
