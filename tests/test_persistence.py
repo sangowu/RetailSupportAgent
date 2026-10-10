@@ -122,6 +122,54 @@ class TestConfirmations:
         assert store.confirm(session_id, CANCEL.fingerprint) == cid
         assert store.pending_confirmation(session_id) is None
 
+    def test_reopening_the_same_proposal_adds_no_row(self, store: Store) -> None:
+        """M9: the MCP server asks again on every elicitation round. A new row each time
+        would cancel the confirmation the user is in the middle of answering."""
+        session_id = new_session(store)
+        first = store.open_confirmation(session_id, CANCEL)
+        again = store.open_confirmation(session_id, CANCEL)
+        assert again == first
+        assert store.confirm(session_id, CANCEL.fingerprint) == first
+
+    def test_racing_openings_of_one_proposal_leave_one_row(self, store: Store) -> None:
+        session_id = new_session(store)
+        barrier = threading.Barrier(8)
+        ids: list[int] = []
+        errors: list[BaseException] = []
+
+        def open_it() -> None:
+            barrier.wait()
+            try:
+                ids.append(store.open_confirmation(session_id, CANCEL))
+            except BaseException as exc:  # pragma: no cover - the assertion reports it
+                errors.append(exc)
+
+        threads = [threading.Thread(target=open_it) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        assert len(set(ids)) == 1
+
+    def test_the_confirmation_of_one_argument_set_is_found_by_its_fingerprint(
+        self, store: Store
+    ) -> None:
+        """Not the latest confirmation of any action: that would give a retry of an
+        earlier action a different idempotency key from its first run."""
+        session_id = new_session(store)
+        first = store.open_confirmation(session_id, CANCEL)
+        store.confirm(session_id, CANCEL.fingerprint)
+        other = ProposedCall("cancel_pending_order", {"order_id": "#W002", "reason": "x"})
+        second = store.open_confirmation(session_id, other)
+        store.confirm(session_id, other.fingerprint)
+
+        assert store.last_confirmation_id(session_id) == second
+        assert store.confirmation_for(session_id, CANCEL.fingerprint) == first
+        assert store.confirmation_for(session_id, other.fingerprint) == second
+        never = ProposedCall("cancel_pending_order", {"order_id": "#W003", "reason": "x"})
+        assert store.confirmation_for(session_id, never.fingerprint) is None
+
 
 class TestIdempotency:
     def test_the_same_key_executes_exactly_once(self, store: Store) -> None:
