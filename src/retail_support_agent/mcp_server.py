@@ -21,8 +21,12 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Callable
-from typing import Annotated, Any
+import threading
+from collections import OrderedDict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Annotated, Any, Protocol
 
 import anyio.to_thread
 import uvicorn
@@ -34,14 +38,24 @@ from mcp_types import ToolAnnotations
 from pydantic import AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks
+from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks, Identity
 from retail_support_agent.db import make_engine, make_session_factory
-from retail_support_agent.guardrails import Decision
+from retail_support_agent.domain import RetailDomain, ToolResult
+from retail_support_agent.guardrails import (
+    Decision,
+    GuardVerdict,
+    ProposedCall,
+    SessionLimits,
+    SessionState,
+    WriteGuard,
+)
+from retail_support_agent.scope import AccessScope, audited
 from retail_support_agent.store import Store
 
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "retail-support-agent"
+SESSION_PREFIX = "mcp:"
 
 # The first version's read tools. Names and parameters are upstream's, so a client that
 # knows the τ²-bench Retail tools needs no translation.
@@ -81,6 +95,11 @@ class McpSettings(BaseSettings):
     # The URL clients use to reach /mcp. Published in the protected-resource metadata;
     # defaults to the bind address, which is right for the local-only first version.
     public_url: str | None = Field(default=None, validation_alias="RSA_MCP_URL")
+    # The same slices the API applies, read from the same variables, so the two entry
+    # points cannot disagree about what a customer may see or change.
+    scope_redact_fields: str = Field(default="email", validation_alias="RSA_SCOPE_REDACT_FIELDS")
+    scope_write_statuses: str = Field(default="", validation_alias="RSA_SCOPE_WRITE_STATUSES")
+    session_cache_size: int = Field(default=32, ge=1, validation_alias="RSA_SESSION_CACHE_SIZE")
 
     def resource_url(self) -> str:
         return self.public_url or f"http://{self.host}:{self.port}/mcp"
@@ -132,6 +151,75 @@ def refusal(decision: Decision, reason: str) -> dict[str, Any]:
     return {"status": decision.value, "reason": reason}
 
 
+class Domain(Protocol):
+    """What this module needs from a retail domain. `RetailDomain` is the real one."""
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult: ...
+    def order_owner(self, order_id: str) -> str | None: ...
+    def order_status(self, order_id: str) -> str | None: ...
+    def tool_names(self) -> set[str]: ...
+    def db_hash(self) -> str: ...
+
+
+def session_id_for(subject: str) -> str:
+    """One MCP session per authenticated subject, kept apart from the API's sessions."""
+    return f"{SESSION_PREFIX}{subject}"
+
+
+class _CachedSession:
+    """One session's retail database, held in this process.
+
+    The lock serializes every touch of the domain: concurrent tool calls for one session
+    run in different worker threads, and upstream's in-memory database is not written to
+    be shared. It is never held while waiting on the store, so a write blocked on the
+    idempotency index cannot hold up the write it is waiting for.
+    """
+
+    def __init__(self, domain: Domain) -> None:
+        self.domain = domain
+        self.lock = threading.RLock()
+        # Refused proposals, counted across calls the way an agent session counts them.
+        # In memory, as in the API: it resets when the entry is evicted or the process
+        # restarts, which is what `SessionState.denials` does there too.
+        self.denials = 0
+        # Calls currently using this entry. An entry in use is never evicted: a write
+        # finishing on an evicted domain would be missing from its replacement.
+        self.in_use = 0
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        with self.lock:
+            return self.domain.execute(name, arguments)
+
+    def order_owner(self, order_id: str) -> str | None:
+        with self.lock:
+            return self.domain.order_owner(order_id)
+
+    def order_status(self, order_id: str) -> str | None:
+        with self.lock:
+            return self.domain.order_status(order_id)
+
+    def db_hash(self) -> str:
+        with self.lock:
+            return self.domain.db_hash()
+
+
+@dataclass
+class _Call:
+    """Everything one tool call is judged against, assembled fresh for that call.
+
+    Built per call rather than kept per session: the roles, the scope and the confirmed
+    fingerprints are read from the database every time, so a revoked role or a
+    confirmation recorded by a concurrent call is seen on the next call, not at the next
+    restart.
+    """
+
+    session_id: str
+    identity: Identity
+    state: SessionState
+    guard: WriteGuard
+    cached: _CachedSession
+
+
 class RetailMcp:
     """What the MCP tools do, independent of the transport.
 
@@ -141,20 +229,170 @@ class RetailMcp:
     waiting for.
     """
 
-    def __init__(self, store: Store | None) -> None:
+    def __init__(
+        self,
+        store: Store | None,
+        domain_factory: Callable[[], Domain] = RetailDomain,
+        *,
+        hidden_fields: frozenset[str] = frozenset({"email"}),
+        write_statuses: frozenset[str] | None = None,
+        cache_size: int = 32,
+        limits: SessionLimits | None = None,
+    ) -> None:
         self._store = store
+        self._domain_factory = domain_factory
+        self._hidden_fields = hidden_fields
+        self._write_statuses = write_statuses
+        self._capacity = max(1, cache_size)
+        self._limits = limits or SessionLimits()
+        self._sessions: OrderedDict[str, _CachedSession] = OrderedDict()
+        self._sessions_guard = threading.Lock()
+
+    @classmethod
+    def from_settings(cls, store: Store, settings: McpSettings) -> RetailMcp:
+        return cls(
+            store,
+            hidden_fields=_csv_set(settings.scope_redact_fields),
+            write_statuses=_csv_set(settings.scope_write_statuses) or None,
+            cache_size=settings.session_cache_size,
+        )
+
+    # ---- tools -----------------------------------------------------------------------
 
     def read(self, subject: str | None, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Run one read tool for the authenticated subject."""
+        """Run one read tool for the authenticated subject, inside its scope."""
+        with self._call(subject, name) as call:
+            if isinstance(call, dict):
+                return call
+            verdict = self._review(call, ProposedCall(name, arguments))
+            if not verdict.allowed:
+                return self._refused(call, verdict)
+            result = call.cached.execute(name, arguments)
+            if not result.ok:
+                return {"status": "tool_error", "result": result.content}
+            # The column slice, applied to what the client's model is about to read.
+            return {"status": "ok", "result": call.state.scope.project(result.content)}
+
+    def session_db_hash(self, subject: str) -> str | None:
+        """The fingerprint of a session's retail database, or None if it is not loaded.
+        Lets a test show that a refused or declined write changed nothing."""
+        cached = self._sessions.get(session_id_for(subject))
+        return cached.db_hash() if cached is not None else None
+
+    # ---- one call --------------------------------------------------------------------
+
+    @contextmanager
+    def _call(self, subject: str | None, tool: str) -> Iterator[_Call | dict[str, Any]]:
+        """Assemble the call, or yield the refusal that ends it before it starts."""
         if not subject:
-            return refusal(
+            yield refusal(
                 Decision.DENIED_PERMISSION,
-                f"{name} needs an authenticated caller, and this call carries no identity.",
+                f"{tool} needs an authenticated caller, and this call carries no identity.",
             )
-        return refusal(
-            Decision.DENIED_PERMISSION,
-            f"{name} cannot run yet: this server does not resolve identities.",
-        )
+            return
+        if self._store is None:
+            yield refusal(
+                Decision.DENIED_PERMISSION,
+                f"{tool} cannot run: this server has no database to resolve identities.",
+            )
+            return
+        identity = self._store.identity_for(subject)
+        if identity is None:
+            # Authenticated but not provisioned: the API answers 403 here. An account is
+            # granted by an administrator, never created on first sight.
+            yield refusal(Decision.DENIED_PERMISSION, "This subject has no account here.")
+            return
+
+        session_id = session_id_for(subject)
+        self._store.ensure_session(session_id, identity.user_id, subject)
+        cached = self._checkout(session_id)
+        try:
+            state = SessionState(
+                user_id=identity.user_id,
+                limits=self._limits,
+                permissions=identity.permissions,
+                scope=AccessScope.for_user(
+                    identity.user_id,
+                    statuses=self._write_statuses,
+                    hidden_fields=self._hidden_fields,
+                    source="self",
+                ),
+                confirmed_fingerprints=self._store.confirmed_fingerprints(session_id),
+            )
+            state.denials = cached.denials
+            stop = state.stop_reason()
+            if stop is not None:
+                yield {"status": "stopped", "reason": stop}
+                return
+            guard = WriteGuard(cached.domain.tool_names(), cached.order_owner, cached.order_status)
+            yield _Call(session_id, identity, state, guard, cached)
+        finally:
+            self._release(cached)
+
+    def _review(self, call: _Call, proposed: ProposedCall) -> GuardVerdict:
+        """The verdict that counts: refusals are added to the session's tally and written
+        to the audit trail. Exactly one per tool call, so one refused call is one row."""
+        before = call.state.denials
+        verdict = call.guard.review(proposed, call.state)
+        with call.cached.lock:
+            call.cached.denials += call.state.denials - before
+        assert self._store is not None  # a _Call exists only with a store
+        self._store.record_access_events(call.session_id, audited(call.state.slice_audit.drain()))
+        return verdict
+
+    def _refused(self, call: _Call, verdict: GuardVerdict) -> dict[str, Any]:
+        reason = verdict.reason
+        stop = call.state.stop_reason()
+        if stop is not None:
+            # Said on the refusal that reached the limit, so the client learns it now
+            # rather than from the next call.
+            reason = f"{reason} {stop} This session will run no further tools."
+        return refusal(verdict.decision, reason)
+
+    # ---- the per-session cache -------------------------------------------------------
+
+    def _checkout(self, session_id: str) -> _CachedSession:
+        """This session's domain, rebuilt from the database if this process lacks it."""
+        with self._sessions_guard:
+            cached = self._sessions.get(session_id)
+            if cached is None:
+                cached = _CachedSession(self._rebuild(session_id))
+                self._sessions[session_id] = cached
+            self._sessions.move_to_end(session_id)
+            cached.in_use += 1
+            self._evict_past_capacity()
+            return cached
+
+    def _release(self, cached: _CachedSession) -> None:
+        with self._sessions_guard:
+            cached.in_use -= 1
+
+    def _rebuild(self, session_id: str) -> Domain:
+        """A fresh domain with this session's writes replayed onto it.
+
+        The same rule as `RetailAgent.recover`: upstream's tools are deterministic, so
+        the succeeded operations, in order, reproduce the database. Replay calls the
+        domain directly and never `execute_once`, so rebuilding records no new work.
+        """
+        assert self._store is not None
+        domain = self._domain_factory()
+        for op in self._store.operations(session_id):
+            if op.status == "succeeded":
+                domain.execute(op.tool_name, dict(op.arguments))
+        return domain
+
+    def _evict_past_capacity(self) -> None:
+        """Drop least-recently-used sessions that no call is using. Each holds a copy of
+        the retail database, about 12 MB, and the database can rebuild any of them."""
+        while len(self._sessions) > self._capacity:
+            idle = next((key for key, entry in self._sessions.items() if entry.in_use == 0), None)
+            if idle is None:
+                return
+            del self._sessions[idle]
+
+
+def _csv_set(raw: str) -> frozenset[str]:
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
 
 
 def _subject() -> str | None:
@@ -258,7 +496,7 @@ def main() -> None:
         raise SystemExit("The MCP server requires RSA_DATABASE_URL.")
     verifier = make_verifier(settings)
     engine = make_engine(settings.database_url.get_secret_value())
-    core = RetailMcp(store=Store(make_session_factory(engine)))
+    core = RetailMcp.from_settings(Store(make_session_factory(engine)), settings)
     server = build_server(
         core,
         verifier=verifier,
