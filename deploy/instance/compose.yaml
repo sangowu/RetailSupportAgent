@@ -89,6 +89,9 @@ services:
       - RSA_AUTH_JWKS_URL
       - RSA_AUTH_TOKEN_USE
       - RSA_OPENAI_BASE_URL
+      # The MCP server's idle route, so /idle counts its traffic (M10). The watcher
+      # asks the API only.
+      - RSA_MCP_IDLE_URL=http://mcp:8765/idle
     # On the loopback address only, for the idle watcher. It runs on the host, not on the
     # compose network, and asks http://127.0.0.1:8000/idle. M6.6 removed this port when
     # Caddy took over the public side, and from then on the watcher got no answer, which
@@ -127,6 +130,40 @@ services:
       api: {condition: service_healthy}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # The MCP server (M9, deployed in M10): the same tools behind the same guard, store and
+  # scope, for MCP clients. It calls no model, so it is given no key. Caddy routes /mcp
+  # here; /health and /idle stay on the compose network.
+  mcp:
+    image: ${RSA_IMAGE:?RSA_IMAGE is required}
+    command: ["mcp"]
+    environment:
+      - RSA_DATABASE_URL=postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      - RSA_AUTH_ISSUER=${RSA_AUTH_ISSUER:?RSA_AUTH_ISSUER is required}
+      - RSA_AUTH_AUDIENCE=${RSA_AUTH_AUDIENCE:?RSA_AUTH_AUDIENCE is required}
+      # Bound on every interface of the container, reached only through Caddy. The
+      # public URL is what the protected-resource metadata names, and the allowed host
+      # is the only name /mcp answers to.
+      - RSA_MCP_HOST=0.0.0.0
+      - RSA_MCP_URL=https://${RSA_DOMAIN:?RSA_DOMAIN is required}/mcp
+      - RSA_MCP_ALLOWED_HOSTS=${RSA_DOMAIN:?RSA_DOMAIN is required}
+      # The API's settings that decide what a caller may see, passed through the same
+      # way, so the two entry points cannot disagree.
+      - RSA_SESSION_CACHE_SIZE
+      - RSA_SCOPE_REDACT_FIELDS
+      - RSA_SCOPE_WRITE_STATUSES
+      - RSA_AUTH_JWKS_URL
+      - RSA_AUTH_TOKEN_USE
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      seed: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).status==200 else 1)\""]
       interval: 3s
       timeout: 5s
       retries: 40

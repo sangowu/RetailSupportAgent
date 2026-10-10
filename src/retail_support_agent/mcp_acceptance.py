@@ -398,6 +398,8 @@ async def _answered(r: Rig, mode: str, answers: Answers) -> dict[str, Any]:
         "db_hash_changed": hash_before != hash_after,
         "write_executed_audit_rows": len(executed_rows),
         "operations": len(r.store.operations(session_id)),
+        # Whether an answered form still holds the service open (M10).
+        "pending_confirmations_after": int(r.store.pending_confirmation(session_id) is not None),
     }
 
 
@@ -410,6 +412,7 @@ async def user_declines_or_cancels(r: Rig, mode: str) -> dict[str, Any]:
         and answer["elicitations_sent"] == 1
         and not answer["db_hash_changed"]
         and answer["operations"] == 0
+        and answer["pending_confirmations_after"] == 0
         for answer in (declined, cancelled)
     )
     return numbers

@@ -25,6 +25,7 @@ from retail_support_agent.mcp_server import (
     RetailMcp,
     build_server,
     make_verifier,
+    transport_security,
 )
 from test_auth import AUDIENCE, ISSUER, Keys, _make_keys, mint
 
@@ -229,3 +230,135 @@ class TestConfiguration:
         )
         with pytest.raises(ValueError, match="issuer URL"):
             build_server(RetailMcp(store=None), verifier=verifier)
+
+
+# ---- M10: what a deployment needs -----------------------------------------------------
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture(scope="module")
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture(scope="module")
+def deployed_url(keys: Keys, clock: FakeClock) -> Iterator[str]:
+    """A server as the instance runs it: a verifier, and a named host. The core has no
+    store, so an authenticated call is refused after authentication, which is enough to
+    move the activity clock."""
+    verifier = CognitoTokenVerifier(
+        AuthConfig(issuer=ISSUER, audience=AUDIENCE, keys=StaticKeys(keys.jwks))
+    )
+    server = build_server(
+        RetailMcp(store=None, clock=clock),
+        verifier=verifier,
+        issuer_url=ISSUER,
+        resource_url="https://demo.example/mcp",
+    )
+    app = server.streamable_http_app(
+        host="0.0.0.0", transport_security=transport_security("demo.example")
+    )
+    with serving(app) as url:
+        yield url
+
+
+def base_of(url: str) -> str:
+    return url.removesuffix("/mcp")
+
+
+async def seconds_since_request(url: str) -> float:
+    async with httpx2.AsyncClient() as http:
+        response = await http.get(f"{base_of(url)}/idle")
+    assert response.status_code == 200
+    return float(response.json()["seconds_since_request"])
+
+
+class TestTheOperatorRoutes:
+    async def test_health_and_idle_answer_without_a_token(self, deployed_url: str) -> None:
+        async with httpx2.AsyncClient() as http:
+            health = await http.get(f"{base_of(deployed_url)}/health")
+            idle = await http.get(f"{base_of(deployed_url)}/idle")
+        assert (health.status_code, health.json()) == (200, {"status": "ok"})
+        assert idle.status_code == 200
+        assert set(idle.json()) == {"seconds_since_request"}
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_a_refused_request_is_not_activity(
+        self, deployed_url: str, keys: Keys, clock: FakeClock, mode: str
+    ) -> None:
+        """Otherwise anyone on the internet could keep the instance running."""
+        before = await seconds_since_request(deployed_url)
+        clock.now += 120
+        assert await post_with(deployed_url, mode, None) == 401
+        assert await post_with(deployed_url, mode, mint(_make_keys())) == 401
+        assert await seconds_since_request(deployed_url) == pytest.approx(before + 120)
+
+    @pytest.mark.parametrize("mode", MODES)
+    async def test_an_authenticated_tool_call_is_activity(
+        self, deployed_url: str, keys: Keys, clock: FakeClock, mode: str
+    ) -> None:
+        clock.now += 120
+        assert await seconds_since_request(deployed_url) >= 120
+        headers = {"Authorization": f"Bearer {mint(keys)}", "Host": "demo.example"}
+        async with connect(deployed_url, mode, headers) as client:
+            await client.call_tool("get_order_details", {"order_id": "#W4135875"})
+        assert await seconds_since_request(deployed_url) == 0.0
+
+
+@pytest.mark.parametrize("mode", MODES)
+class TestTheHostCheck:
+    async def test_the_named_host_is_served(self, deployed_url: str, keys: Keys, mode: str) -> None:
+        """Through the SDK's client: a hand-written request satisfies the Host check but
+        not 2026-07-28's envelope, so its status would say nothing about the check."""
+        headers = {"Authorization": f"Bearer {mint(keys)}", "Host": "demo.example"}
+        async with connect(deployed_url, mode, headers) as client:
+            result = await client.call_tool("get_order_details", {"order_id": "#W4135875"})
+        assert result.structured_content is not None
+        assert result.structured_content["status"] == "denied_permission"  # no store here
+
+    async def test_another_name_is_refused(self, deployed_url: str, keys: Keys, mode: str) -> None:
+        """Bound to 0.0.0.0 the SDK would accept any Host; a DNS-rebinding page relies
+        on exactly that."""
+        headers, body = opening_request(mode)
+        headers |= {"Authorization": f"Bearer {mint(keys)}", "Host": "attacker.example"}
+        async with httpx2.AsyncClient() as http:
+            response = await http.post(deployed_url, headers=headers, json=body)
+        assert response.status_code == 421
+
+    async def test_a_foreign_origin_is_refused(
+        self, deployed_url: str, keys: Keys, mode: str
+    ) -> None:
+        headers, body = opening_request(mode)
+        headers |= {
+            "Authorization": f"Bearer {mint(keys)}",
+            "Host": "demo.example",
+            "Origin": "https://attacker.example",
+        }
+        async with httpx2.AsyncClient() as http:
+            response = await http.post(deployed_url, headers=headers, json=body)
+        assert response.status_code == 403
+
+
+class TestTransportSecurity:
+    def test_unset_keeps_the_sdks_default(self) -> None:
+        assert transport_security("") is None
+        assert transport_security(" , ") is None
+
+    def test_named_hosts_are_the_only_hosts_and_https_origins(self) -> None:
+        settings = transport_security("b.example, a.example")
+        assert settings is not None
+        assert settings.enable_dns_rebinding_protection
+        assert settings.allowed_hosts == ["a.example", "b.example"]
+        assert settings.allowed_origins == ["https://a.example", "https://b.example"]
+
+    def test_read_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RSA_MCP_ALLOWED_HOSTS", "demo.example")
+        settings = McpSettings(_env_file=None)  # type: ignore[call-arg]
+        assert settings.allowed_hosts == "demo.example"

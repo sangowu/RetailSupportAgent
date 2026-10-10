@@ -23,7 +23,7 @@ INSTANCE = REPO / "deploy" / "instance"
 TEMPLATE = INSTANCE / "cloud-init.sh.tftpl"
 DEMO_TF = REPO / "deploy" / "terraform" / "demo" / "main.tf"
 
-SERVICES = ("db", "migrate", "seed", "api", "ui")
+SERVICES = ("db", "migrate", "seed", "api", "ui", "mcp")
 # Caddy runs only on the instance: development reaches the UI on the loopback address and
 # has nothing to get a certificate for.
 INSTANCE_ONLY = ("caddy",)
@@ -103,14 +103,14 @@ class TestTheTwoComposeFiles:
             service
         ].get("command")
 
-    @pytest.mark.parametrize("service", ("migrate", "seed", "api", "ui"))
+    @pytest.mark.parametrize("service", ("migrate", "seed", "api", "ui", "mcp"))
     def test_each_service_is_given_the_same_settings(
         self, service: str, local_compose: dict[str, Any], instance_compose: dict[str, Any]
     ) -> None:
         """The names, not the values: the database host is the same, the key is not."""
         assert names_given(local_compose, service) == names_given(instance_compose, service)
 
-    @pytest.mark.parametrize("service", ("db", "api", "ui"))
+    @pytest.mark.parametrize("service", ("db", "api", "ui", "mcp"))
     def test_each_long_running_service_has_a_health_check(
         self, service: str, instance_compose: dict[str, Any]
     ) -> None:
@@ -126,7 +126,7 @@ class TestTheTwoComposeFiles:
     ) -> None:
         migrate = instance_compose["services"]["migrate"]
         assert migrate["restart"] == "no"
-        for dependent in ("api", "ui"):
+        for dependent in ("api", "ui", "mcp"):
             condition = instance_compose["services"][dependent]["depends_on"]["migrate"]
             assert condition["condition"] == "service_completed_successfully"
 
@@ -144,7 +144,7 @@ class TestTheTwoComposeFiles:
     def test_the_instance_file_requires_an_image_rather_than_defaulting(
         self, instance_compose: dict[str, Any]
     ) -> None:
-        for service in ("migrate", "seed", "api", "ui"):
+        for service in ("migrate", "seed", "api", "ui", "mcp"):
             assert instance_compose["services"][service]["image"].startswith("${RSA_IMAGE:?")
 
 
@@ -622,3 +622,76 @@ class TestTheDnsUpdater:
     def test_it_waits_for_the_change(self) -> None:
         text = (INSTANCE / "update-dns.sh").read_text(encoding="utf-8")
         assert "resource-record-sets-changed" in text
+
+
+class TestTheMcpServer:
+    """M10: the MCP server in both stacks, behind the proxy on the instance."""
+
+    @staticmethod
+    def caddy_directives() -> str:
+        lines = (INSTANCE / "Caddyfile").read_text(encoding="utf-8").splitlines()
+        return chr(10).join(line for line in lines if not line.strip().startswith("#"))
+
+    def test_the_image_has_the_role_the_service_runs(
+        self, local_compose: dict[str, Any], instance_compose: dict[str, Any]
+    ) -> None:
+        entrypoint = (REPO / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "  mcp)" in entrypoint
+        assert "python -m retail_support_agent.mcp_server" in entrypoint
+        for compose in (local_compose, instance_compose):
+            assert compose["services"]["mcp"]["command"] == ["mcp"]
+
+    def test_it_is_given_no_model_key(
+        self, local_compose: dict[str, Any], instance_compose: dict[str, Any]
+    ) -> None:
+        """It calls no model. A key it does not need is a key it can leak."""
+        for compose in (local_compose, instance_compose):
+            assert "DASHSCOPE_API_KEY" not in names_given(compose, "mcp")
+
+    def test_on_the_instance_it_answers_only_to_the_demos_name(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        assert value_given(instance_compose, "mcp", "RSA_MCP_ALLOWED_HOSTS") == (
+            "${RSA_DOMAIN:?RSA_DOMAIN is required}"
+        )
+        assert value_given(instance_compose, "mcp", "RSA_MCP_URL") == (
+            "https://${RSA_DOMAIN:?RSA_DOMAIN is required}/mcp"
+        )
+
+    def test_on_the_instance_it_requires_the_user_pool(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        for name in ("RSA_AUTH_ISSUER", "RSA_AUTH_AUDIENCE"):
+            value = value_given(instance_compose, "mcp", name)
+            assert value is not None and value.startswith(f"${{{name}:?")
+
+    def test_it_reads_the_same_scope_settings_as_the_api(
+        self, instance_compose: dict[str, Any]
+    ) -> None:
+        shared = {
+            "RSA_SESSION_CACHE_SIZE",
+            "RSA_SCOPE_REDACT_FIELDS",
+            "RSA_SCOPE_WRITE_STATUSES",
+            "RSA_AUTH_JWKS_URL",
+            "RSA_AUTH_TOKEN_USE",
+        }
+        assert shared <= names_given(instance_compose, "mcp")
+        assert shared <= names_given(instance_compose, "api")
+
+    def test_locally_it_starts_only_when_asked(self, local_compose: dict[str, Any]) -> None:
+        """A developer machine has no user pool, and the server refuses to start without
+        one; in the default profile it would fail every `compose up`."""
+        assert local_compose["services"]["mcp"]["profiles"] == ["mcp"]
+
+    def test_the_proxy_routes_mcp_and_its_metadata(self) -> None:
+        directives = self.caddy_directives()
+        for path in ("/mcp", "/.well-known/oauth-protected-resource/mcp"):
+            assert f"handle {path} {{\n\t\treverse_proxy mcp:8765" in directives
+
+    def test_the_proxy_does_not_route_its_operator_routes(self) -> None:
+        """/health and /idle on the MCP server answer without a token."""
+        directives = self.caddy_directives()
+        assert directives.count("reverse_proxy mcp:8765") == 2
+        for path in ("/health", "/idle"):
+            block = directives[directives.index(f"handle {path} {{") :]
+            assert block.split("}", 1)[0].strip().endswith("reverse_proxy api:8000")

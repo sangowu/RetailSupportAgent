@@ -110,6 +110,26 @@ class TestAConfirmedWrite:
         assert answer["status"] == "declined"
         assert store.operations(session_id_for(subject)) == []
 
+    async def test_a_declined_form_leaves_nothing_pending_and_can_be_asked_again(
+        self, url: str, store: Store, keys: Keys, mode: str
+    ) -> None:
+        """M10: a pending row keeps the instance from counting as idle, and an answered
+        form is owed nothing. The user may still change their mind on the next call."""
+        subject = provision(store, AVA, "customer")
+        session_id = session_id_for(subject)
+        declines = Answers("decline")
+        async with connect(url, mode, bearer(keys, subject), elicitation_callback=declines) as c:
+            answer = status_of(await c.call_tool("cancel_pending_order", CANCEL_OWN))
+        assert answer["status"] == "declined"
+        assert store.pending_confirmation(session_id) is None
+
+        accepts = Answers("accept")
+        async with connect(url, mode, bearer(keys, subject), elicitation_callback=accepts) as c:
+            answer = status_of(await c.call_tool("cancel_pending_order", CANCEL_OWN))
+        assert len(accepts.asked) == 1
+        assert answer["status"] == "executed"
+        assert len(store.operations(session_id)) == 1
+
     async def test_a_client_cannot_pass_the_answer_as_an_argument(
         self, url: str, store: Store, keys: Keys, mode: str
     ) -> None:

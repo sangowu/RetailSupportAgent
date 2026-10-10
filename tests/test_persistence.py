@@ -170,6 +170,39 @@ class TestConfirmations:
         never = ProposedCall("cancel_pending_order", {"order_id": "#W003", "reason": "x"})
         assert store.confirmation_for(session_id, never.fingerprint) is None
 
+    def test_a_declined_proposal_is_owed_nothing(self, store: Store) -> None:
+        """M10: an answered form must not keep the service from counting as idle."""
+        session_id = new_session(store)
+        before = store.pending_confirmation_count()
+        cid = store.open_confirmation(session_id, CANCEL)
+        assert store.pending_confirmation_count() == before + 1
+        assert store.withdraw_confirmation(session_id, CANCEL.fingerprint) == cid
+        assert store.pending_confirmation(session_id) is None
+        assert store.pending_confirmation_count() == before
+        # Withdrawn is not confirmed: it authorizes nothing.
+        assert store.confirmation_for(session_id, CANCEL.fingerprint) is None
+        assert CANCEL.fingerprint not in store.confirmed_fingerprints(session_id)
+
+    def test_withdrawing_another_proposal_leaves_the_pending_one(self, store: Store) -> None:
+        session_id = new_session(store)
+        store.open_confirmation(session_id, CANCEL)
+        other = ProposedCall("cancel_pending_order", {"order_id": "#W002", "reason": "x"})
+        assert store.withdraw_confirmation(session_id, other.fingerprint) is None
+        pending = store.pending_confirmation(session_id)
+        assert pending is not None and pending.fingerprint == CANCEL.fingerprint
+
+    def test_asking_again_after_a_decline_is_a_new_question(self, store: Store) -> None:
+        session_id = new_session(store)
+        first = store.open_confirmation(session_id, CANCEL)
+        store.withdraw_confirmation(session_id, CANCEL.fingerprint)
+        again = store.open_confirmation(session_id, CANCEL)
+        assert again != first
+        assert store.confirm(session_id, CANCEL.fingerprint) == again
+
+    def test_withdrawing_with_nothing_pending_does_nothing(self, store: Store) -> None:
+        session_id = new_session(store)
+        assert store.withdraw_confirmation(session_id, CANCEL.fingerprint) is None
+
 
 class TestIdempotency:
     def test_the_same_key_executes_exactly_once(self, store: Store) -> None:

@@ -280,3 +280,105 @@ class TestTheIdleRouteAgainstARealDatabase:
             holding=tuple(client.get("/idle").json()["holding"]),
         )
         assert not at(answer).shutdown
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TestTheIdleRouteSpeaksForTheMcpServer:
+    """M10: the watcher asks the API only, so the API's answer includes the MCP server.
+
+    Against a real MCP app over HTTP, with its clock under the test's control.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def mcp_clock() -> FakeClock:
+        return FakeClock()
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def mcp_idle_url(mcp_clock: FakeClock) -> Iterator[str]:
+        from retail_support_agent.mcp_acceptance import serving
+        from retail_support_agent.mcp_server import RetailMcp, build_server
+
+        server = build_server(RetailMcp(store=None, clock=mcp_clock))
+        with serving(server.streamable_http_app(host="127.0.0.1")) as url:
+            yield url.removesuffix("/mcp") + "/idle"
+
+    @staticmethod
+    def client_for(url: str | None) -> TestClient:
+        from retail_support_agent.api import create_app
+        from retail_support_agent.config import Settings
+
+        settings = Settings(  # type: ignore[call-arg]
+            DASHSCOPE_API_KEY="not-a-real-key-for-tests", RSA_MCP_IDLE_URL=url
+        )
+        return TestClient(create_app(settings=settings, store=None))
+
+    @staticmethod
+    def quiet_api_for(client: TestClient, seconds: float) -> None:
+        assert isinstance(client.app, FastAPI)
+        client.app.state.last_activity = time.monotonic() - seconds
+
+    def test_mcp_in_use_keeps_a_quiet_api_from_idling(
+        self, mcp_idle_url: str, mcp_clock: FakeClock
+    ) -> None:
+        client = self.client_for(mcp_idle_url)
+        self.quiet_api_for(client, 3600.0)
+        mcp_clock.now += 60  # an MCP tool call a minute ago, by the MCP server's clock
+        body = client.get("/idle").json()
+        assert body["seconds_since_request"] > 3500.0
+        assert body["seconds_since_mcp_request"] < 3500.0
+        assert body["idle_seconds"] == body["seconds_since_mcp_request"]
+        assert body["holding"] == []
+
+    def test_an_api_in_use_keeps_a_quiet_mcp_server_from_idling(
+        self, mcp_idle_url: str, mcp_clock: FakeClock
+    ) -> None:
+        client = self.client_for(mcp_idle_url)
+        mcp_clock.now += 3600
+        body = client.get("/idle").json()
+        assert body["seconds_since_mcp_request"] >= 3600.0
+        assert body["idle_seconds"] < 60.0
+
+    def test_both_quiet_is_idle_for_the_shorter_time(
+        self, mcp_idle_url: str, mcp_clock: FakeClock
+    ) -> None:
+        """The class shares one MCP clock, so the API is made far quieter than anything
+        the earlier tests can have advanced it to."""
+        client = self.client_for(mcp_idle_url)
+        self.quiet_api_for(client, 1_000_000.0)
+        mcp_clock.now += 3600
+        body = client.get("/idle").json()
+        assert 3600.0 <= body["idle_seconds"] < 1_000_000.0
+        assert body["idle_seconds"] == body["seconds_since_mcp_request"]
+
+    def test_an_mcp_server_that_does_not_answer_holds_the_machine(self) -> None:
+        """Port 9 on the loopback address: nothing listens there, so the connection is
+        refused at once."""
+        client = self.client_for("http://127.0.0.1:9/idle")
+        self.quiet_api_for(client, 3600.0)
+        body = client.get("/idle").json()
+        assert body["holding"] == ["the MCP server did not answer"]
+        assert body["idle_seconds"] == 0.0
+        assert body["seconds_since_mcp_request"] is None
+
+    def test_a_malformed_answer_is_not_an_answer(self, mcp_idle_url: str) -> None:
+        """The MCP server's /health answers 200 without the field /idle carries."""
+        from retail_support_agent.api import ask_mcp_idle
+
+        assert ask_mcp_idle(mcp_idle_url.removesuffix("/idle") + "/health") is None
+
+    def test_unset_answers_as_before(self) -> None:
+        client = self.client_for(None)
+        self.quiet_api_for(client, 3600.0)
+        body = client.get("/idle").json()
+        assert body["holding"] == []
+        assert body["idle_seconds"] > 3500.0
+        assert body["seconds_since_mcp_request"] is None

@@ -3,6 +3,7 @@
 #
 #   api       the FastAPI service
 #   ui        the Gradio demo UI
+#   mcp       the MCP server (M10)
 #   migrate   apply migrations and exit
 #   seed      provision the demo's accounts and exit
 #
@@ -20,6 +21,10 @@ case "$ROLE" in
     ;;
   ui)
     exec python -m retail_support_agent.ui
+    ;;
+  mcp)
+    # Host, port, public URL and allowed hosts come from RSA_MCP_* in the environment.
+    exec python -m retail_support_agent.mcp_server
     ;;
   migrate)
     exec alembic upgrade head

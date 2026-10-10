@@ -27,6 +27,7 @@ import hashlib
 import json
 import threading
 import time
+import urllib.request
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
@@ -600,6 +601,18 @@ class SessionRegistry:
         return len(self._agents)
 
 
+def ask_mcp_idle(url: str, timeout: float = 3.0) -> float | None:
+    """Seconds since the MCP server's last authenticated tool call, or None if it did not
+    say. Any failure is None: from here a refused connection and a malformed answer mean
+    the same thing, which is that its traffic is unknown."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        return max(0.0, float(body["seconds_since_request"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def create_app(
     settings: Settings | None = None,
     config: ModelConfig | None = None,
@@ -730,12 +743,28 @@ def create_app(
         if open_tickets:
             holding.append(f"{open_tickets} open ticket(s)")
 
+        # The MCP server's traffic, when one runs beside this service (M10). The watcher
+        # asks only this route, so it has to speak for both. An MCP server that does not
+        # answer is a reason to stay up, as this route not answering is for the watcher:
+        # not knowing whether somebody is using it is not knowing they are not.
+        since_any_request = seconds_since_request
+        seconds_since_mcp: float | None = None
+        if resolved_settings.mcp_idle_url:
+            seconds_since_mcp = ask_mcp_idle(resolved_settings.mcp_idle_url)
+            if seconds_since_mcp is None:
+                holding.append("the MCP server did not answer")
+            else:
+                since_any_request = min(since_any_request, seconds_since_mcp)
+
         return {
             # Idle time is time since the last request, and only counts while nothing
             # else is unfinished. Anything that closes a holding reason is itself a
             # request, so the clock restarts from that request rather than from the past.
-            "idle_seconds": 0.0 if holding else round(seconds_since_request, 1),
+            "idle_seconds": 0.0 if holding else round(since_any_request, 1),
             "seconds_since_request": round(seconds_since_request, 1),
+            "seconds_since_mcp_request": (
+                None if seconds_since_mcp is None else round(seconds_since_mcp, 1)
+            ),
             "holding": holding,
             # Reported, not a holding reason: SessionRegistry never releases a session,
             # so this count does not fall back to zero on its own. See M6.3 section 1.1.1.
