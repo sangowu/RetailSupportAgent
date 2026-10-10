@@ -143,5 +143,42 @@ services:
       retries: 30
       start_period: 5s
 
+  # The MCP server (M9). Behind a profile, because it refuses to start without a user
+  # pool and a developer machine has none: `docker compose --profile mcp up -d` with
+  # RSA_AUTH_ISSUER and RSA_AUTH_AUDIENCE set. Without the profile the stack is as before.
+  mcp:
+    image: retail-support-agent:local
+    container_name: rsa-mcp
+    command: ["mcp"]
+    profiles: ["mcp"]
+    environment:
+      - RSA_DATABASE_URL=postgresql+psycopg://rsa:rsa_local_dev@db:5432/rsa
+      - RSA_AUTH_ISSUER=${RSA_AUTH_ISSUER:-}
+      - RSA_AUTH_AUDIENCE=${RSA_AUTH_AUDIENCE:-}
+      - RSA_MCP_HOST=0.0.0.0
+      - RSA_MCP_URL=http://127.0.0.1:8765/mcp
+      # A client on this machine sends Host 127.0.0.1:8765 or localhost:8765.
+      - RSA_MCP_ALLOWED_HOSTS=127.0.0.1:*,localhost:*
+      - RSA_SESSION_CACHE_SIZE
+      - RSA_SCOPE_REDACT_FIELDS
+      - RSA_SCOPE_WRITE_STATUSES
+      - RSA_AUTH_JWKS_URL
+      - RSA_AUTH_TOKEN_USE
+    ports:
+      - "${RSA_BIND:-127.0.0.1}:8765:8765"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).status==200 else 1)\""]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
 volumes:
   rsa_pgdata:

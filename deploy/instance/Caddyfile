@@ -21,6 +21,16 @@
 		reverse_proxy api:8000
 	}
 
+	# The MCP server (M10). /mcp itself, and the protected-resource metadata a client
+	# reads to learn which user pool issues its tokens. Its /health and /idle are not
+	# routed: they answer without a token and are for the compose network only.
+	handle /mcp {
+		reverse_proxy mcp:8765
+	}
+	handle /.well-known/oauth-protected-resource/mcp {
+		reverse_proxy mcp:8765
+	}
+
 	# Everything else is the demo UI. Gradio needs websockets and server-sent events for
 	# its queue, which reverse_proxy passes through without configuration.
 	handle {
