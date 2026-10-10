@@ -132,6 +132,16 @@ class TestTheCoreAssemblesASessionPerCall:
         subject = provision(store, AVA, "customer")
         assert RetailMcp(store).read(subject, "list_all_product_types", {})["status"] == "ok"
 
+    def test_an_item_is_catalog_whoever_ordered_it(self, store: Store) -> None:
+        """M11: an item id names a catalog variant, not somebody's order line, so it is
+        read without a data slice, like the product it belongs to."""
+        subject = provision(store, AVA, "customer")
+        answer = RetailMcp(store).read(subject, "get_item_details", {"item_id": "7535423717"})
+        assert answer["status"] == "ok"
+        item = json.loads(answer["result"])
+        assert item["item_id"] == "7535423717"
+        assert item["price"] == 904.46
+
     def test_an_unprovisioned_subject_is_refused(self, store: Store) -> None:
         answer = RetailMcp(store).read("nobody-here", "list_all_product_types", {})
         assert answer == {

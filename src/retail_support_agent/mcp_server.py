@@ -69,12 +69,14 @@ logger = logging.getLogger(__name__)
 SERVER_NAME = "retail-support-agent"
 SESSION_PREFIX = "mcp:"
 
-# The first version's read tools. Names and parameters are upstream's, so a client that
-# knows the τ²-bench Retail tools needs no translation.
+# The read tools. Names and parameters are upstream's, so a client that knows the
+# τ²-bench Retail tools needs no translation. `get_item_details` came in M11, for the
+# exchanges and item changes that name a new item.
 READ_TOOLS: tuple[str, ...] = (
     "get_user_details",
     "get_order_details",
     "get_product_details",
+    "get_item_details",
     "list_all_product_types",
 )
 
@@ -83,6 +85,7 @@ USER_ID = Field(description="The user id, such as 'sara_doe_496'.")
 PRODUCT_ID = Field(
     description="The product id, such as '6086499569'. A product id is not an item id."
 )
+ITEM_ID = Field(description="The item id, such as '6086499569'. An item id is not a product id.")
 
 REASON = Field(
     description="The reason for cancellation: either 'no longer needed' or 'ordered by mistake'."
@@ -618,6 +621,10 @@ async def get_product_details(product_id: Annotated[str, PRODUCT_ID], ctx: Ctx) 
     )
 
 
+async def get_item_details(item_id: Annotated[str, ITEM_ID], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(_core(ctx).read, _subject(), "get_item_details", {"item_id": item_id})
+
+
 async def list_all_product_types(ctx: Ctx) -> dict[str, Any]:
     return await _in_thread(_core(ctx).read, _subject(), "list_all_product_types", {})
 
@@ -687,6 +694,7 @@ TOOLS: tuple[tuple[Callable[..., Any], str, ToolAnnotations], ...] = (
     (get_user_details, "Get the details of a user, including their orders.", READ_ONLY),
     (get_order_details, "Get the status and details of an order.", READ_ONLY),
     (get_product_details, "Get the inventory details of a product.", READ_ONLY),
+    (get_item_details, "Get the inventory details of an item.", READ_ONLY),
     (list_all_product_types, "List the name and product id of all product types.", READ_ONLY),
     (
         cancel_pending_order,

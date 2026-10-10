@@ -39,7 +39,7 @@ def unauthenticated_url() -> Iterator[str]:
 
 @pytest.mark.parametrize("mode", MODES)
 class TestTheSkeletonAnswers:
-    async def test_lists_the_first_versions_tools_under_upstream_names(
+    async def test_lists_the_exposed_tools_under_upstream_names(
         self, unauthenticated_url: str, mode: str
     ) -> None:
         async with connect(unauthenticated_url, mode) as client:
