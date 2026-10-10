@@ -53,9 +53,23 @@ The plan asks for three facts before implementation.
    both protocols. The same run showed the 2026-07-28 path runs a resolver once per round
    (`mcp/server/mcpserver/resolve.py`, lines 10-16), which is why `open_confirmation`
    must be idempotent.
-3. **Whether the demonstration client supports elicitation forms — not verifiable here,
-   pending manual confirmation.** Every write is tested against a client that declares
-   form elicitation and one that does not.
+3. **Whether the demonstration client supports elicitation forms — confirmed manually on
+   2026-10-10 with Claude Code 2.1.296.** Every write is also tested automatically against
+   a client that declares form elicitation and one that does not. The manual check ran the
+   server's core and tools against a disposable PostgreSQL, with the token verifier
+   swapped for a local key pair instead of a Cognito pool, and the server added with
+   `claude mcp add --transport http ... --header "Authorization: Bearer <token>"`:
+
+   | Call | Form shown | Answer | Result | Database |
+   |---|---|---|---|---|
+   | `cancel_pending_order` `#W4135875` | yes | accept | `executed`, `replayed: false`, `operation_id: 1` | 1 operation, 1 confirmation `confirmed`, 1 `write_executed` audit row |
+   | `return_delivered_order_items` `#W4817420` | yes | decline | `declined` | no operation, no audit row; the confirmation stays `pending` |
+   | the same return again | yes | decline | `{"status":"declined","reason":"The user did not confirm this action. Nothing ran."}` | the pending confirmation reused, no new row |
+
+   The form names the server ("MCP server “retail-support” requests your input"), lists
+   the tool and every argument as the server described them, and offers Accept and
+   Decline; the `ok` box is required. Claude Code's own tool-permission prompt comes
+   first and is separate. Which protocol version Claude Code negotiated was not recorded.
 
 Two SDK facts the plan did not cover were checked in the same reading:
 `request_state` is sealed by default with a process-local AES-GCM key and bound to the
@@ -238,9 +252,9 @@ Limits that remain:
 - Measured on Windows only. CI (Linux) has not run, because nothing was pushed.
 
 **PASS for local implementation and acceptance.** All ten scenarios pass in both
-protocols, no existing test fails, and the baselines verify. Not deployed; remote CI is
-pending a push; whether Claude Code shows elicitation forms is pending manual
-confirmation.
+protocols, no existing test fails, and the baselines verify. Claude Code was confirmed
+manually to show the form and to run a write only on Accept. Not deployed; remote CI is
+pending a push; a Cognito-issued token has not been tried against the MCP server.
 
 ## 5. Differences from the plan
 

@@ -148,9 +148,10 @@ claude mcp add --transport http retail-support http://127.0.0.1:8765/mcp \
 ```
 
 The token is passed as a header and expires with the user pool's access-token lifetime;
-add the server again with a new token when it does. Whether Claude Code shows the
-confirmation form (MCP form elicitation) has not been verified yet; a client without it
-gets `elicitation_unsupported` from every write and nothing runs.
+add the server again with a new token when it does. Claude Code (checked with 2.1.296)
+shows the confirmation form after its own tool-permission prompt: the tool, every
+argument, a required `ok` box, Accept and Decline. A client without form elicitation gets
+`elicitation_unsupported` from every write and nothing runs.
 
 ### Trust boundary
 
