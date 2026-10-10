@@ -74,6 +74,21 @@ jobs:
       - name: pytest (excluding tests that need billed model calls)
         run: uv run pytest -m "not live_model"
 
+      # The M9 acceptance table, measured: ten scenarios against the MCP server over
+      # real HTTP, in the 2026-07-28 and the legacy protocol. pytest above already fails
+      # the build if one breaks; this keeps the numbers of every run as an artifact.
+      # No model is called.
+      - name: MCP acceptance report
+        run: uv run python scripts/run_mcp_acceptance.py --out reports/mcp_acceptance/ci.json
+
+      - name: keep the MCP acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-acceptance
+          path: reports/mcp_acceptance/ci.json
+          if-no-files-found: warn
+
   upstream-pin:
     name: upstream benchmark pin and domain replay
     runs-on: ubuntu-latest

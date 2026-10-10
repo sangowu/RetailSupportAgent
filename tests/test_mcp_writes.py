@@ -19,6 +19,7 @@ from mcp_types import ElicitRequestParams, ElicitResult
 
 from retail_support_agent.auth import AuthConfig, StaticKeys
 from retail_support_agent.domain import RetailDomain
+from retail_support_agent.mcp_acceptance import MODES, connect, serving
 from retail_support_agent.mcp_server import (
     EXPOSED_TOOLS,
     CognitoTokenVerifier,
@@ -29,7 +30,6 @@ from retail_support_agent.mcp_server import (
 )
 from retail_support_agent.store import Store
 from test_auth import AUDIENCE, ISSUER, Keys, mint
-from test_mcp_server import MODES, connect, serving
 from test_mcp_sessions import AVA, AVA_PENDING, keys, provision, store
 
 __all__ = ["keys", "store"]  # fixtures, imported so pytest finds them here
