@@ -167,6 +167,29 @@ The server entry point was started once with a placeholder Cognito issuer: `/mcp
 answered 401 to no token and to a malformed one, with a `WWW-Authenticate` header
 naming `/.well-known/oauth-protected-resource/mcp`, which listed the configured issuer.
 
+**With the real user pool, after the merge (2026-10-10).** The entry point
+`python -m retail_support_agent.mcp_server` ran unmodified against a disposable
+PostgreSQL, with `RSA_AUTH_ISSUER` and `RSA_AUTH_AUDIENCE` from the base layer's
+`cognito_issuer` and `cognito_client_id`, and the key set fetched from the pool. The
+`ava` and `ivan` subjects were provisioned with `scripts/provision_identity.py`. The
+token was `ava`'s access token from `initiate-auth` (`USER_PASSWORD_AUTH`): it carries
+`token_use: access` and `client_id`, and no `aud`. It was read from a file and never
+printed, and deleted afterwards.
+
+| Check | Result |
+|---|---|
+| No token; a malformed token | 401, 401 |
+| The real token with its signature altered | 401 |
+| The real token with `sub` changed to `ivan`'s, signature kept | 401 |
+| Tools listed | 7, in both protocols |
+| `get_order_details` on `ava`'s own `#W4135875` | `ok`, in both protocols |
+| `get_order_details` on `ivan`'s `#W8770097` | `denied_slice`, in both protocols |
+| `cancel_pending_order`, the form declined | `declined`, one form per protocol |
+| Database afterwards | 0 operations; 2 `access_denied` audit rows; 1 pending confirmation, reused by the second protocol's call |
+
+An expired Cognito token was not waited for; expiry is covered by the verifier's tests
+with a signed token.
+
 ### The acceptance table
 
 From [`reports/mcp_acceptance/2026-10-10.json`](../reports/mcp_acceptance/2026-10-10.json),
@@ -249,12 +272,14 @@ Limits that remain:
 - A declined confirmation stays `pending` until the next proposal replaces it, as on the
   agent path; it keeps the idle check from reporting idle.
 - Tokens are configured as a static header in the client; there is no OAuth flow.
-- Measured on Windows only. CI (Linux) has not run, because nothing was pushed.
+- Measured on Windows locally. CI on Linux ran for #72: 1123 passed and 2 skipped, the
+  same two that skip on `main` (1049 passed, 2 skipped before this change), and the
+  acceptance script reported all passed.
 
 **PASS for local implementation and acceptance.** All ten scenarios pass in both
 protocols, no existing test fails, and the baselines verify. Claude Code was confirmed
-manually to show the form and to run a write only on Accept. Not deployed; remote CI is
-pending a push; a Cognito-issued token has not been tried against the MCP server.
+manually to show the form and to run a write only on Accept, and the server accepts the
+real user pool's access tokens and refuses altered ones. Not deployed.
 
 ## 5. Differences from the plan
 
