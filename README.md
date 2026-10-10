@@ -22,8 +22,11 @@ retail data; it does not process real payments or connect to a production order 
   operations and audit events, with idempotent writes and session recovery.
 - **Deployment:** containerized local services and a Terraform-managed AWS demonstration
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
+- **MCP server (M9, local only):** the order tools for any MCP client over Streamable
+  HTTP, behind the same token verification, roles, data slice, confirmation and
+  idempotent writes as the API. See [MCP server](#mcp-server).
 
-M0 through M8 delivery records are available below. The AWS deployment is configured for
+M0 through M9 delivery records are available below. The AWS deployment is configured for
 image `m8.7`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
@@ -100,6 +103,76 @@ uv run alembic upgrade head
 Without `RSA_DATABASE_URL`, sessions use in-memory storage. Alternatively,
 `docker compose up -d --wait` starts the containerized database, migrations, API and UI.
 See [operations](docs/OPERATIONS.md) for configuration, reset scope and shutdown behavior.
+
+## MCP server
+
+A second entry point next to the API, for MCP clients such as Claude Code. The client's
+own model is the agent: no model is called here and the LangGraph agent is not involved.
+What decides whether a call may run is the application's own code - `WriteGuard`,
+`Store` and `AccessScope` - not anything the client says. Implemented and tested locally
+in M9; it is not deployed to AWS.
+
+| Tool | Kind | Checked before it runs |
+|---|---|---|
+| `get_user_details`, `get_order_details` | read | role, then the caller's own data slice; `email` hidden |
+| `get_product_details`, `list_all_product_types` | read | catalog, open to every account |
+| `cancel_pending_order`, `return_delivered_order_items` | write | role, ownership, status slice, the user's answer in a form, once per confirmation |
+| `transfer_to_human_agents` | handoff | opens a ticket; the session then runs no tool until a person closes it |
+
+Names and parameters are upstream τ²-bench's. The two account lookups are not offered,
+and exchanges and address, payment or item changes are left for a later version.
+
+### Start
+
+The server needs PostgreSQL and a Cognito user pool, and refuses to start without
+either. It reads the API's variables, and no model key:
+
+```bash
+# RSA_DATABASE_URL, RSA_AUTH_ISSUER and RSA_AUTH_AUDIENCE as for the API.
+# Optional: RSA_MCP_HOST (127.0.0.1), RSA_MCP_PORT (8765), RSA_MCP_URL, RSA_AUTH_JWKS_URL.
+uv run python -m retail_support_agent.mcp_server
+```
+
+The endpoint is `http://127.0.0.1:8765/mcp`. A caller is the `sub` of a Cognito access
+token, and must be provisioned like an API user:
+
+```bash
+uv run python scripts/provision_identity.py --subject <sub> --user-id <retail id> --role customer
+```
+
+### Connect from Claude Code
+
+```bash
+claude mcp add --transport http retail-support http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer <Cognito access token>"
+```
+
+The token is passed as a header and expires with the user pool's access-token lifetime;
+add the server again with a new token when it does. Whether Claude Code shows the
+confirmation form (MCP form elicitation) has not been verified yet; a client without it
+gets `elicitation_unsupported` from every write and nothing runs.
+
+### Trust boundary
+
+- **Who** comes only from the verified token. A missing, expired or wrongly signed token
+  is answered 401 before any tool. Roles come from the database, never the token, so a
+  revoked role stops working on the next call.
+- **What** is decided by the server on every call. Refusals are returned as
+  `{"status": "<decision>", "reason": "..."}`, written to `audit_events`, and five of them
+  stop the session, as in the API.
+- **Confirmation** is a form the client shows to the user, listing every argument. The
+  model cannot answer it, and an answer passed as a tool argument is ignored. A
+  confirmation covers exactly one argument set; changing any argument asks again.
+- **The client is trusted to show the form to a person.** The server cannot tell a client
+  that shows the form from one that answers it automatically. Connect only clients you
+  would let act on the account with the user's consent.
+- **Repeats run once.** A retried or duplicated confirmed call returns the stored result
+  (`"replayed": true`), whichever protocol or process it arrives through.
+
+The acceptance table - ten scenarios, each in the 2026-07-28 and the legacy protocol -
+is measured by `uv run python scripts/run_mcp_acceptance.py` into
+`reports/mcp_acceptance/`, and asserted by `tests/test_mcp_acceptance.py`. See the
+[M9 change record](docs/M9_CHANGE_RECORD.md).
 
 ## Verification
 
@@ -207,6 +280,7 @@ repair records for the present status.
   [interaction states](docs/M7.2_STATES.md), [case management](docs/M7.3_TICKETS.md).
 - **Access control:** [access evaluation](docs/M8_ACCESS_EVAL.md),
   [M8 release and browser acceptance](docs/M8_RELEASE.md).
+- **MCP server:** [plan](docs/M9_MCP_SERVER.md), [change record](docs/M9_CHANGE_RECORD.md).
 - **Delivery and maintenance:** [M1–M8 delivery report](docs/DELIVERY_REPORT.md),
   [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
 
