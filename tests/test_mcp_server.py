@@ -23,6 +23,7 @@ from pydantic import SecretStr
 
 from retail_support_agent.auth import AuthConfig, StaticKeys
 from retail_support_agent.mcp_server import (
+    EXPOSED_TOOLS,
     READ_TOOLS,
     CognitoTokenVerifier,
     McpSettings,
@@ -76,14 +77,24 @@ def unauthenticated_url() -> Iterator[str]:
 
 @pytest.mark.parametrize("mode", MODES)
 class TestTheSkeletonAnswers:
-    async def test_lists_the_read_tools_under_upstream_names(
+    async def test_lists_the_first_versions_tools_under_upstream_names(
         self, unauthenticated_url: str, mode: str
     ) -> None:
         async with connect(unauthenticated_url, mode) as client:
             listed = await client.list_tools()
-        assert sorted(tool.name for tool in listed.tools) == sorted(READ_TOOLS)
+        assert sorted(tool.name for tool in listed.tools) == sorted(EXPOSED_TOOLS)
         for tool in listed.tools:
-            assert tool.annotations is not None and tool.annotations.read_only_hint
+            assert tool.annotations is not None
+            assert tool.annotations.read_only_hint == (tool.name in READ_TOOLS)
+
+    async def test_the_two_lookups_are_not_offered(
+        self, unauthenticated_url: str, mode: str
+    ) -> None:
+        """The identity comes from the token, so a lookup could only be aimed at somebody
+        else. The guard would refuse them; not registering them removes the question."""
+        async with connect(unauthenticated_url, mode) as client:
+            names = {tool.name for tool in (await client.list_tools()).tools}
+        assert not names & {"find_user_id_by_email", "find_user_id_by_name_zip"}
 
     async def test_a_call_without_an_identity_is_refused_not_run(
         self, unauthenticated_url: str, mode: str

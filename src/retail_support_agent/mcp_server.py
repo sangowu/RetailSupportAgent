@@ -23,8 +23,8 @@ import functools
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 
@@ -34,8 +34,15 @@ from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.mcpserver import (
+    AcceptedElicitation,
+    Context,
+    Elicit,
+    ElicitationResult,
+    Resolve,
+)
 from mcp_types import ToolAnnotations
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks, Identity
@@ -49,6 +56,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
+from retail_support_agent.handoff import hand_off, handed_off_reply, waiting_reply
 from retail_support_agent.scope import AccessScope, audited
 from retail_support_agent.store import Store
 
@@ -72,7 +80,40 @@ PRODUCT_ID = Field(
     description="The product id, such as '6086499569'. A product id is not an item id."
 )
 
+REASON = Field(
+    description="The reason for cancellation: either 'no longer needed' or 'ordered by mistake'."
+)
+ITEM_IDS = Field(
+    description="The item ids to return, each such as '1008292230'. An item may repeat."
+)
+PAYMENT_METHOD_ID = Field(
+    description="The payment method to refund to, such as 'gift_card_0000000'. It must be "
+    "the original payment method or a gift card."
+)
+SUMMARY = Field(description="A summary of the user's issue.")
+
+# Said in every write tool's description, so a client model knows to expect the form
+# rather than asking the user in chat and treating their "yes" as the confirmation.
+CONFIRMATION_NOTE = (
+    "Before it runs, the user is shown a confirmation form listing every argument; the "
+    "model cannot answer it. Requires a client that supports form elicitation."
+)
+
+# Second version: exchanges, address, payment method and item changes.
+WRITE_TOOLS_EXPOSED: tuple[str, ...] = ("cancel_pending_order", "return_delivered_order_items")
+HANDOFF_TOOL = "transfer_to_human_agents"
+EXPOSED_TOOLS: tuple[str, ...] = (*READ_TOOLS, *WRITE_TOOLS_EXPOSED, HANDOFF_TOOL)
+
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
+WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+HANDOFF = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+
+
+class Confirm(BaseModel):
+    """The confirmation form. One flat boolean: form elicitation takes primitive fields
+    only, and the question above it already names every argument."""
+
+    ok: bool = Field(description="Run this action exactly as described.")
 
 
 class McpSettings(BaseSettings):
@@ -273,6 +314,97 @@ class RetailMcp:
             # The column slice, applied to what the client's model is about to read.
             return {"status": "ok", "result": call.state.scope.project(result.content)}
 
+    def propose(self, subject: str | None, proposed: ProposedCall, can_elicit: bool) -> str | None:
+        """The question to put to the user before a write, or None if there is none to ask.
+
+        Run by the elicitation resolver, before the tool body, and on 2026-07-28 once per
+        round. It previews the guard's verdict on this call's own fresh state and leaves
+        no trace: nothing is counted and nothing is audited, because the tool body makes
+        the review that counts. Otherwise one refused write would leave two audit rows,
+        or three when the protocol retries.
+
+        Returns None unless the only thing missing is the user's confirmation: a refused
+        call is refused without a form, so a confirmation can never be collected for a
+        write the account may not make. The pending confirmation is recorded before the
+        question goes out, and reopening it is idempotent (`Store.open_confirmation`).
+        """
+        with self._call(subject, proposed.name) as call:
+            if isinstance(call, dict):
+                return None
+            verdict = call.guard.review(proposed, call.state)
+            if verdict.decision is not Decision.NEEDS_CONFIRMATION or not can_elicit:
+                return None
+            assert self._store is not None  # a _Call exists only with a store
+            self._store.open_confirmation(call.session_id, proposed)
+            return proposed.describe()
+
+    def write(
+        self, subject: str | None, proposed: ProposedCall, accepted: bool, can_elicit: bool
+    ) -> dict[str, Any]:
+        """Run one write, if the guard allows it now.
+
+        `accepted` is True only when the user accepted the form for exactly this call.
+        Only what the database accepts counts as confirmed: `Store.confirm` refuses a
+        fingerprint that is no longer the pending one (another proposal replaced it
+        between the question and the answer), and the guard then still holds the call.
+        """
+        with self._call(subject, proposed.name) as call:
+            if isinstance(call, dict):
+                return call
+            assert self._store is not None  # a _Call exists only with a store
+            if accepted:
+                self._store.confirm(call.session_id, proposed.fingerprint)
+                call.state.confirmed_fingerprints = self._store.confirmed_fingerprints(
+                    call.session_id
+                )
+            verdict = self._review(call, proposed)
+            if verdict.allowed:
+                return self._execute(call, proposed)
+            if verdict.decision is not Decision.NEEDS_CONFIRMATION:
+                return self._refused(call, verdict)
+            if not can_elicit:
+                return {
+                    "status": "elicitation_unsupported",
+                    "reason": f"{proposed.name} changes an order and needs the user's "
+                    "confirmation in a form, and this client does not support form "
+                    "elicitation. Nothing ran. Use a client that does.",
+                }
+            if accepted:
+                return {
+                    "status": Decision.NEEDS_CONFIRMATION.value,
+                    "reason": "Another proposal replaced this one before the confirmation "
+                    "arrived, so it confirms nothing. Nothing ran; call again to be asked.",
+                }
+            return {
+                "status": "declined",
+                "reason": "The user did not confirm this action. Nothing ran.",
+            }
+
+    def transfer(self, subject: str | None, summary: str) -> dict[str, Any]:
+        """Hand the session to a human: upstream's transfer tool, then a ticket.
+
+        From then on `_call` refuses every tool for this session until a human closes
+        the ticket, which is the agent's rule: a case that has been escalated is not
+        worked on by the model in the meantime.
+        """
+        with self._call(subject, HANDOFF_TOOL) as call:
+            if isinstance(call, dict):
+                return call
+            proposed = ProposedCall(HANDOFF_TOOL, {"summary": summary})
+            verdict = self._review(call, proposed)
+            if not verdict.allowed:
+                return self._refused(call, verdict)
+            call.cached.execute(proposed.name, proposed.arguments)
+            ticket = hand_off(
+                self._store, call.session_id, call.identity.user_id, summary, call.identity.subject
+            )
+            assert ticket is not None  # a _Call exists only with a store
+            return {
+                "status": "handed_off",
+                "ticket_id": ticket.id,
+                "result": handed_off_reply(ticket),
+            }
+
     def session_db_hash(self, subject: str) -> str | None:
         """The fingerprint of a session's retail database, or None if it is not loaded.
         Lets a test show that a refused or declined write changed nothing."""
@@ -305,6 +437,10 @@ class RetailMcp:
 
         session_id = session_id_for(subject)
         self._store.ensure_session(session_id, identity.user_id, subject)
+        ticket = self._store.open_ticket_for(session_id)
+        if ticket is not None:
+            yield {"status": "waiting_for_human", "reason": waiting_reply(ticket)}
+            return
         cached = self._checkout(session_id)
         try:
             state = SessionState(
@@ -339,6 +475,30 @@ class RetailMcp:
         assert self._store is not None  # a _Call exists only with a store
         self._store.record_access_events(call.session_id, audited(call.state.slice_audit.drain()))
         return verdict
+
+    def _execute(self, call: _Call, proposed: ProposedCall) -> dict[str, Any]:
+        """Run an allowed write exactly once per confirmation.
+
+        Keyed on the confirmation of this argument set, read from the database, so every
+        caller of the same confirmed call - a retry, a concurrent duplicate, a call after
+        a restart - reaches the same idempotency key, and only the first runs.
+        """
+        assert self._store is not None  # a _Call exists only with a store
+        confirmation_id = self._store.confirmation_for(call.session_id, proposed.fingerprint)
+        outcome = self._store.execute_once(
+            call.session_id,
+            proposed,
+            confirmation_id,
+            lambda: call.cached.execute(proposed.name, proposed.arguments).content,
+        )
+        return {
+            "status": "executed",
+            # Projected after the store, as the agent does: the recorded result is what a
+            # rebuild replays, so it must not have holes in it.
+            "result": call.state.scope.project(outcome.result),
+            "replayed": outcome.replayed,
+            "operation_id": outcome.operation_id,
+        }
 
     def _refused(self, call: _Call, verdict: GuardVerdict) -> dict[str, Any]:
         reason = verdict.reason
@@ -406,13 +566,132 @@ async def _in_thread(fn: Callable[..., dict[str, Any]], *args: Any) -> dict[str,
     return await anyio.to_thread.run_sync(functools.partial(fn, *args))
 
 
+# The tools and their resolvers are module-level functions that find the `RetailMcp`
+# through the server's lifespan, not closures over it. The SDK evaluates annotations by
+# name (`inspect.signature(eval_str=True)`), so `Resolve(ask_cancel)` must name something
+# a module can see.
+Ctx = Context[RetailMcp, Any]
+
+
+def _core(ctx: Ctx) -> RetailMcp:
+    return ctx.request_context.lifespan_context
+
+
+async def get_user_details(user_id: Annotated[str, USER_ID], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(_core(ctx).read, _subject(), "get_user_details", {"user_id": user_id})
+
+
+async def get_order_details(order_id: Annotated[str, ORDER_ID], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(
+        _core(ctx).read, _subject(), "get_order_details", {"order_id": order_id}
+    )
+
+
+async def get_product_details(product_id: Annotated[str, PRODUCT_ID], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(
+        _core(ctx).read, _subject(), "get_product_details", {"product_id": product_id}
+    )
+
+
+async def list_all_product_types(ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(_core(ctx).read, _subject(), "list_all_product_types", {})
+
+
+# ---- writes: a resolver asks, the tool body decides ------------------------------------
+
+
+async def _ask(ctx: Ctx, proposed: ProposedCall) -> Confirm | Elicit[Confirm]:
+    """Put the form in front of the user, or return a `Confirm` that says nothing.
+
+    Never returns `ok=True` itself: an accepted form is the only way the tool body sees
+    one, which is what makes `accepted` mean the user said yes.
+    """
+    question = await anyio.to_thread.run_sync(
+        _core(ctx).propose, _subject(), proposed, can_elicit(ctx)
+    )
+    return Confirm(ok=False) if question is None else Elicit(question, Confirm)
+
+
+async def ask_cancel(order_id: str, reason: str, ctx: Ctx) -> Confirm | Elicit[Confirm]:
+    return await _ask(ctx, cancel_call(order_id, reason))
+
+
+async def ask_return(
+    order_id: str, item_ids: list[str], payment_method_id: str, ctx: Ctx
+) -> Confirm | Elicit[Confirm]:
+    return await _ask(ctx, return_call(order_id, item_ids, payment_method_id))
+
+
+async def cancel_pending_order(
+    order_id: Annotated[str, ORDER_ID],
+    reason: Annotated[str, REASON],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_cancel)],
+) -> dict[str, Any]:
+    return await _in_thread(
+        _core(ctx).write,
+        _subject(),
+        cancel_call(order_id, reason),
+        accepted(confirm),
+        can_elicit(ctx),
+    )
+
+
+async def return_delivered_order_items(
+    order_id: Annotated[str, ORDER_ID],
+    item_ids: Annotated[list[str], ITEM_IDS],
+    payment_method_id: Annotated[str, PAYMENT_METHOD_ID],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_return)],
+) -> dict[str, Any]:
+    return await _in_thread(
+        _core(ctx).write,
+        _subject(),
+        return_call(order_id, item_ids, payment_method_id),
+        accepted(confirm),
+        can_elicit(ctx),
+    )
+
+
+async def transfer_to_human_agents(summary: Annotated[str, SUMMARY], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(_core(ctx).transfer, _subject(), summary)
+
+
+# (function, description, annotations), in the order a client lists them.
+TOOLS: tuple[tuple[Callable[..., Any], str, ToolAnnotations], ...] = (
+    (get_user_details, "Get the details of a user, including their orders.", READ_ONLY),
+    (get_order_details, "Get the status and details of an order.", READ_ONLY),
+    (get_product_details, "Get the inventory details of a product.", READ_ONLY),
+    (list_all_product_types, "List the name and product id of all product types.", READ_ONLY),
+    (
+        cancel_pending_order,
+        "Cancel a pending order. A processed or delivered order cannot be cancelled. "
+        + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        return_delivered_order_items,
+        "Return some items of a delivered order. The order status becomes "
+        "'return requested'. " + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        transfer_to_human_agents,
+        "Transfer the user to a human agent, with a summary of the user's issue. Only when "
+        "the user asks for a human, or the issue cannot be solved with the available tools. "
+        "After this the session runs no tools until a person has closed the ticket.",
+        HANDOFF,
+    ),
+)
+
+
 def build_server(
     core: RetailMcp,
     *,
     verifier: TokenVerifier | None = None,
     issuer_url: str | None = None,
     resource_url: str | None = None,
-) -> MCPServer:
+) -> MCPServer[RetailMcp]:
     """Register the tools on a new server. One server per process; tests build several.
 
     With a verifier every request to /mcp needs a valid bearer token. Without one the
@@ -430,40 +709,62 @@ def build_server(
             # resource indicator for the SDK to compare.
             validate_token_resource=False,
         )
-    server = MCPServer(
+
+    @asynccontextmanager
+    async def lifespan(_: MCPServer[RetailMcp]) -> AsyncIterator[RetailMcp]:
+        # The per-session domain cache lives in `core`, and `core` lives here: one
+        # object for the life of the process, handed to every request.
+        yield core
+
+    server: MCPServer[RetailMcp] = MCPServer(
         SERVER_NAME,
         instructions=(
             "Retail order support on simulated τ²-bench data. Reads are limited to the "
-            "authenticated customer's own records."
+            "authenticated customer's own records; every change to an order is confirmed "
+            "by the user in a form before it runs."
         ),
         token_verifier=verifier,
         auth=auth,
+        lifespan=lifespan,
         log_level="WARNING",
     )
-
-    @server.tool(
-        description="Get the details of a user, including their orders.", annotations=READ_ONLY
-    )
-    async def get_user_details(user_id: Annotated[str, USER_ID]) -> dict[str, Any]:
-        return await _in_thread(core.read, _subject(), "get_user_details", {"user_id": user_id})
-
-    @server.tool(description="Get the status and details of an order.", annotations=READ_ONLY)
-    async def get_order_details(order_id: Annotated[str, ORDER_ID]) -> dict[str, Any]:
-        return await _in_thread(core.read, _subject(), "get_order_details", {"order_id": order_id})
-
-    @server.tool(description="Get the inventory details of a product.", annotations=READ_ONLY)
-    async def get_product_details(product_id: Annotated[str, PRODUCT_ID]) -> dict[str, Any]:
-        return await _in_thread(
-            core.read, _subject(), "get_product_details", {"product_id": product_id}
-        )
-
-    @server.tool(
-        description="List the name and product id of all product types.", annotations=READ_ONLY
-    )
-    async def list_all_product_types() -> dict[str, Any]:
-        return await _in_thread(core.read, _subject(), "list_all_product_types", {})
-
+    for fn, description, hints in TOOLS:
+        server.add_tool(fn, description=description, annotations=hints)
     return server
+
+
+def cancel_call(order_id: str, reason: str) -> ProposedCall:
+    return ProposedCall("cancel_pending_order", {"order_id": order_id, "reason": reason})
+
+
+def return_call(order_id: str, item_ids: list[str], payment_method_id: str) -> ProposedCall:
+    return ProposedCall(
+        "return_delivered_order_items",
+        {"order_id": order_id, "item_ids": list(item_ids), "payment_method_id": payment_method_id},
+    )
+
+
+def accepted(outcome: ElicitationResult[Confirm]) -> bool:
+    """Whether the user accepted the form and ticked it."""
+    return (
+        isinstance(outcome, AcceptedElicitation)
+        and isinstance(outcome.data, Confirm)
+        and outcome.data.ok
+    )
+
+
+def can_elicit(ctx: Context[Any, Any]) -> bool:
+    """Whether the client declared form elicitation.
+
+    The same test the SDK applies before it sends a form (`mcp/server/mcpserver/
+    resolve.py`, `_require_capability`): a bare `elicitation: {}` predates modes and
+    counts as form support, a URL-only declaration does not. Checked here first so a
+    client that cannot show the form gets a reason instead of a protocol error, and no
+    pending confirmation is left behind for a question that was never asked.
+    """
+    capabilities = ctx.client_capabilities
+    elicitation = capabilities.elicitation if capabilities is not None else None
+    return elicitation is not None and (elicitation.form is not None or elicitation.url is None)
 
 
 def make_verifier(settings: McpSettings) -> CognitoTokenVerifier:
