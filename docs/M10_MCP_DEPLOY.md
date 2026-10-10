@@ -1,7 +1,9 @@
 # M10: the MCP server on the demo instance
 
-> Plan, 2026-10-10. It describes what to build; nothing here exists yet. M9 built and
-> accepted the server locally ([M9 change record](M9_CHANGE_RECORD.md)).
+> Plan, 2026-10-10. Implemented and deployed the same day as image `m10.1`; what was
+> built, and where it differs from this plan, is in the
+> [M10 change record](M10_CHANGE_RECORD.md). M9 built and accepted the server locally
+> ([M9 change record](M9_CHANGE_RECORD.md)).
 
 ## Goal and scope
 

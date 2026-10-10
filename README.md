@@ -22,12 +22,12 @@ retail data; it does not process real payments or connect to a production order 
   operations and audit events, with idempotent writes and session recovery.
 - **Deployment:** containerized local services and a Terraform-managed AWS demonstration
   environment with HTTPS, automatic idle shutdown, database archives and image rollback.
-- **MCP server (M9, local only):** the order tools for any MCP client over Streamable
-  HTTP, behind the same token verification, roles, data slice, confirmation and
-  idempotent writes as the API. See [MCP server](#mcp-server).
+- **MCP server (M9, on the demo instance since M10):** the order tools for any MCP
+  client over Streamable HTTP, behind the same token verification, roles, data slice,
+  confirmation and idempotent writes as the API. See [MCP server](#mcp-server).
 
-M0 through M9 delivery records are available below. The AWS deployment is configured for
-image `m8.7`; it is operated on demand and is not continuously available. CI runs static
+M0 through M10 delivery records are available below. The AWS deployment is configured for
+image `m10.1`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 
@@ -109,8 +109,8 @@ See [operations](docs/OPERATIONS.md) for configuration, reset scope and shutdown
 A second entry point next to the API, for MCP clients such as Claude Code. The client's
 own model is the agent: no model is called here and the LangGraph agent is not involved.
 What decides whether a call may run is the application's own code - `WriteGuard`,
-`Store` and `AccessScope` - not anything the client says. Implemented and tested locally
-in M9; it is not deployed to AWS.
+`Store` and `AccessScope` - not anything the client says. Built in M9; since M10 it also
+runs on the demo instance at `https://<demo domain>/mcp`, behind the same proxy.
 
 | Tool | Kind | Checked before it runs |
 |---|---|---|
@@ -148,9 +148,12 @@ claude mcp add --transport http retail-support http://127.0.0.1:8765/mcp \
 ```
 
 The token is passed as a header and expires with the user pool's access-token lifetime;
-add the server again with a new token when it does. Claude Code (checked with 2.1.296)
-shows the confirmation form after its own tool-permission prompt: the tool, every
-argument, a required `ok` box, Accept and Decline. A client without form elicitation gets
+add the server again with a new token when it does. For the demo instance, use its
+address, `https://<demo domain>/mcp`, and a token for one of the demo pool's accounts;
+the instance must be running (`demo.py start`), and MCP calls count as use, so it stays
+up while they continue. Claude Code (checked with 2.1.296) shows the confirmation form
+after its own tool-permission prompt: the tool, every argument, a required `ok` box,
+Accept and Decline. A client without form elicitation gets
 `elicitation_unsupported` from every write and nothing runs.
 
 ### Trust boundary
@@ -281,7 +284,9 @@ repair records for the present status.
   [interaction states](docs/M7.2_STATES.md), [case management](docs/M7.3_TICKETS.md).
 - **Access control:** [access evaluation](docs/M8_ACCESS_EVAL.md),
   [M8 release and browser acceptance](docs/M8_RELEASE.md).
-- **MCP server:** [plan](docs/M9_MCP_SERVER.md), [change record](docs/M9_CHANGE_RECORD.md).
+- **MCP server:** [plan](docs/M9_MCP_SERVER.md), [change record](docs/M9_CHANGE_RECORD.md);
+  on the demo instance: [plan](docs/M10_MCP_DEPLOY.md),
+  [change record](docs/M10_CHANGE_RECORD.md).
 - **Delivery and maintenance:** [M1–M8 delivery report](docs/DELIVERY_REPORT.md),
   [CI repair](docs/CI_TYPE_FIX.md), [user-data reconciliation](docs/USER_DATA_RECONCILIATION.md).
 
