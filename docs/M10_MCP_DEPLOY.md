@@ -89,8 +89,7 @@ The plan for each:
    services and stops only when both are idle for 15 minutes; either unreachable means
    "do not know", as today. `demo.py` reads only the holding reasons, which come from the
    database and already include MCP sessions, so it needs no change.
-2. **A decision for you** (below): close the pending confirmation when the user declines
-   or cancels the form.
+2. A declined or cancelled form closes its pending confirmation (decision 1 below).
 
 ### Token lifetime
 
@@ -111,7 +110,10 @@ Branch `feature/mcp-deploy`, one commit per step.
    no key in the instance file, `/mcp` routed and the MCP `/idle` not routed).
 3. **The watcher.** `idle_shutdown.py` asks both URLs; the decision stays a pure function
    and is tested with both answers in every combination.
-4. **Confirmation on decline**, only if you choose it below.
+4. **Confirmation on decline.** The new `Store` method, called by the MCP write tools when
+   the form is declined or cancelled. Tested: the row becomes `cancelled`, the pending
+   count falls to zero, the agent path's tests are unchanged, and accepting the same call
+   later asks again.
 5. **Local rehearsal.** The local compose stack with the new service, the image built as
    the release will build it, and the M9 acceptance script run against the containerised
    server. Memory measured with `docker stats`.
@@ -142,6 +144,7 @@ record. No model is called in any row.
 | CI | Both compose files define `mcp` alike; `/mcp` routed; MCP `/idle` not routed | pass | - |
 | CI | A 401 leaves the MCP idle clock alone; an authenticated call resets it | pass | - |
 | CI | Watcher: API idle and MCP busy, MCP idle and API busy, either unreachable | stays up in each | - |
+| CI | A form declined, and a form cancelled, in both protocols | `declined`; no pending confirmation left | pending count after |
 | Local | The acceptance script against the containerised server | all pass | the JSON report |
 | Local | Memory with the full stack and four MCP sessions | the instance would keep at least 25% free | MB per container; total |
 | AWS | No token; altered signature; `sub` swapped | 401, 401, 401 | status codes |
@@ -164,14 +167,16 @@ No new resource and no model call. The instance runs for the release and the acc
 about two hours of `t3.small`, and the idle test needs one natural stop. The ECR image
 adds one tag under the existing lifecycle policy.
 
-## Decisions for you
+## Decisions
 
-1. **Close a confirmation when the form is declined or cancelled?** Recommended: yes, for
-   MCP only. It is a new `Store` method that sets the row to `cancelled`; existing methods
-   do not change, and the agent path keeps its behaviour. Without it, a declined form keeps
-   the instance up until the 240-minute cap, about 0.09 USD each time.
-2. **The memory gate.** Recommended: at least 25% of the instance's memory free with the
-   full stack and four MCP sessions. If it fails, the next size up is a cost change against
-   M6.1's threshold and is brought back to you, not made here.
-3. **Restoring the demo database after the accept test.** Recommended: yes, from an archive
-   taken just before it.
+Agreed on 2026-10-10.
+
+1. **A declined or cancelled form closes its confirmation, for MCP only.** A new `Store`
+   method sets the pending row to `cancelled`; existing methods do not change, and the
+   agent path keeps its behaviour. Without it, a declined form would keep the instance up
+   until the 240-minute cap, about 0.09 USD each time.
+2. **The memory gate is at least 25% of the instance's memory free** with the full stack
+   and four MCP sessions. If it fails, the next size up is a cost change against M6.1's
+   threshold and is brought back for a decision, not made here.
+3. **The demo database is restored after the accept test**, from an archive taken just
+   before it.
