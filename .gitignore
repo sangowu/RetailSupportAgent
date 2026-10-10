@@ -48,3 +48,7 @@ Thumbs.db
 *.tfplan
 *.auto.tfvars
 terraform.tfvars
+
+# The MCP acceptance run CI keeps as an artifact. Dated reports in the same directory
+# are committed; this one is rewritten on every run.
+reports/mcp_acceptance/ci.json

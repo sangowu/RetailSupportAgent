@@ -373,17 +373,36 @@ class Store:
     def open_confirmation(self, session_id: str, call: ProposedCall) -> int:
         """Record a pending write action and return its id.
 
-        An existing pending row is cancelled: changed arguments are a new proposal,
-        and two pending rows would make "which one did the user confirm" a guess.
+        An existing pending row with other arguments is cancelled: changed arguments are
+        a new proposal, and two pending rows would make "which one did the user confirm"
+        a guess.
+
+        A pending row with the same fingerprint is the same proposal, and its id is
+        returned without a new row (M9). The MCP server asks again on every round of a
+        2026-07-28 elicitation and on every retry of a call, and a new row each time would
+        cancel the very confirmation the user is answering. The same holds when two such
+        rounds race: the partial unique index lets one insert win, and the loser returns
+        the winner's row if it is the same proposal.
         """
+        try:
+            return self._open_confirmation(session_id, call)
+        except IntegrityError:
+            pending = self.pending_confirmation(session_id)
+            if pending is not None and pending.fingerprint == call.fingerprint:
+                return int(pending.id)
+            raise
+
+    def _open_confirmation(self, session_id: str, call: ProposedCall) -> int:
         with self._sessions.begin() as db:
             stmt = select(ConfirmationRow).where(
                 ConfirmationRow.session_id == session_id,
                 ConfirmationRow.state == "pending",
             )
-            for stale in db.scalars(stmt):
-                stale.state = "cancelled"
-                stale.resolved_at = _utcnow(db)
+            for pending in db.scalars(stmt):
+                if pending.fingerprint == call.fingerprint:
+                    return int(pending.id)
+                pending.state = "cancelled"
+                pending.resolved_at = _utcnow(db)
             db.flush()
             row = ConfirmationRow(
                 session_id=session_id,
@@ -427,6 +446,28 @@ class Store:
                 ConfirmationRow.state == "confirmed",
             )
             return set(db.scalars(stmt))
+
+    def confirmation_for(self, session_id: str, fingerprint: str) -> int | None:
+        """The latest confirmation of one argument set, or None if it was never confirmed.
+
+        What the MCP server keys a write on (M9). Two calls of the same confirmed action
+        must reach the same idempotency key whichever confirmation came last in the
+        session; `last_confirmation_id` answers "the latest of any action", and keying on
+        it would make a retry of an earlier action look like a new authorization.
+        """
+        with self._sessions() as db:
+            stmt = (
+                select(ConfirmationRow.id)
+                .where(
+                    ConfirmationRow.session_id == session_id,
+                    ConfirmationRow.fingerprint == fingerprint,
+                    ConfirmationRow.state == "confirmed",
+                )
+                .order_by(ConfirmationRow.id.desc())
+                .limit(1)
+            )
+            row = db.scalar(stmt)
+            return int(row) if row is not None else None
 
     def last_confirmation_id(self, session_id: str) -> int | None:
         """The most recent confirmed confirmation, used to rebuild the idempotency key

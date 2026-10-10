@@ -31,6 +31,7 @@ from retail_support_agent.guardrails import (
     SessionState,
     WriteGuard,
 )
+from retail_support_agent.handoff import hand_off, handed_off_reply, waiting_reply
 from retail_support_agent.scope import AccessScope, audited, identifiers_in
 from retail_support_agent.store import APPROVAL_TTL_SECONDS, Store
 
@@ -475,19 +476,12 @@ class RetailAgent:
         had just escalated.
         """
         summary = str(call.arguments.get("summary", ""))
-        if self._store is None or self._session_id is None:
-            return TurnResult(
-                reply="Handed off to a human agent.",
-                status="answered",
-                tool_calls=list(self._turn_tools),
-            )
-        ticket = self._store.open_ticket(
-            self._session_id, self._session.user_id, summary, self._subject
+        ticket = hand_off(
+            self._store, self._session_id, self._session.user_id, summary, self._subject
         )
         return TurnResult(
-            reply=f"Handed off to a human agent. Ticket #{ticket.id} is open; "
-            "a person will take it from here.",
-            status="handed_off",
+            reply=handed_off_reply(ticket),
+            status="answered" if ticket is None else "handed_off",
             tool_calls=list(self._turn_tools),
         )
 
@@ -503,12 +497,7 @@ class RetailAgent:
         if ticket is None or self._ticket_id is not None:
             # An agent working the ticket is not blocked by it; the customer is.
             return None
-        return TurnResult(
-            reply=f"Ticket #{ticket.id} is with a human agent. "
-            "You will get an answer here once they have looked at it.",
-            status="waiting_for_human",
-            tool_calls=[],
-        )
+        return TurnResult(reply=waiting_reply(ticket), status="waiting_for_human", tool_calls=[])
 
     # ---- watching a turn happen (M7.1) ----------------------------------
 
