@@ -10,6 +10,10 @@ Every refusal is returned as a tool result, `{"status": <Decision value>, "reaso
 never raised: a client model that is told why a call was refused can explain it to the
 user, while an exception reaches it as an opaque error.
 
+Authentication is the API's: a Cognito RS256 access token, verified by `AuthConfig`
+against the pool's key set, and the subject mapped to a retail identity and roles in
+the database. The token says who; it never says what they may do.
+
 Run it with `uv run python -m retail_support_agent.mcp_server`.
 """
 
@@ -24,9 +28,14 @@ import anyio.to_thread
 import uvicorn
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 from mcp_types import ToolAnnotations
-from pydantic import Field
+from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks
+from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.guardrails import Decision
 from retail_support_agent.store import Store
 
@@ -50,6 +59,72 @@ PRODUCT_ID = Field(
 )
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
+
+
+class McpSettings(BaseSettings):
+    """What the MCP server needs, and nothing else.
+
+    Separate from `Settings` because that one requires a model key, and this process
+    calls no model. The variable names are the API's, so one environment configures
+    both entry points against the same database and the same user pool.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    database_url: SecretStr | None = Field(default=None, validation_alias="RSA_DATABASE_URL")
+    auth_issuer: str | None = Field(default=None, validation_alias="RSA_AUTH_ISSUER")
+    auth_audience: str | None = Field(default=None, validation_alias="RSA_AUTH_AUDIENCE")
+    auth_jwks_url: str | None = Field(default=None, validation_alias="RSA_AUTH_JWKS_URL")
+    auth_token_use: str = Field(default="access", validation_alias="RSA_AUTH_TOKEN_USE")
+    host: str = Field(default="127.0.0.1", validation_alias="RSA_MCP_HOST")
+    port: int = Field(default=8765, validation_alias="RSA_MCP_PORT")
+    # The URL clients use to reach /mcp. Published in the protected-resource metadata;
+    # defaults to the bind address, which is right for the local-only first version.
+    public_url: str | None = Field(default=None, validation_alias="RSA_MCP_URL")
+
+    def resource_url(self) -> str:
+        return self.public_url or f"http://{self.host}:{self.port}/mcp"
+
+    def jwks_url(self) -> str | None:
+        if self.auth_jwks_url:
+            return self.auth_jwks_url
+        if not self.auth_issuer:
+            return None
+        return f"{self.auth_issuer.rstrip('/')}/.well-known/jwks.json"
+
+
+class CognitoTokenVerifier:
+    """The SDK's `TokenVerifier`, answered by the API's `AuthConfig.verify`.
+
+    Signature, algorithm allowlist, issuer, expiry, audience and `token_use` are all
+    checked there; this only translates the outcome. A failed check returns None, which
+    the SDK's bearer middleware turns into a 401 before any tool is reached.
+    """
+
+    def __init__(self, auth: AuthConfig) -> None:
+        self._auth = auth
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            # In a thread: an unknown key id makes `CachedJwks` fetch the key set over
+            # HTTPS, which must not stall every other request on the event loop.
+            verified = await anyio.to_thread.run_sync(self._auth.verify, token)
+        except AuthError as exc:
+            # The message names the failed check and never the token's content.
+            logger.info("MCP bearer token refused: %s", exc)
+            return None
+        claims = verified.claims
+        audience = claims.get("client_id", claims.get("aud"))
+        if isinstance(audience, list):
+            audience = audience[0] if audience else None
+        return AccessToken(
+            token=token,
+            client_id=str(audience or ""),
+            scopes=str(claims.get("scope", "")).split(),
+            expires_at=int(claims["exp"]),
+            subject=verified.subject,
+            claims={"iss": verified.issuer},
+        )
 
 
 def refusal(decision: Decision, reason: str) -> dict[str, Any]:
@@ -93,14 +168,38 @@ async def _in_thread(fn: Callable[..., dict[str, Any]], *args: Any) -> dict[str,
     return await anyio.to_thread.run_sync(functools.partial(fn, *args))
 
 
-def build_server(core: RetailMcp) -> MCPServer:
-    """Register the tools on a new server. One server per process; tests build several."""
+def build_server(
+    core: RetailMcp,
+    *,
+    verifier: TokenVerifier | None = None,
+    issuer_url: str | None = None,
+    resource_url: str | None = None,
+) -> MCPServer:
+    """Register the tools on a new server. One server per process; tests build several.
+
+    With a verifier every request to /mcp needs a valid bearer token. Without one the
+    server still answers, and every tool refuses: there is no identity to act for.
+    """
+    auth: AuthSettings | None = None
+    if verifier is not None:
+        if not issuer_url or not resource_url:
+            raise ValueError("a token verifier needs the issuer URL and this server's URL")
+        auth = AuthSettings(
+            issuer_url=AnyHttpUrl(issuer_url),
+            resource_server_url=AnyHttpUrl(resource_url),
+            # False because the verifier already checks which application the token was
+            # minted for (`client_id` or `aud`); Cognito access tokens carry no RFC 8707
+            # resource indicator for the SDK to compare.
+            validate_token_resource=False,
+        )
     server = MCPServer(
         SERVER_NAME,
         instructions=(
             "Retail order support on simulated τ²-bench data. Reads are limited to the "
             "authenticated customer's own records."
         ),
+        token_verifier=verifier,
+        auth=auth,
         log_level="WARNING",
     )
 
@@ -129,10 +228,45 @@ def build_server(core: RetailMcp) -> MCPServer:
     return server
 
 
+def make_verifier(settings: McpSettings) -> CognitoTokenVerifier:
+    jwks_url = settings.jwks_url()
+    if not (settings.auth_issuer and settings.auth_audience and jwks_url):
+        raise SystemExit(
+            "The MCP server requires authentication: set RSA_AUTH_ISSUER and "
+            "RSA_AUTH_AUDIENCE (and RSA_AUTH_JWKS_URL if the key set is not at the "
+            "issuer's standard path)."
+        )
+    return CognitoTokenVerifier(
+        AuthConfig(
+            issuer=settings.auth_issuer,
+            audience=settings.auth_audience,
+            keys=CachedJwks(jwks_url),
+            token_use=settings.auth_token_use or None,
+        )
+    )
+
+
 def main() -> None:
-    """Serve over Streamable HTTP at /mcp on the loopback address."""
-    server = build_server(RetailMcp(store=None))
-    uvicorn.run(server.streamable_http_app(host="127.0.0.1"), host="127.0.0.1", port=8765)
+    """Serve over Streamable HTTP at /mcp.
+
+    Refuses to start without a database or a user pool. An MCP server that answered
+    anonymously would be a second front door with no lock, and the API's local
+    no-authentication mode is deliberately not carried over.
+    """
+    settings = McpSettings()
+    if settings.database_url is None:
+        raise SystemExit("The MCP server requires RSA_DATABASE_URL.")
+    verifier = make_verifier(settings)
+    engine = make_engine(settings.database_url.get_secret_value())
+    core = RetailMcp(store=Store(make_session_factory(engine)))
+    server = build_server(
+        core,
+        verifier=verifier,
+        issuer_url=settings.auth_issuer,
+        resource_url=settings.resource_url(),
+    )
+    app = server.streamable_http_app(host=settings.host)
+    uvicorn.run(app, host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":
