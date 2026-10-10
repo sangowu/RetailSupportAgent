@@ -231,6 +231,21 @@ uv run python scripts/demo.py restore latest
 It replaces the database and refuses while work remains unfinished unless explicitly
 overridden. API and UI services stop during restoration, and users must sign in again.
 
+The instance's restore script predates the MCP server (M10) and does not stop it, though
+it writes to the same database. Until the script is updated with the next instance
+replacement, stop it by hand around a restore. With it stopped, `/idle` reports "the MCP
+server did not answer", so the restore needs `--force`; check that this is the only
+holding reason first:
+
+```bash
+# on the instance
+docker stop rsa-mcp-1
+# from the operator's machine
+uv run python scripts/demo.py restore <archive key> --force
+# on the instance
+docker start rsa-mcp-1
+```
+
 Before a teardown, create an archive and verify its result and timestamp. The automatic
 shutdown archive is bounded by a 120-second timeout; failure is logged but does not block
 instance shutdown. Use `status` to inspect the latest archive and inspect

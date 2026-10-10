@@ -1,8 +1,8 @@
 # M10: MCP server on the demo instance, change record
 
-Status: **implemented, tested and rehearsed locally. Not released.** The plan is
-[M10_MCP_DEPLOY.md](M10_MCP_DEPLOY.md). Section 2.5 is what remains: the release and the
-acceptance on AWS, which are filled in when they have run.
+Status: **deployed.** Image `m10.1` runs on the demo instance and every AWS row of the
+plan's acceptance table passed on 2026-10-10 (section 2.5). The plan is
+[M10_MCP_DEPLOY.md](M10_MCP_DEPLOY.md).
 
 ## 1. Change card
 
@@ -111,9 +111,49 @@ the pool, read from a file, never printed, deleted afterwards.
 M6.2 measured 675 MB in use of 1913 MB on the instance. Adding about 297 MB projects
 about 990 MB, 48% free, against the 25% gate. The gate is decided on the instance.
 
-### 2.5 Not yet run: the release and the AWS acceptance
+### 2.5 Release and acceptance on AWS
 
-The plan's steps 6 and 7. Every AWS row of the plan's table is pending.
+**Release.** Image `m10.1`, built from `main` at `996abab` (#76), 226 MB, digest
+`sha256:91784307c00f239e2a4ac689f78157b5374e3152b014b5bd896981cb0bd9beb9`, pushed to the
+existing ECR repository. The demo plan was `0 to add, 1 to change, 0 to destroy`, the
+change being `aws_ssm_parameter.image` (`m8.7` to `m10.1`); the only other difference it
+showed was the stopped instance's empty public IP, read back from AWS. The instance was
+stopped, so the release was `demo.py start` (ready in 112 s). `demo.py status`: running
+and configured both `m10.1`. The plan applied was the saved file that had been reviewed.
+
+**Checks.** All from this machine against `https://rsa.proshot.top`, with `ava`'s access
+token from the pool, read from a file, never printed, deleted afterwards.
+
+| Plan row | Result |
+|---|---|
+| No token; altered signature; `sub` swapped to `ivan`'s, signature kept | 401, 401, 401 |
+| A `Host` other than the demo's name | Caddy serves no site for it (empty 200 from Caddy); nothing reaches `mcp`. A valid token with a foreign `Origin`: 403 |
+| Real token, both protocols: tools, own order, `ivan`'s order | 7, `ok`, `denied_slice` in each |
+| Claude Code: cancel `#W4135875`, declined, then the same cancel accepted | `declined`, then `executed`, `replayed: false`. Operations 0 before, 1 after; confirmation 2 `cancelled` (the declined form), 3 `confirmed`; one `write_executed` audit row |
+| Read latency, 20 `get_order_details` per protocol | 2026-07-28: p50 55 ms, p95 71 ms; legacy: p50 60 ms, p95 122 ms. The first AWS MCP baseline, not gated |
+| `idle_shutdown.py --check` on the instance (#75) | `staying up: idle, 11 more minutes to go` |
+| Only MCP used, 24 minutes (a read every 4 minutes) | Up throughout; the API went 1610 s without a request. The watcher's journal shows `staying up` at every run, its count reset after each call |
+| Nothing used for 15 minutes | Last MCP call about 20:41 UTC; the shutdown archive was written at 20:57:40 and the instance stopped: about 16 minutes, the 15-minute limit plus the watcher's 70-second period |
+| The existing demo: sign-in as `ava`, one chat turn, `/health` | Answered with the order's state; `/health` reported `m10.1` |
+| Rollback to `m8.7` | Plan `0/1/0`; `demo.py restart`, answering in 102 s; status `m8.7`; `/mcp` and its metadata 404; `/idle` without `seconds_since_mcp_request` |
+| Forward again to `m10.1` | Plan `0/1/0`; `demo.py restart`, answering in 122 s; status `m10.1`; `/mcp` 401 without a token; metadata served |
+
+The operation's id was 2, with an empty `operations` table before: the archive the
+instance had last restored carried the sequence at 1. Nothing ran twice.
+
+**Database.** Archived before the accept test (`archives/rsa-20261010T204252Z.sql.gz`)
+and restored from it afterwards: `operations` 0, `confirmations` 0, and `#W4135875`
+`pending` again, read over MCP. See section 4 for how the restore had to be run.
+
+**Memory**, on the instance:
+
+| | Used MB | Available MB | Free | `mcp` MB |
+|---|---|---|---|---|
+| Released, before any MCP session | 687 | 1036 | 54% | 81 |
+| After two sessions and 40 reads | 857 | 860 | 45% | 267 |
+
+The gate is at least 25% free: met. The other containers were `api` 125, `ui` 134,
+`db` 47, `caddy` 25 MB.
 
 ## 3. Comparison
 
@@ -123,6 +163,7 @@ The plan's steps 6 and 7. Every AWS row of the plan's table is pending.
 | M9 acceptance table, both protocols | 10/10 | 10/10 | unchanged; the decline row now also requires no pending confirmation |
 | Images | M8's | one more role in the same image | no new image |
 | AWS resources | - | none added | as planned |
+| Memory free on the instance | 65% (M6.2) | 45% with two MCP sessions | above the 25% gate |
 | Task success, safety violations, P95, cost | not applicable | not applicable | no model is called by this change |
 
 ## 4. Failure analysis and conclusion
@@ -137,12 +178,20 @@ The plan's steps 6 and 7. Every AWS row of the plan's table is pending.
   into the API instead (section 5).
 - **A test bug, not a code bug.** One new idle test failed on a fake clock shared across
   its class; the test was corrected to not depend on order.
-- **Limits.** The rehearsal ran on Windows with Docker Desktop, not on the instance. The
-  memory gate is a projection until measured there. `/idle` is reachable without a token
+- **The instance's restore does not stop `mcp`.** `restore.sh` stops `api` and `ui`
+  before replacing the database; since M10 `mcp` also writes to it. The script is in
+  user data, so changing it replaces the instance, and it was left as it is. For this
+  release's restore `mcp` was stopped by hand (`docker stop rsa-mcp-1`), which made the
+  API's `/idle` hold ("the MCP server did not answer"), so `demo.py restore` needed
+  `--force`; no other holding reason was present. `mcp` was started again afterwards.
+  [Operations](OPERATIONS.md#database-archives-and-restore) records the procedure. To be
+  fixed with the next change that replaces the instance.
+- **Limits.** The memory gate was measured with two sessions, not four; the fourth is
+  projected at 12 MB each (2.4). `/idle` is reachable without a token
   at the proxy, as since M6.6; it now also carries `seconds_since_mcp_request`, a count.
   An MCP server that does not answer holds the instance up to the cap, by design.
-- **Conclusion: PASS for implementation and local rehearsal; INCONCLUSIVE for the stage**
-  until the release and the AWS rows have run.
+- **Conclusion: PASS.** Every row of the plan's acceptance table passed, in CI, locally
+  and on AWS, and the release rolled back and forward on the existing path.
 
 ## 5. Differences from the plan
 
@@ -153,3 +202,5 @@ The plan's steps 6 and 7. Every AWS row of the plan's table is pending.
 | Step 5: the M9 acceptance script against the containerised server | Checks with the pool's real token through Caddy and TLS | The script signs its own tokens and the container trusts only the pool; the script's scenarios run in CI on the same code |
 | The `mcp` service in both compose files | Locally behind a `mcp` profile | A developer machine has no pool, and the server refuses to start without one |
 | - | `.env.example` lists `RSA_MCP_IDLE_URL` | The template must list every setting the API reads |
+| `demo.py restore` of the archive | `mcp` stopped by hand around it, and `--force` | `restore.sh` does not stop `mcp` (section 4) |
+| A `Host` other than the demo's name refused by the server | Refused by Caddy, which has no site for it | Caddy answers before the request reaches `mcp`; the SDK's own check is covered in CI |
