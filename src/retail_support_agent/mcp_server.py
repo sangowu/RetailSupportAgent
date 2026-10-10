@@ -386,6 +386,9 @@ class RetailMcp:
                     "reason": "Another proposal replaced this one before the confirmation "
                     "arrived, so it confirms nothing. Nothing ran; call again to be asked.",
                 }
+            # The user answered no, so nothing is owed: the pending row would otherwise
+            # keep the service from counting as idle (M10). Asking again opens a new one.
+            self._store.withdraw_confirmation(call.session_id, proposed.fingerprint)
             return {
                 "status": "declined",
                 "reason": "The user did not confirm this action. Nothing ran.",

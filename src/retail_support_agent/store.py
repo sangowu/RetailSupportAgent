@@ -433,6 +433,27 @@ class Store:
             row.resolved_at = _utcnow(db)
             return int(row.id)
 
+    def withdraw_confirmation(self, session_id: str, fingerprint: str) -> int | None:
+        """Cancel the pending confirmation of this argument set, because the user said no.
+
+        Used by the MCP server when a form is declined or cancelled (M10). A pending row
+        is a reason for the service not to count as idle, and one the user has answered
+        would otherwise hold the instance up until the uptime cap. A different pending
+        fingerprint is left alone: it is another proposal, still owed an answer. Asking
+        again later opens a new row. The agent path does not call this.
+        """
+        with self._sessions.begin() as db:
+            stmt = select(ConfirmationRow).where(
+                ConfirmationRow.session_id == session_id,
+                ConfirmationRow.state == "pending",
+            )
+            row = db.scalars(stmt).one_or_none()
+            if row is None or row.fingerprint != fingerprint:
+                return None
+            row.state = "cancelled"
+            row.resolved_at = _utcnow(db)
+            return int(row.id)
+
     def confirmed_fingerprints(self, session_id: str) -> set[str]:
         """Every argument set the user has confirmed in this session.
 
