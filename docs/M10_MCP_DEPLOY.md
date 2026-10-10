@@ -35,7 +35,7 @@ anyone running a server locally.
 | `deploy/instance/Caddyfile` | Routes `/` to the UI, `/health` and `/idle` to the API, nothing else | Adds `/mcp` and the protected-resource metadata path |
 | `/opt/rsa/.env` | Already holds `RSA_AUTH_ISSUER`, `RSA_AUTH_AUDIENCE`, `RSA_DOMAIN` | Read by the new service; no new value, so no user-data or Terraform change |
 | Security group | 443 open to `0.0.0.0/0` since M6.7 | Unchanged; `/mcp` answers 401 before any tool without a pool-signed token |
-| `idle_shutdown.py` | Asks the API's `/idle`; 15 idle minutes or 240 minutes of uptime stops the instance | Also asks the MCP server (see below) |
+| `idle_shutdown.py` | Asks the API's `/idle` on `127.0.0.1:8000` (reachable again since #75); 15 idle minutes or 240 minutes of uptime stops the instance | Unchanged: it is installed by user data. The API's answer includes the MCP server (see below) |
 | Instance | `t3.small`, 1913 MB; M6.2 measured 675 MB in use | Unchanged if the measurement below holds |
 
 ## Design
@@ -85,11 +85,19 @@ The plan for each:
 
 1. The MCP app gets an unauthenticated `/idle` that reports `seconds_since_request`,
    counted from the last **tool call that passed authentication**. A 401 does not count,
-   or anyone on the internet could keep the instance running. The watcher asks both
-   services and stops only when both are idle for 15 minutes; either unreachable means
-   "do not know", as today. `demo.py` reads only the holding reasons, which come from the
-   database and already include MCP sessions, so it needs no change.
+   or anyone on the internet could keep the instance running. The API's `/idle` asks it
+   over the compose network (`RSA_MCP_IDLE_URL=http://mcp:8765/idle`) and reports the
+   shorter of the two idle times. An MCP server that does not answer is a holding reason,
+   "the MCP server did not answer": not knowing is not idle, as in M6.3. Unset, the API
+   behaves as before.
 2. A declined or cancelled form closes its pending confirmation (decision 1 below).
+
+**Revised 2026-10-10.** The first version of this plan had the watcher ask both services.
+The watcher is installed by user data, and changing it replaces the instance (M6.8,
+section 1.4), so the combination moved into the API, which ships in the image. The same
+reading found that the watcher had not reached the API since M6.6; that was fixed
+separately in #75, and M10's release is the first to carry it. `demo.py` reads the same
+`/idle` and needs no change.
 
 ### Token lifetime
 
@@ -108,8 +116,9 @@ Branch `feature/mcp-deploy`, one commit per step.
 2. **The stack.** The `mcp` service in both compose files; the two Caddy routes;
    `tests/test_deploy_files.py` extended (the same service in both files, a health check,
    no key in the instance file, `/mcp` routed and the MCP `/idle` not routed).
-3. **The watcher.** `idle_shutdown.py` asks both URLs; the decision stays a pure function
-   and is tested with both answers in every combination.
+3. **The idle answer.** The API's `/idle` asks the MCP server when `RSA_MCP_IDLE_URL` is
+   set. Tested: MCP busy and API idle, API busy and MCP idle, MCP unreachable, setting
+   unset. The watcher is not changed.
 4. **Confirmation on decline.** The new `Store` method, called by the MCP write tools when
    the form is declined or cancelled. Tested: the row becomes `cancelled`, the pending
    count falls to zero, the agent path's tests are unchanged, and accepting the same call
@@ -143,7 +152,7 @@ record. No model is called in any row.
 | CI | The M9 acceptance table | unchanged: all ten pass in both protocols | the JSON report |
 | CI | Both compose files define `mcp` alike; `/mcp` routed; MCP `/idle` not routed | pass | - |
 | CI | A 401 leaves the MCP idle clock alone; an authenticated call resets it | pass | - |
-| CI | Watcher: API idle and MCP busy, MCP idle and API busy, either unreachable | stays up in each | - |
+| CI | API `/idle`: API idle and MCP busy, MCP idle and API busy, MCP unreachable | not idle in each | - |
 | CI | A form declined, and a form cancelled, in both protocols | `declined`; no pending confirmation left | pending count after |
 | Local | The acceptance script against the containerised server | all pass | the JSON report |
 | Local | Memory with the full stack and four MCP sessions | the instance would keep at least 25% free | MB per container; total |
@@ -152,6 +161,7 @@ record. No model is called in any row.
 | AWS | Real token: tools listed, own order, another customer's order | 7; `ok`; `denied_slice` | - |
 | AWS | Claude Code: a cancel, the form declined, then the same cancel accepted | `declined`, then `executed` once | operations before and after |
 | AWS | Read latency from this machine, 20 calls of `get_order_details` | recorded, not gated | p50, p95, as the first AWS MCP baseline |
+| AWS | `idle_shutdown.py --check` on the instance (#75) | an idle time, not "did not answer" | its output |
 | AWS | Only MCP used for 20 minutes | the instance stays up | the watcher's decisions from its journal |
 | AWS | Nothing used for 15 minutes | the instance stops | time from last call to stop |
 | AWS | The existing demo: sign-in, a chat turn, `/health` reports `m10.1` | unchanged | - |
