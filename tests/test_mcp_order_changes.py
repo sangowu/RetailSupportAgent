@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from retail_support_agent.auth import AuthConfig, StaticKeys
+from retail_support_agent.guardrails import ProposedCall
 from retail_support_agent.mcp_acceptance import MODES, Answers, connect, serving
 from retail_support_agent.mcp_server import (
     CognitoTokenVerifier,
@@ -152,6 +153,20 @@ class TestEachChange:
         assert again["operation_id"] == first["operation_id"]
         assert len(answers.asked) == 1
         assert len(store.operations(session_id_for(subject))) == 1
+
+    async def test_the_form_explains_then_lists_every_argument(
+        self, url: str, store: Store, keys: Keys, change: Change, mode: str
+    ) -> None:
+        """The summary comes first and the argument list, unchanged, after it: the list is
+        still the statement of what runs."""
+        subject = provision(store, change.user, "customer")
+        answers = Answers("decline")
+        async with connect(url, mode, bearer(keys, subject), elicitation_callback=answers) as c:
+            await c.call_tool(change.tool, change.arguments)
+        (message,) = answers.asked
+        summary, listed = message.split("\n\n")
+        assert change.arguments["order_id"] in summary.splitlines()[0]
+        assert listed == ProposedCall(change.tool, change.arguments).describe()
 
     async def test_declined_runs_nothing_and_leaves_nothing_pending(
         self, url: str, store: Store, keys: Keys, change: Change, mode: str

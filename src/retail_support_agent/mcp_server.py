@@ -52,6 +52,7 @@ from starlette.responses import JSONResponse
 from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks, Identity
 from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.domain import RetailDomain, ToolResult
+from retail_support_agent.form_summary import reader, summarize
 from retail_support_agent.guardrails import (
     Decision,
     GuardVerdict,
@@ -379,7 +380,12 @@ class RetailMcp:
                 return None
             assert self._store is not None  # a _Call exists only with a store
             self._store.open_confirmation(call.session_id, proposed)
-            return proposed.describe()
+            # The summary explains what the arguments mean (M11); the argument list below
+            # it stays the statement of what runs, and the fingerprint is still its own.
+            summary = summarize(proposed, reader(call.cached.execute))
+            if summary is None:
+                return proposed.describe()
+            return f"{summary}\n\n{proposed.describe()}"
 
     def write(
         self, subject: str | None, proposed: ProposedCall, accepted: bool, can_elicit: bool
