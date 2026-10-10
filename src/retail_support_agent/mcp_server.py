@@ -22,6 +22,7 @@ from __future__ import annotations
 import functools
 import logging
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -41,9 +42,12 @@ from mcp.server.mcpserver import (
     ElicitationResult,
     Resolve,
 )
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
 from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks, Identity
 from retail_support_agent.db import make_engine, make_session_factory
@@ -136,6 +140,10 @@ class McpSettings(BaseSettings):
     # The URL clients use to reach /mcp. Published in the protected-resource metadata;
     # defaults to the bind address, which is right for the local-only first version.
     public_url: str | None = Field(default=None, validation_alias="RSA_MCP_URL")
+    # The names /mcp answers to, comma-separated. The SDK checks Host only when it binds
+    # a loopback address; in a container it binds 0.0.0.0 and would accept any name, so
+    # a deployment names its own. Unset, the SDK's default stands.
+    allowed_hosts: str = Field(default="", validation_alias="RSA_MCP_ALLOWED_HOSTS")
     # The same slices the API applies, read from the same variables, so the two entry
     # points cannot disagree about what a customer may see or change.
     scope_redact_fields: str = Field(default="email", validation_alias="RSA_SCOPE_REDACT_FIELDS")
@@ -279,6 +287,7 @@ class RetailMcp:
         write_statuses: frozenset[str] | None = None,
         cache_size: int = 32,
         limits: SessionLimits | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store = store
         self._domain_factory = domain_factory
@@ -288,6 +297,8 @@ class RetailMcp:
         self._limits = limits or SessionLimits()
         self._sessions: OrderedDict[str, _CachedSession] = OrderedDict()
         self._sessions_guard = threading.Lock()
+        self._clock = clock
+        self._last_activity = clock()
 
     @classmethod
     def from_settings(cls, store: Store, settings: McpSettings) -> RetailMcp:
@@ -405,6 +416,15 @@ class RetailMcp:
                 "result": handed_off_reply(ticket),
             }
 
+    def seconds_since_activity(self) -> float:
+        """Seconds since the last tool call from an authenticated caller, or since start.
+
+        What the idle answer is made of. A request the SDK refused with 401 never reaches
+        a tool, so it never counts: otherwise anyone on the internet could keep the
+        instance running by sending requests without a token.
+        """
+        return max(0.0, self._clock() - self._last_activity)
+
     def session_db_hash(self, subject: str) -> str | None:
         """The fingerprint of a session's retail database, or None if it is not loaded.
         Lets a test show that a refused or declined write changed nothing."""
@@ -422,6 +442,8 @@ class RetailMcp:
                 f"{tool} needs an authenticated caller, and this call carries no identity.",
             )
             return
+        # Past authentication: this is someone using the service, whatever follows.
+        self._last_activity = self._clock()
         if self._store is None:
             yield refusal(
                 Decision.DENIED_PERMISSION,
@@ -730,7 +752,37 @@ def build_server(
     )
     for fn, description, hints in TOOLS:
         server.add_tool(fn, description=description, annotations=hints)
+
+    # Two operator routes, outside authentication (the SDK's custom routes never require
+    # it) and answering with counts, never anyone's data. The proxy does not route either
+    # one: /health is for compose's health check, /idle for the API's idle answer, both
+    # on the compose network. Registered by call rather than as decorators, because the
+    # SDK's decorator is untyped and would erase these functions' types.
+    async def health(_: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    async def idle(_: Request) -> JSONResponse:
+        return JSONResponse({"seconds_since_request": round(core.seconds_since_activity(), 1)})
+
+    server.custom_route("/health", methods=["GET"], include_in_schema=False)(health)
+    server.custom_route("/idle", methods=["GET"], include_in_schema=False)(idle)
+
     return server
+
+
+def transport_security(allowed_hosts: str) -> TransportSecuritySettings | None:
+    """The Host and Origin check for a deployment that names its hosts, or None for the
+    SDK's default (on for a loopback bind, off otherwise). A request without an Origin
+    passes either way (`mcp/server/transport_security.py`, `_validate_origin`), which is
+    how a non-browser client such as Claude Code arrives."""
+    hosts = sorted(_csv_set(allowed_hosts))
+    if not hosts:
+        return None
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[f"https://{host}" for host in hosts],
+    )
 
 
 def cancel_call(order_id: str, reason: str) -> ProposedCall:
@@ -804,7 +856,9 @@ def main() -> None:
         issuer_url=settings.auth_issuer,
         resource_url=settings.resource_url(),
     )
-    app = server.streamable_http_app(host=settings.host)
+    app = server.streamable_http_app(
+        host=settings.host, transport_security=transport_security(settings.allowed_hosts)
+    )
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 
