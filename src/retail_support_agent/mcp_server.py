@@ -52,6 +52,7 @@ from starlette.responses import JSONResponse
 from retail_support_agent.auth import AuthConfig, AuthError, CachedJwks, Identity
 from retail_support_agent.db import make_engine, make_session_factory
 from retail_support_agent.domain import RetailDomain, ToolResult
+from retail_support_agent.form_summary import reader, summarize
 from retail_support_agent.guardrails import (
     Decision,
     GuardVerdict,
@@ -69,12 +70,14 @@ logger = logging.getLogger(__name__)
 SERVER_NAME = "retail-support-agent"
 SESSION_PREFIX = "mcp:"
 
-# The first version's read tools. Names and parameters are upstream's, so a client that
-# knows the τ²-bench Retail tools needs no translation.
+# The read tools. Names and parameters are upstream's, so a client that knows the
+# τ²-bench Retail tools needs no translation. `get_item_details` came in M11, for the
+# exchanges and item changes that name a new item.
 READ_TOOLS: tuple[str, ...] = (
     "get_user_details",
     "get_order_details",
     "get_product_details",
+    "get_item_details",
     "list_all_product_types",
 )
 
@@ -83,6 +86,7 @@ USER_ID = Field(description="The user id, such as 'sara_doe_496'.")
 PRODUCT_ID = Field(
     description="The product id, such as '6086499569'. A product id is not an item id."
 )
+ITEM_ID = Field(description="The item id, such as '6086499569'. An item id is not a product id.")
 
 REASON = Field(
     description="The reason for cancellation: either 'no longer needed' or 'ordered by mistake'."
@@ -94,6 +98,27 @@ PAYMENT_METHOD_ID = Field(
     description="The payment method to refund to, such as 'gift_card_0000000'. It must be "
     "the original payment method or a gift card."
 )
+OLD_ITEM_IDS = Field(
+    description="The item ids to replace, each such as '1008292230'. An item may repeat."
+)
+NEW_ITEM_IDS = Field(
+    description="The new item ids, each such as '1008292230', in the same order as item_ids: "
+    "each must be of the same product as the item it replaces."
+)
+DIFFERENCE_PAYMENT_METHOD_ID = Field(
+    description="The payment method that pays, or is refunded, the price difference, such "
+    "as 'gift_card_0000000'. It must be one of the user's payment methods."
+)
+NEW_PAYMENT_METHOD_ID = Field(
+    description="The payment method to pay for the order instead, such as "
+    "'credit_card_0000000'. It must be one of the user's payment methods, not the current one."
+)
+ADDRESS1 = Field(description="The first line of the address, such as '123 Main St'.")
+ADDRESS2 = Field(description="The second line of the address, such as 'Apt 1', or ''.")
+CITY = Field(description="The city, such as 'San Francisco'.")
+STATE = Field(description="The state, such as 'CA'.")
+COUNTRY = Field(description="The country, such as 'USA'.")
+ZIP = Field(description="The zip code, such as '12345'.")
 SUMMARY = Field(description="A summary of the user's issue.")
 
 # Said in every write tool's description, so a client model knows to expect the form
@@ -103,8 +128,16 @@ CONFIRMATION_NOTE = (
     "model cannot answer it. Requires a client that supports form elicitation."
 )
 
-# Second version: exchanges, address, payment method and item changes.
-WRITE_TOOLS_EXPOSED: tuple[str, ...] = ("cancel_pending_order", "return_delivered_order_items")
+# M9's two writes, then M11's four. `modify_user_address` stays unregistered: it changes
+# the account rather than an order, and none of the order flows needs it.
+WRITE_TOOLS_EXPOSED: tuple[str, ...] = (
+    "cancel_pending_order",
+    "return_delivered_order_items",
+    "exchange_delivered_order_items",
+    "modify_pending_order_items",
+    "modify_pending_order_address",
+    "modify_pending_order_payment",
+)
 HANDOFF_TOOL = "transfer_to_human_agents"
 EXPOSED_TOOLS: tuple[str, ...] = (*READ_TOOLS, *WRITE_TOOLS_EXPOSED, HANDOFF_TOOL)
 
@@ -347,7 +380,12 @@ class RetailMcp:
                 return None
             assert self._store is not None  # a _Call exists only with a store
             self._store.open_confirmation(call.session_id, proposed)
-            return proposed.describe()
+            # The summary explains what the arguments mean (M11); the argument list below
+            # it stays the statement of what runs, and the fingerprint is still its own.
+            summary = summarize(proposed, reader(call.cached.execute))
+            if summary is None:
+                return proposed.describe()
+            return f"{summary}\n\n{proposed.describe()}"
 
     def write(
         self, subject: str | None, proposed: ProposedCall, accepted: bool, can_elicit: bool
@@ -618,6 +656,10 @@ async def get_product_details(product_id: Annotated[str, PRODUCT_ID], ctx: Ctx) 
     )
 
 
+async def get_item_details(item_id: Annotated[str, ITEM_ID], ctx: Ctx) -> dict[str, Any]:
+    return await _in_thread(_core(ctx).read, _subject(), "get_item_details", {"item_id": item_id})
+
+
 async def list_all_product_types(ctx: Ctx) -> dict[str, Any]:
     return await _in_thread(_core(ctx).read, _subject(), "list_all_product_types", {})
 
@@ -647,19 +689,54 @@ async def ask_return(
     return await _ask(ctx, return_call(order_id, item_ids, payment_method_id))
 
 
+async def ask_exchange(
+    order_id: str, item_ids: list[str], new_item_ids: list[str], payment_method_id: str, ctx: Ctx
+) -> Confirm | Elicit[Confirm]:
+    return await _ask(ctx, exchange_call(order_id, item_ids, new_item_ids, payment_method_id))
+
+
+async def ask_modify_items(
+    order_id: str, item_ids: list[str], new_item_ids: list[str], payment_method_id: str, ctx: Ctx
+) -> Confirm | Elicit[Confirm]:
+    return await _ask(ctx, modify_items_call(order_id, item_ids, new_item_ids, payment_method_id))
+
+
+async def ask_modify_address(
+    order_id: str,
+    address1: str,
+    address2: str,
+    city: str,
+    state: str,
+    country: str,
+    zip: str,
+    ctx: Ctx,
+) -> Confirm | Elicit[Confirm]:
+    return await _ask(
+        ctx, modify_address_call(order_id, address1, address2, city, state, country, zip)
+    )
+
+
+async def ask_modify_payment(
+    order_id: str, payment_method_id: str, ctx: Ctx
+) -> Confirm | Elicit[Confirm]:
+    return await _ask(ctx, modify_payment_call(order_id, payment_method_id))
+
+
+async def _write(
+    ctx: Ctx, proposed: ProposedCall, confirm: ElicitationResult[Confirm]
+) -> dict[str, Any]:
+    return await _in_thread(
+        _core(ctx).write, _subject(), proposed, accepted(confirm), can_elicit(ctx)
+    )
+
+
 async def cancel_pending_order(
     order_id: Annotated[str, ORDER_ID],
     reason: Annotated[str, REASON],
     ctx: Ctx,
     confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_cancel)],
 ) -> dict[str, Any]:
-    return await _in_thread(
-        _core(ctx).write,
-        _subject(),
-        cancel_call(order_id, reason),
-        accepted(confirm),
-        can_elicit(ctx),
-    )
+    return await _write(ctx, cancel_call(order_id, reason), confirm)
 
 
 async def return_delivered_order_items(
@@ -669,13 +746,55 @@ async def return_delivered_order_items(
     ctx: Ctx,
     confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_return)],
 ) -> dict[str, Any]:
-    return await _in_thread(
-        _core(ctx).write,
-        _subject(),
-        return_call(order_id, item_ids, payment_method_id),
-        accepted(confirm),
-        can_elicit(ctx),
-    )
+    return await _write(ctx, return_call(order_id, item_ids, payment_method_id), confirm)
+
+
+async def exchange_delivered_order_items(
+    order_id: Annotated[str, ORDER_ID],
+    item_ids: Annotated[list[str], OLD_ITEM_IDS],
+    new_item_ids: Annotated[list[str], NEW_ITEM_IDS],
+    payment_method_id: Annotated[str, DIFFERENCE_PAYMENT_METHOD_ID],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_exchange)],
+) -> dict[str, Any]:
+    proposed = exchange_call(order_id, item_ids, new_item_ids, payment_method_id)
+    return await _write(ctx, proposed, confirm)
+
+
+async def modify_pending_order_items(
+    order_id: Annotated[str, ORDER_ID],
+    item_ids: Annotated[list[str], OLD_ITEM_IDS],
+    new_item_ids: Annotated[list[str], NEW_ITEM_IDS],
+    payment_method_id: Annotated[str, DIFFERENCE_PAYMENT_METHOD_ID],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_modify_items)],
+) -> dict[str, Any]:
+    proposed = modify_items_call(order_id, item_ids, new_item_ids, payment_method_id)
+    return await _write(ctx, proposed, confirm)
+
+
+async def modify_pending_order_address(
+    order_id: Annotated[str, ORDER_ID],
+    address1: Annotated[str, ADDRESS1],
+    address2: Annotated[str, ADDRESS2],
+    city: Annotated[str, CITY],
+    state: Annotated[str, STATE],
+    country: Annotated[str, COUNTRY],
+    zip: Annotated[str, ZIP],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_modify_address)],
+) -> dict[str, Any]:
+    proposed = modify_address_call(order_id, address1, address2, city, state, country, zip)
+    return await _write(ctx, proposed, confirm)
+
+
+async def modify_pending_order_payment(
+    order_id: Annotated[str, ORDER_ID],
+    payment_method_id: Annotated[str, NEW_PAYMENT_METHOD_ID],
+    ctx: Ctx,
+    confirm: Annotated[ElicitationResult[Confirm], Resolve(ask_modify_payment)],
+) -> dict[str, Any]:
+    return await _write(ctx, modify_payment_call(order_id, payment_method_id), confirm)
 
 
 async def transfer_to_human_agents(summary: Annotated[str, SUMMARY], ctx: Ctx) -> dict[str, Any]:
@@ -687,6 +806,7 @@ TOOLS: tuple[tuple[Callable[..., Any], str, ToolAnnotations], ...] = (
     (get_user_details, "Get the details of a user, including their orders.", READ_ONLY),
     (get_order_details, "Get the status and details of an order.", READ_ONLY),
     (get_product_details, "Get the inventory details of a product.", READ_ONLY),
+    (get_item_details, "Get the inventory details of an item.", READ_ONLY),
     (list_all_product_types, "List the name and product id of all product types.", READ_ONLY),
     (
         cancel_pending_order,
@@ -698,6 +818,31 @@ TOOLS: tuple[tuple[Callable[..., Any], str, ToolAnnotations], ...] = (
         return_delivered_order_items,
         "Return some items of a delivered order. The order status becomes "
         "'return requested'. " + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        exchange_delivered_order_items,
+        "Exchange items of a delivered order for other items of the same product, paying or "
+        "refunding the price difference. A delivered order can be returned or exchanged "
+        "once. The order status becomes 'exchange requested'. " + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        modify_pending_order_items,
+        "Change items of a pending order to other items of the same product, paying or "
+        "refunding the price difference. An order's items can be changed once: the status "
+        "becomes 'pending (item modified)'. " + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        modify_pending_order_address,
+        "Change the shipping address of a pending order. " + CONFIRMATION_NOTE,
+        WRITE,
+    ),
+    (
+        modify_pending_order_payment,
+        "Change the payment method of a pending order. The new method must differ from the "
+        "current one, and a gift card must cover the order total. " + CONFIRMATION_NOTE,
         WRITE,
     ),
     (
@@ -796,6 +941,58 @@ def return_call(order_id: str, item_ids: list[str], payment_method_id: str) -> P
     return ProposedCall(
         "return_delivered_order_items",
         {"order_id": order_id, "item_ids": list(item_ids), "payment_method_id": payment_method_id},
+    )
+
+
+def exchange_call(
+    order_id: str, item_ids: list[str], new_item_ids: list[str], payment_method_id: str
+) -> ProposedCall:
+    return ProposedCall(
+        "exchange_delivered_order_items",
+        {
+            "order_id": order_id,
+            "item_ids": list(item_ids),
+            "new_item_ids": list(new_item_ids),
+            "payment_method_id": payment_method_id,
+        },
+    )
+
+
+def modify_items_call(
+    order_id: str, item_ids: list[str], new_item_ids: list[str], payment_method_id: str
+) -> ProposedCall:
+    return ProposedCall(
+        "modify_pending_order_items",
+        {
+            "order_id": order_id,
+            "item_ids": list(item_ids),
+            "new_item_ids": list(new_item_ids),
+            "payment_method_id": payment_method_id,
+        },
+    )
+
+
+def modify_address_call(
+    order_id: str, address1: str, address2: str, city: str, state: str, country: str, zip: str
+) -> ProposedCall:
+    return ProposedCall(
+        "modify_pending_order_address",
+        {
+            "order_id": order_id,
+            "address1": address1,
+            "address2": address2,
+            "city": city,
+            "state": state,
+            "country": country,
+            "zip": zip,
+        },
+    )
+
+
+def modify_payment_call(order_id: str, payment_method_id: str) -> ProposedCall:
+    return ProposedCall(
+        "modify_pending_order_payment",
+        {"order_id": order_id, "payment_method_id": payment_method_id},
     )
 
 
