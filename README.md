@@ -26,8 +26,8 @@ retail data; it does not process real payments or connect to a production order 
   client over Streamable HTTP, behind the same token verification, roles, data slice,
   confirmation and idempotent writes as the API. See [MCP server](#mcp-server).
 
-M0 through M10 delivery records are available below. The AWS deployment is configured for
-image `m10.1`; it is operated on demand and is not continuously available. CI runs static
+M0 through M11 delivery records are available below. The AWS deployment is configured for
+image `m11.1`; it is operated on demand and is not continuously available. CI runs static
 checks, tests with PostgreSQL, upstream benchmark verification and baseline integrity
 checks. CI does not run paid model evaluations or deploy the application.
 

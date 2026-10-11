@@ -1,8 +1,9 @@
 # M11: the remaining order writes over MCP, change record
 
-Status: **implemented and tested. Not released.** The plan is
-[M11_MCP_WRITES.md](M11_MCP_WRITES.md). Section 2.5 is what remains: the release and the
-acceptance on AWS, filled in when they have run.
+Status: **deployed; the AWS acceptance was not run.** Image `m11.1` runs on the demo
+instance (section 2.5). The plan is [M11_MCP_WRITES.md](M11_MCP_WRITES.md). Its AWS rows
+were not run, by the owner's decision on 2026-10-11, so the stage is tested locally and in
+CI, and deployed, but not accepted on AWS.
 
 ## 1. Change card
 
@@ -98,9 +99,38 @@ Run exchange_delivered_order_items with these arguments:
   - payment_method_id: "credit_card_3362387"
 ```
 
-### 2.5 Not yet run: the release and the AWS acceptance
+### 2.5 Release on AWS; the acceptance not run
 
-The plan's steps 5 and 6. Every AWS row of the plan's table is pending.
+**Release.** Image `m11.1`, built from `main` at `89517e5` (#79), 226 MB, digest
+`sha256:fa72c53f1c592495eb7f36efa992513d7bbe218b40af8f2436ac36ebf38cdd33`, pushed to the
+existing ECR repository. Listed inside the image before the push: 12 tools, five reads and
+six writes. The demo plan was `0 to add, 1 to change, 0 to destroy`, the change being
+`aws_ssm_parameter.image` (`m10.1` to `m11.1`); the instance's refreshed state was the
+only other difference shown. The saved plan file was applied. The instance was stopped,
+so the release was `demo.py start` (ready in 96 s). `demo.py status`: running and
+configured both `m11.1`; `/health` reports `m11.1`.
+
+**Archive.** `archives/rsa-20261011T005501Z.sql.gz`, taken before any write. On the
+instance, `operations` had 0 rows and `confirmations` none. No write was made afterwards,
+so no restore was needed; the archive is kept.
+
+**Acceptance: not run.** The owner decided on 2026-10-11 not to run the plan's AWS rows.
+None of them has a result:
+
+| Plan row | Status |
+|---|---|
+| Tools listed with a real token: 12 | not run; 12 listed inside the image |
+| Claude Code: address change on `#W4135875`, declined then accepted | not run |
+| Claude Code: exchange on `#W4817420` | not run |
+| `get_item_details` for an exchange's new item | not run |
+| The existing demo: sign-in, `/health` reports `m11.1` | `/health` reports `m11.1`; sign-in not run |
+| Rollback to `m10.1`: 7 tools listed | not run; `m10.1` remains in ECR |
+
+What stands in their place is the local and CI evidence of section 2.4: each write in both
+protocols against a real PostgreSQL and the pinned data, and the M9 acceptance table and
+access-case replay unchanged. What it does not show is a real client's form over the
+deployed stack, which is what the Claude Code rows were for. They need one `ava` token and
+about twenty minutes, and can be run later against `m11.1` with the plan's table as is.
 
 ## 3. Comparison
 
@@ -109,7 +139,7 @@ The plan's steps 5 and 6. Every AWS row of the plan's table is pending.
 | Tests passing | 1164 | 1217 | 53 added, none failing |
 | M9 acceptance table, both protocols | 10/10 | 10/10 | unchanged |
 | Access cases replayed through MCP | 17/17 blocked, 0 forms | 17/17 blocked, 0 forms | unchanged |
-| Tools listed | 7 | 12 | as planned |
+| Tools listed | 7 | 12 | as planned; in the image, not over AWS |
 | Task success, safety violations, P95, cost | not applicable | not applicable | no model is called by this change |
 
 ## 4. Failure analysis and conclusion
@@ -123,8 +153,8 @@ The plan's steps 5 and 6. Every AWS row of the plan's table is pending.
 - **The summary reads at question time.** Prices could in principle change between the
   form and the call; upstream computes the charge when it runs, and the summary says so.
   The demo data does not change prices.
-- **Conclusion: PASS for implementation; INCONCLUSIVE for the stage** until the release
-  and the AWS rows have run.
+- **Conclusion: PASS for implementation; INCONCLUSIVE for the stage.** Released as
+  `m11.1`; the AWS acceptance was not run (section 2.5).
 
 ## 5. Differences from the plan
 
@@ -133,3 +163,4 @@ The plan's steps 5 and 6. Every AWS row of the plan's table is pending.
 | Six summary cases in step 3 | Nine: also an unreadable order, lists of different lengths, and no summary for cancel and return | Each is a branch of the function |
 | - | A `_write` helper used by all six writes | The four new bodies would otherwise repeat M9's call verbatim |
 | - | The M9 acceptance report regenerated and committed | It predated M10's added field; the run is this stage's protective check |
+| Step 6, the acceptance on AWS | Not run | The owner's decision, 2026-10-11 |

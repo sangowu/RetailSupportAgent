@@ -1,7 +1,9 @@
 # M11: the remaining order writes over MCP
 
-> Plan, 2026-10-10. It describes what to build; nothing here exists yet. M9 built the MCP
-> server with two writes ([M9 change record](M9_CHANGE_RECORD.md)), and M10 deployed it
+> Plan, 2026-10-10. Implemented and deployed on 2026-10-11 as image `m11.1`; the AWS
+> acceptance rows were not run. What was built is in the
+> [M11 change record](M11_CHANGE_RECORD.md). M9 built the MCP server with two writes
+> ([M9 change record](M9_CHANGE_RECORD.md)), and M10 deployed it
 > ([M10 change record](M10_CHANGE_RECORD.md)).
 
 ## Goal and scope
